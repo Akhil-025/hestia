@@ -1,0 +1,58 @@
+# ── Web / API ─────────────────────────────────────────────────────────────────
+playwright
+flask
+fastapi
+uvicorn
+requests
+
+# ── Google integrations ───────────────────────────────────────────────────────
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+google-generativeai
+
+# ── Audio — core ─────────────────────────────────────────────────────────────
+sounddevice
+webrtcvad
+numpy
+noisereduce
+
+# ── STT ───────────────────────────────────────────────────────────────────────
+vosk
+faster-whisper
+
+# ── TTS ───────────────────────────────────────────────────────────────────────
+pyttsx3
+
+# ── Telegram ──────────────────────────────────────────────────────────────────
+python-telegram-bot[job-queue]
+ffmpeg-python
+
+# ── LLM / AI APIs ────────────────────────────────────────────────────────────
+anthropic
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+pyyaml
+
+# ── Athena — RAG stack ────────────────────────────────────────────────────────
+# Install torch separately first:
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   (or cu121 / cu124 for CUDA if you want GPU)
+torch
+chromadb
+sentence-transformers
+pymupdf
+rank-bm25
+pillow
+
+# Athena — optional document format support
+python-docx        # .docx ingestion
+python-pptx        # .pptx ingestion
+EbookLib           # .epub ingestion
+pytesseract      # also requires Tesseract binary: https://github.com/UB-Mannheim/tesseract/wiki
+easyocr          # GPU OCR fallback — heavy, install only if needed
+
+
+imagehash
+
+waitress

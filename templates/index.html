@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hestia</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:        #080810;
+      --surface:   #0e0e1a;
+      --surface2:  #14141f;
+      --border:    #1e1e2e;
+      --border2:   #26263a;
+      --text:      #ddddf0;
+      --muted:     #6060808;
+      --muted:     #606080;
+      --accent:    #a78bfa;
+      --accent2:   #c4b5fd;
+      --accent3:   #7c3aed;
+      --green:     #34d399;
+      --yellow:    #fbbf24;
+      --red:       #f87171;
+      --blue:      #60a5fa;
+      --teal:      #2dd4bf;
+      --glow:      rgba(167,139,250,0.08);
+      --glow2:     rgba(167,139,250,0.15);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 15px;
+      overflow: hidden;
+    }
+
+    body { display: flex; height: 100vh; }
+
+    /* ── Scrollbar ───────────────────────────── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+    /* ── Sidebar ─────────────────────────────── */
+    .sidebar {
+      width: 240px;
+      min-width: 240px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      z-index: 10;
+    }
+
+    .sidebar::after {
+      content: '';
+      position: absolute;
+      top: 0; right: -1px; bottom: 0; width: 1px;
+      background: linear-gradient(180deg, transparent, var(--accent3) 50%, transparent);
+      opacity: 0.4;
+    }
+
+    .brand {
+      padding: 32px 24px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent3), var(--accent));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 17px;
+      flex-shrink: 0;
+      box-shadow: 0 0 16px rgba(124,58,237,0.4);
+    }
+
+    .brand-name {
+      font-family: 'DM Serif Display', serif;
+      font-size: 22px;
+      letter-spacing: 0.5px;
+      color: var(--text);
+      line-height: 1;
+    }
+
+    .brand-name span {
+      display: block;
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      font-weight: 300;
+      color: var(--muted);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-top: 3px;
+    }
+
+    .nav {
+      flex: 1;
+      padding: 0 12px;
+    }
+
+    .nav-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--muted);
+      padding: 0 12px;
+      margin-bottom: 8px;
+      margin-top: 4px;
+    }
+
+    .nav a {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 400;
+      transition: all 0.15s;
+      margin-bottom: 2px;
+      position: relative;
+    }
+
+    .nav a .nav-icon {
+      font-size: 15px;
+      width: 20px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .nav a:hover {
+      color: var(--text);
+      background: var(--glow);
+    }
+
+    .nav a.active {
+      color: var(--accent2);
+      background: var(--glow2);
+      font-weight: 500;
+    }
+
+    .nav a.active::before {
+      content: '';
+      position: absolute;
+      left: -12px; top: 8px; bottom: 8px;
+      width: 3px;
+      background: var(--accent);
+      border-radius: 0 3px 3px 0;
+    }
+
+    /* ── Sidebar stats ───────────────────────── */
+    .sidebar-stats {
+      padding: 20px 16px;
+      border-top: 1px solid var(--border);
+      margin: 0 0 8px;
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 5px 0;
+    }
+
+    .stat-key {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+    }
+
+    .stat-val {
+      font-family: 'DM Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent);
+    }
+
+    .uptime-tag {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--muted);
+      text-align: center;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      margin-top: 10px;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Main area ───────────────────────────── */
+    .main {
+      flex: 1;
+      overflow-y: auto;
+      background: var(--bg);
+      position: relative;
+    }
+
+    /* Ambient gradient */
+    .main::before {
+      content: '';
+      position: fixed;
+      top: -200px; right: -200px;
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(124,58,237,0.06) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .section {
+      display: none;
+      padding: 40px 44px;
+      max-width: 1000px;
+      position: relative;
+      z-index: 1;
+      animation: fadeIn 0.2s ease;
+    }
+    .section.active { display: block; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Section header ──────────────────────── */
+    .page-header {
+      margin-bottom: 32px;
+    }
+
+    .page-eyebrow {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--accent);
+      margin-bottom: 8px;
+      opacity: 0.8;
+    }
+
+    .page-title {
+      font-family: 'DM Serif Display', serif;
+      font-size: 2.4rem;
+      line-height: 1.1;
+      color: var(--text);
+      font-weight: 400;
+    }
+
+    .page-title em {
+      font-style: italic;
+      color: var(--accent2);
+    }
+
+    /* ── Metric cards ────────────────────────── */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-bottom: 36px;
+    }
+
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 16px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+
+    .metric-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent3), var(--accent));
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    .metric-card:hover { border-color: var(--border2); }
+    .metric-card:hover::before { opacity: 1; }
+
+    .metric-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .metric-value {
+      font-family: 'DM Serif Display', serif;
+      font-size: 2rem;
+      color: var(--accent2);
+      line-height: 1;
+    }
+
+    /* ── Recent activity ─────────────────────── */
+    .section-subtitle {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    .activity-list {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .activity-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+
+    .activity-item:last-child { border-bottom: none; }
+    .activity-item:hover { background: var(--glow); }
+
+    .activity-query {
+      font-size: 14px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Intent badges ───────────────────────── */
+    .badge {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      border-radius: 5px;
+      padding: 3px 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .badge-time   { background: rgba(96,165,250,0.15); color: var(--blue); border: 1px solid rgba(96,165,250,0.2); }
+    .badge-note   { background: rgba(52,211,153,0.15); color: var(--green); border: 1px solid rgba(52,211,153,0.2); }
+    .badge-chat   { background: rgba(167,139,250,0.15); color: var(--accent2); border: 1px solid rgba(167,139,250,0.2); }
+    .badge-remind { background: rgba(251,191,36,0.15); color: var(--yellow); border: 1px solid rgba(251,191,36,0.2); }
+    .badge-weather{ background: rgba(45,212,191,0.15); color: var(--teal); border: 1px solid rgba(45,212,191,0.2); }
+    .badge-other  { background: rgba(96,96,128,0.15); color: var(--muted); border: 1px solid rgba(96,96,128,0.2); }
+
+    /* ── Timestamp ───────────────────────────── */
+    .ts {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    /* ── History ─────────────────────────────── */
+    .search-wrap {
+      margin-bottom: 20px;
+      position: relative;
+    }
+
+    .search-wrap input {
+      width: 100%;
+      max-width: 360px;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: 'DM Sans', sans-serif;
+      padding: 10px 14px 10px 38px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .search-wrap input:focus { border-color: var(--accent3); }
+    .search-wrap input::placeholder { color: var(--muted); }
+
+    .search-icon {
+      position: absolute;
+      left: 12px; top: 50%;
+      transform: translateY(-50%);
+      font-size: 14px;
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    .history-list {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      max-height: calc(100vh - 260px);
+      overflow-y: auto;
+    }
+
+    .history-item {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover { background: var(--glow); }
+
+    .history-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .history-q {
+      font-size: 14px;
+      color: var(--text);
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .history-r {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* ── Notes ───────────────────────────────── */
+    .notes-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .note-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s, transform 0.15s;
+    }
+
+    .note-card::after {
+      content: '✎';
+      position: absolute;
+      bottom: 16px; right: 18px;
+      font-size: 18px;
+      color: var(--border2);
+    }
+
+    .note-card:hover { border-color: var(--border2); transform: translateY(-2px); }
+
+    .note-body {
+      font-size: 14px;
+      color: var(--text);
+      line-height: 1.6;
+      flex: 1;
+      margin-bottom: 12px;
+    }
+
+    .note-ts {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* ── Facts table ─────────────────────────── */
+    .facts-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .facts-table th {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--muted);
+      padding: 14px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      font-weight: 400;
+      background: var(--surface2);
+    }
+
+    .facts-table td {
+      padding: 13px 16px;
+      font-size: 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    .facts-table tr:last-child td { border-bottom: none; }
+
+    .facts-table tr:hover td { background: var(--glow); }
+
+    .fact-key { color: var(--accent2); font-weight: 500; }
+    .fact-value { color: var(--text); }
+    .fact-source { color: var(--muted); font-family: 'DM Mono', monospace; font-size: 12px; }
+
+    .conf-wrap { display: flex; align-items: center; gap: 8px; }
+
+    .conf-bar {
+      height: 4px;
+      width: 64px;
+      background: var(--border2);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .conf-inner { height: 100%; border-radius: 4px; }
+    .conf-high { background: var(--green); }
+    .conf-mid  { background: var(--yellow); }
+    .conf-low  { background: var(--red); }
+
+    .conf-pct {
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* ── Moods ───────────────────────────────── */
+    .mood-timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .mood-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+
+    .mood-row:last-child { border-bottom: none; }
+    .mood-row:hover { background: var(--glow); }
+
+    .mood-pip {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .pip-pos { background: var(--green); box-shadow: 0 0 6px rgba(52,211,153,0.5); }
+    .pip-neu { background: var(--muted); }
+    .pip-neg { background: var(--red); box-shadow: 0 0 6px rgba(248,113,113,0.4); }
+
+    .mood-time { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--muted); }
+    .mood-label { font-size: 14px; color: var(--text); }
+
+    /* ── Skills ──────────────────────────────── */
+    .skills-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .skill-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: border-color 0.2s;
+    }
+
+    .skill-card:hover { border-color: var(--accent3); }
+
+    .skill-intent {
+      font-family: 'DM Mono', monospace;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent);
+    }
+
+    .skill-desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+    .skill-source {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--border2);
+    }
+
+    .skill-toggle {
+      font-size: 12px;
+      color: var(--accent);
+      cursor: pointer;
+      user-select: none;
+      margin-top: 4px;
+      opacity: 0.7;
+      transition: opacity 0.1s;
+    }
+    .skill-toggle:hover { opacity: 1; }
+
+    .skill-examples {
+      display: none;
+      background: var(--surface2);
+      border-radius: 7px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.8;
+      font-family: 'DM Mono', monospace;
+      margin-top: 4px;
+    }
+
+    .skill-examples.open { display: block; }
+
+    /* ── Chat ────────────────────────────────── */
+    .chat-wrap {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 180px);
+      max-height: 680px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 24px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .bubble-wrap {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .bubble-wrap.user { align-items: flex-end; }
+    .bubble-wrap.hestia { align-items: flex-start; }
+
+    .bubble {
+      max-width: 72%;
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+
+    .bubble.user {
+      background: linear-gradient(135deg, var(--accent3), var(--accent));
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .bubble.hestia {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-bottom-left-radius: 4px;
+    }
+
+    .bubble-ts {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 4px;
+      padding: 0 4px;
+    }
+
+    .thinking {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 12px 16px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      border-bottom-left-radius: 4px;
+      width: fit-content;
+    }
+
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes pulse {
+      0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
+      40% { opacity: 1; transform: scale(1); }
+    }
+
+    .chat-footer {
+      border-top: 1px solid var(--border);
+      padding: 14px 18px;
+      display: flex;
+      gap: 10px;
+      background: var(--surface);
+    }
+
+    .chat-input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 9px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: 'DM Sans', sans-serif;
+      padding: 11px 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .chat-input:focus { border-color: var(--accent3); }
+    .chat-input::placeholder { color: var(--muted); }
+
+    .send-btn {
+      background: linear-gradient(135deg, var(--accent3), var(--accent));
+      border: none;
+      border-radius: 9px;
+      color: #fff;
+      font-size: 14px;
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 500;
+      padding: 11px 22px;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      white-space: nowrap;
+    }
+
+    .send-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+    .send-btn:active { transform: translateY(0); }
+
+    /* ── Empty state ─────────────────────────── */
+    .empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 60px 20px;
+      color: var(--muted);
+      gap: 10px;
+    }
+
+    .empty-icon { font-size: 32px; opacity: 0.4; }
+    .empty-text { font-size: 14px; opacity: 0.6; }
+
+    /* ── Responsive ──────────────────────────── */
+    @media (max-width: 900px) {
+      .section { padding: 28px 24px; }
+      .metric-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 700px) {
+      .sidebar { display: none; }
+      .section { padding: 20px 16px; }
+    }
+
+    @media (max-width: 580px) {
+      .metric-grid { grid-template-columns: 1fr; }
+      .notes-grid, .skills-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-icon">🔥</div>
+    <div class="brand-name">
+      Hestia
+      <span>personal ai</span>
+    </div>
+  </div>
+
+  <nav class="nav">
+    <div class="nav-label">Navigate</div>
+    <a href="#" class="active" data-section="overview">
+      <span class="nav-icon">◈</span> Overview
+    </a>
+    <a href="#" data-section="history">
+      <span class="nav-icon">◷</span> History
+    </a>
+    <a href="#" data-section="notes">
+      <span class="nav-icon">◻</span> Notes
+    </a>
+    <a href="#" data-section="facts">
+      <span class="nav-icon">◆</span> Facts
+    </a>
+    <a href="#" data-section="moods">
+      <span class="nav-icon">◉</span> Moods
+    </a>
+    <a href="#" data-section="skills">
+      <span class="nav-icon">◈</span> Skills
+    </a>
+    <a href="#" data-section="chat">
+      <span class="nav-icon">◎</span> Chat
+    </a>
+  </nav>
+
+  <div class="sidebar-stats">
+    <div class="stat-row">
+      <span class="stat-key">interactions</span>
+      <span class="stat-val" id="stat-interactions">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-key">notes</span>
+      <span class="stat-val" id="stat-notes">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-key">facts</span>
+      <span class="stat-val" id="stat-facts">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-key">intents</span>
+      <span class="stat-val" id="stat-intents">—</span>
+    </div>
+    <div class="uptime-tag" id="stat-uptime">—</div>
+  </div>
+</aside>
+
+<!-- ── Main ─────────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- Overview -->
+  <section id="overview" class="section active">
+    <div class="page-header">
+      <div class="page-eyebrow">Dashboard</div>
+      <h1 class="page-title">Hestia is <em>running.</em></h1>
+    </div>
+
+    <div class="metric-grid">
+      <div class="metric-card">
+        <div class="metric-label">Interactions</div>
+        <div class="metric-value" id="metric-interactions">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Notes Saved</div>
+        <div class="metric-value" id="metric-notes">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Facts Known</div>
+        <div class="metric-value" id="metric-facts">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Unique Intents</div>
+        <div class="metric-value" id="metric-intents">—</div>
+      </div>
+    </div>
+
+    <div class="section-subtitle">Recent Activity</div>
+    <div class="activity-list" id="recent-list">
+      <div class="empty"><div class="empty-icon">◷</div><div class="empty-text">Loading…</div></div>
+    </div>
+  </section>
+
+  <!-- History -->
+  <section id="history" class="section">
+    <div class="page-header">
+      <div class="page-eyebrow">Memory</div>
+      <h1 class="page-title"><em>Interaction</em> History</h1>
+    </div>
+    <div class="search-wrap">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="history-search" placeholder="Search conversations…">
+    </div>
+    <div class="history-list" id="history-list">
+      <div class="empty"><div class="empty-icon">◷</div><div class="empty-text">Loading…</div></div>
+    </div>
+  </section>
+
+  <!-- Notes -->
+  <section id="notes" class="section">
+    <div class="page-header">
+      <div class="page-eyebrow">Mnemosyne</div>
+      <h1 class="page-title">Your <em>Notes</em></h1>
+    </div>
+    <div class="notes-grid" id="notes-grid">
+      <div class="empty" style="grid-column:1/-1">
+        <div class="empty-icon">◻</div><div class="empty-text">Loading…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Facts -->
+  <section id="facts" class="section">
+    <div class="page-header">
+      <div class="page-eyebrow">Mnemosyne</div>
+      <h1 class="page-title">Known <em>Facts</em></h1>
+    </div>
+    <table class="facts-table" id="facts-table">
+      <thead>
+        <tr>
+          <th>Key</th>
+          <th>Value</th>
+          <th>Confidence</th>
+          <th>Source</th>
+          <th>Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td colspan="5"><div class="empty"><div class="empty-icon">◆</div><div class="empty-text">Loading…</div></div></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Moods -->
+  <section id="moods" class="section">
+    <div class="page-header">
+      <div class="page-eyebrow">Wellbeing</div>
+      <h1 class="page-title">Mood <em>Log</em></h1>
+    </div>
+    <div class="mood-timeline" id="mood-list">
+      <div class="empty"><div class="empty-icon">◉</div><div class="empty-text">Loading…</div></div>
+    </div>
+  </section>
+
+  <!-- Skills -->
+  <section id="skills" class="section">
+    <div class="page-header">
+      <div class="page-eyebrow">Capabilities</div>
+      <h1 class="page-title">Loaded <em>Skills</em></h1>
+    </div>
+    <div class="skills-grid" id="skills-grid">
+      <div class="empty" style="grid-column:1/-1">
+        <div class="empty-icon">◈</div><div class="empty-text">Loading…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Chat -->
+  <section id="chat" class="section">
+    <div class="page-header">
+      <div class="page-eyebrow">Interface</div>
+      <h1 class="page-title">Talk to <em>Hestia</em></h1>
+    </div>
+    <div class="chat-wrap">
+      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-footer">
+        <input type="text" class="chat-input" id="chat-input" placeholder="Ask Hestia anything…">
+        <button class="send-btn" id="chat-send">Send ↑</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // ── Utility ─────────────────────────────────────────
+  function fetchJSON(url, opts) {
+    return fetch(url, opts).then(r => { if (!r.ok) throw r.statusText; return r.json(); });
+  }
+
+  function fmt(ts) {
+    if (!ts) return '';
+    const d = new Date(ts), now = new Date();
+    if (d.toDateString() === now.toDateString())
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function badgeClass(intent) {
+    if (!intent) return 'badge-other';
+    if (['get_time','get_date'].includes(intent)) return 'badge-time';
+    if (intent === 'take_note') return 'badge-note';
+    if (intent === 'chat') return 'badge-chat';
+    if (intent === 'set_reminder') return 'badge-remind';
+    if (intent === 'get_weather') return 'badge-weather';
+    return 'badge-other';
+  }
+
+  function badge(intent) {
+    return `<span class="badge ${badgeClass(intent)}">${intent || 'other'}</span>`;
+  }
+
+  function emptyState(icon, msg) {
+    return `<div class="empty"><div class="empty-icon">${icon}</div><div class="empty-text">${msg}</div></div>`;
+  }
+
+  // ── Stats ────────────────────────────────────────────
+  function updateStats(s) {
+    const map = {
+      interactions: 'total_interactions',
+      notes: 'notes',
+      facts: 'facts_known',
+      intents: 'unique_intents'
+    };
+    for (const [k, v] of Object.entries(map)) {
+      const val = s[v] ?? '—';
+      const sid = document.getElementById('stat-' + k);
+      const mid = document.getElementById('metric-' + k);
+      if (sid) sid.textContent = val;
+      if (mid) mid.textContent = val;
+    }
+    const up = document.getElementById('stat-uptime');
+    if (up) up.textContent = s.uptime || '';
+  }
+
+  // ── Navigation ───────────────────────────────────────
+  const loaded = {};
+  document.querySelectorAll('.nav a').forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      document.querySelectorAll('.nav a').forEach(l => l.classList.remove('active'));
+      link.classList.add('active');
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      const sec = link.dataset.section;
+      document.getElementById(sec).classList.add('active');
+      if (!loaded[sec]) { loadSection(sec); loaded[sec] = true; }
+    });
+  });
+
+  // ── Section loaders ──────────────────────────────────
+  function loadSection(section) {
+    if (section === 'overview') {
+      fetchJSON('/api/history?limit=10').then(data => {
+        const el = document.getElementById('recent-list');
+        if (!data.length) { el.innerHTML = emptyState('◷', 'No recent activity.'); return; }
+        el.innerHTML = data.map(item => `
+          <div class="activity-item">
+            ${badge(item.intent)}
+            <span class="activity-query">${esc(item.query)}</span>
+            <span class="ts">${fmt(item.timestamp)}</span>
+          </div>
+        `).join('');
+      }).catch(() => {
+        document.getElementById('recent-list').innerHTML = emptyState('!', 'Could not load activity.');
+      });
+    }
+
+    if (section === 'history') {
+      fetchJSON('/api/history?limit=50').then(data => {
+        window._historyData = data;
+        renderHistory(data);
+      }).catch(() => {
+        document.getElementById('history-list').innerHTML = emptyState('!', 'Could not load history.');
+      });
+    }
+
+    if (section === 'notes') {
+      fetchJSON('/api/notes').then(data => {
+        const el = document.getElementById('notes-grid');
+        if (!data.length) { el.innerHTML = emptyState('◻', 'No notes found.'); return; }
+        el.innerHTML = data.map(n => `
+          <div class="note-card">
+            <div class="note-body">${esc(n.entities?.content || n.query || '(No content)')}</div>
+            <div class="note-ts">${fmt(n.timestamp)}</div>
+          </div>
+        `).join('');
+      }).catch(() => {
+        document.getElementById('notes-grid').innerHTML = emptyState('!', 'Could not load notes.');
+      });
+    }
+
+    if (section === 'facts') {
+      fetchJSON('/api/facts').then(data => {
+        const tbody = document.querySelector('#facts-table tbody');
+        if (!data.length) {
+          tbody.innerHTML = `<tr><td colspan="5">${emptyState('◆', 'No facts found.')}</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = data.map(f => {
+          const conf = parseFloat(f.confidence ?? 1);
+          const pct = Math.round(conf * 100);
+          const cls = conf > 0.8 ? 'conf-high' : conf > 0.5 ? 'conf-mid' : 'conf-low';
+          return `<tr>
+            <td class="fact-key">${esc(f.key || '')}</td>
+            <td class="fact-value">${esc(f.value || '')}</td>
+            <td>
+              <div class="conf-wrap">
+                <div class="conf-bar"><div class="conf-inner ${cls}" style="width:${pct}%"></div></div>
+                <span class="conf-pct">${pct}%</span>
+              </div>
+            </td>
+            <td class="fact-source">${esc(f.source || '')}</td>
+            <td class="ts">${fmt(f.updated)}</td>
+          </tr>`;
+        }).join('');
+      }).catch(() => {
+        document.querySelector('#facts-table tbody').innerHTML =
+          `<tr><td colspan="5">${emptyState('!', 'Could not load facts.')}</td></tr>`;
+      });
+    }
+
+    if (section === 'moods') {
+      fetchJSON('/api/moods').then(data => {
+        const el = document.getElementById('mood-list');
+        if (!data.length) { el.innerHTML = emptyState('◉', 'No moods logged yet.'); return; }
+        el.innerHTML = data.map(m => {
+          const v = (m.valence || '').toLowerCase();
+          const pip = v.includes('pos') || v.includes('happy') ? 'pip-pos'
+                    : v.includes('neg') || v.includes('stress') ? 'pip-neg'
+                    : 'pip-neu';
+          return `<div class="mood-row">
+            <span class="mood-pip ${pip}"></span>
+            <span class="mood-time">${fmt(m.timestamp)}</span>
+            <span class="mood-label">${esc(m.valence || '')}</span>
+          </div>`;
+        }).join('');
+      }).catch(() => {
+        document.getElementById('mood-list').innerHTML = emptyState('!', 'Could not load moods.');
+      });
+    }
+
+    if (section === 'skills') {
+      fetchJSON('/api/skills').then(data => {
+        const el = document.getElementById('skills-grid');
+        if (!data.length) { el.innerHTML = emptyState('◈', 'No skills loaded.'); return; }
+        el.innerHTML = data.map((sk, i) => `
+          <div class="skill-card">
+            <div class="skill-intent">${esc(sk.intent)}</div>
+            <div class="skill-desc">${esc(sk.description || '')}</div>
+            ${sk.source ? `<div class="skill-source">${esc(sk.source)}</div>` : ''}
+            ${sk.examples?.length
+              ? `<div class="skill-toggle" onclick="toggleExamples(${i})">Show examples ↓</div>
+                 <div class="skill-examples" id="skill-ex-${i}">${sk.examples.map(e => `<div>→ ${esc(e)}</div>`).join('')}</div>`
+              : ''}
+          </div>
+        `).join('');
+      }).catch(() => {
+        document.getElementById('skills-grid').innerHTML = emptyState('!', 'Could not load skills.');
+      });
+    }
+  }
+
+  // ── History render + search ──────────────────────────
+  function renderHistory(data) {
+    const el = document.getElementById('history-list');
+    if (!data.length) { el.innerHTML = emptyState('◷', 'Nothing found.'); return; }
+    el.innerHTML = data.map(item => `
+      <div class="history-item">
+        <div class="history-header">${badge(item.intent)} <span class="ts">${fmt(item.timestamp)}</span></div>
+        <div class="history-q">${esc(item.query)}</div>
+        ${item.response ? `<div class="history-r">${esc(item.response)}</div>` : ''}
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('history-search').addEventListener('input', function () {
+    const q = this.value.toLowerCase();
+    if (!window._historyData) return;
+    renderHistory(window._historyData.filter(i =>
+      (i.query || '').toLowerCase().includes(q) || (i.response || '').toLowerCase().includes(q)
+    ));
+  });
+
+  // ── Skills toggle ────────────────────────────────────
+  function toggleExamples(i) {
+    const el = document.getElementById('skill-ex-' + i);
+    if (!el) return;
+    el.classList.toggle('open');
+    el.previousElementSibling.textContent = el.classList.contains('open')
+      ? 'Hide examples ↑' : 'Show examples ↓';
+  }
+
+  // ── Chat ─────────────────────────────────────────────
+  const chatInput = document.getElementById('chat-input');
+  const chatSend  = document.getElementById('chat-send');
+  const chatMsgs  = document.getElementById('chat-messages');
+  let chatBusy = false;
+
+  function addBubble(text, who, ts) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-wrap ' + who;
+    const b = document.createElement('div');
+    b.className = 'bubble ' + who;
+    b.textContent = text;
+    const t = document.createElement('div');
+    t.className = 'bubble-ts';
+    t.textContent = fmt(ts || new Date());
+    wrap.appendChild(b);
+    wrap.appendChild(t);
+    chatMsgs.appendChild(wrap);
+    chatMsgs.scrollTop = chatMsgs.scrollHeight;
+  }
+
+  function setThinking(on) {
+    let el = document.getElementById('thinking-indicator');
+    if (on) {
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'thinking-indicator';
+        el.className = 'bubble-wrap hestia';
+        el.innerHTML = `<div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>`;
+        chatMsgs.appendChild(el);
+      }
+    } else if (el) el.remove();
+    chatMsgs.scrollTop = chatMsgs.scrollHeight;
+  }
+
+  function sendChat() {
+    const text = chatInput.value.trim();
+    if (!text || chatBusy) return;
+    chatBusy = true;
+    addBubble(text, 'user', new Date());
+    chatInput.value = '';
+    setThinking(true);
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    })
+    .then(r => r.json())
+    .then(data => {
+      setThinking(false);
+      chatBusy = false;
+      addBubble(data.response || data.error || '...', 'hestia', new Date());
+    })
+    .catch(err => {
+      setThinking(false);
+      chatBusy = false;
+      addBubble('Error: ' + err, 'hestia', new Date());
+    });
+  }
+
+  chatSend.addEventListener('click', sendChat);
+  chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+  // ── XSS escape ───────────────────────────────────────
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── Boot ─────────────────────────────────────────────
+  fetchJSON('/api/stats').then(updateStats).catch(() => {});
+  loadSection('overview');
+  loaded['overview'] = true;
+</script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ========================
+# Virtual Environment
+# ========================
+.venv/
+
+# ========================
+# Secrets & Credentials
+# ========================
+.env
+*.env
+*.key
+*.pem
+*.crt
+credentials.json
+
+# Local config (contains secrets)
+config/laptop_config.yaml
+config/*.local
+config/*.secret
+
+# Explicit sensitive files
+data/google_token.json
+
+# ========================
+# Data (keep structure, not contents)
+# ========================
+data/*
+!data/**/*.md
+!data/**/*.json
+
+# ========================
+# Models (large artifacts)
+# ========================
+models/*
+!models/**/*.md
+
+# ========================
+# Logs & Temp
+# ========================
+*.log
+*.tmp
+
+# ========================
+# Build artifacts
+# ========================
+build/
+dist/
+*.egg-info/
+
+# ========================
+# IDE / Editor
+# ========================
+.vscode/
+.idea/
+
+# ========================
+# OS files
+# ========================
+.DS_Store
+Thumbs.db
+
+
+# Google credentials
+config/google_credentials.json
