@@ -1,16 +1,6 @@
 """
 web_ui.py — Hestia local Flask dashboard.
 
-Improvements over original:
-- Proper logging throughout (no more print / silent swallowed errors)
-- Input validation and MAX_TEXT_LENGTH guard on /api/chat
-- TTL cache on /api/stats (avoids hitting SQLite on every page load)
-- Pagination (limit + offset) on /api/history
-- DB access isolated in _get_stats() — routes don't touch conn directly
-- Routes split into focused _register_*_routes() helpers
-- waitress used when available; falls back to Flask dev server gracefully
-- /api/reload reloads the skill registry without restarting the process
-- All optional-feature absences logged as warnings at startup
 """
 
 import datetime
@@ -273,34 +263,11 @@ class HestiaWebUI:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _get_stats(self) -> dict:
-        """Query the database for dashboard stats.
-
-        Isolated here so routes never touch memory.conn directly,
-        making this easy to mock in tests.
         """
-        with self.memory.conn as conn:
-            c = conn.cursor()
+        Fetch stats via memory API (no direct SQL access).
+        """
+        data = self.memory.get_stats()
 
-            c.execute("SELECT COUNT(*) FROM interactions")
-            total = c.fetchone()[0]
+        data["uptime"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-            c.execute("SELECT COUNT(*) FROM interactions WHERE intent = 'take_note'")
-            notes = c.fetchone()[0]
-
-            c.execute("SELECT COUNT(DISTINCT intent) FROM interactions")
-            intents = c.fetchone()[0]
-
-            try:
-                c.execute("SELECT COUNT(*) FROM user_facts")
-                facts = c.fetchone()[0]
-            except Exception:
-                logger.debug("[WebUI] user_facts table not found — defaulting facts count to 0")
-                facts = 0
-
-        return {
-            "total_interactions": total,
-            "notes":              notes,
-            "unique_intents":     intents,
-            "facts_known":        facts,
-            "uptime":             datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        }
+        return data

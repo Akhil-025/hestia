@@ -38,14 +38,11 @@ from core.ollama_manager import OllamaManager
 from core.browser_agent import HestiaBrowserAgent
 from core.ollama_client import generate
 from modules.hestia.core_module import CoreModule
-from skills.base import SkillLoader
-from skills import browser_tasks
 
-# Modules
+
 from modules.hecate import HecateEngine
 from modules.artemis import ArtemisEngine
-
-# NEW
+from core.event_bus import bus
 from modules.hestia.orchestrator import HestiaOrchestrator
 from modules.chronos.engine import ChronosEngine
 from modules.hermes.engine import HermesEngine
@@ -126,6 +123,14 @@ class Hestia:
             from modules.mnemosyne.engine import MnemosyneEngine
             self.mnemosyne = MnemosyneEngine(self.nlu)
 
+        if self.mnemosyne:
+            mn = self.mnemosyne
+            bus.on("interaction_logged", lambda data: mn.push(
+                data["query"],
+                data["response"],
+                data["intent"]
+            ))
+
         self.iris = None
         if self.config.get("iris", {}).get("enabled", False):
             from modules.iris import IrisEngine
@@ -159,7 +164,6 @@ class Hestia:
         self.orchestrator.register(self.core_module)
 
         # Register modules
-        self.orchestrator.register(self.hecate)
         if self.athena: self.orchestrator.register(self.athena)
         if self.mnemosyne: self.orchestrator.register(self.mnemosyne)
         if self.iris: self.orchestrator.register(self.iris)
@@ -192,23 +196,8 @@ class Hestia:
         cleaned = _FILLER_RE.sub('', text.lower().strip()).strip()
         print(f"You: {cleaned}")
 
-        # Fast intent
-        intent, entities = self.fast_intent(cleaned)
-
-        if intent == "__handled__":
-            return ""
-
-        # NLU fallback
-        if not intent:
-            context = self.memory.get_recent(5)
-            nlu_result = self.nlu.understand(cleaned, context)
-        else:
-            nlu_result = {
-                "intent": intent,
-                "entities": entities or {},
-                "confidence": 0.9,
-                "response": "",
-            }
+        context = self.memory.get_recent(5)
+        nlu_result = self.nlu.understand(cleaned, context)
 
         # ── SINGLE ENTRY POINT ───────────────────────────────
         response = self.orchestrator.dispatch(cleaned, nlu_result)
@@ -230,26 +219,13 @@ class Hestia:
 
         self.memory.add_interaction(cleaned, response, nlu_result.get("intent", "chat"))
 
-        if self.mnemosyne:
-            try:
-                self.mnemosyne.push(cleaned, response, nlu_result.get("intent", "chat"))
-            except:
-                pass
+        bus.emit("interaction_logged", {
+            "query": cleaned,
+            "response": response,
+            "intent": nlu_result.get("intent", "chat")
+        })
 
         return response
-
-    # ── FAST INTENT (UNCHANGED) ─────────────────────────────────────
-    def fast_intent(self, text: str):
-        t = text.lower()
-
-        if "time" in t:
-            return "get_time", {}
-        if "date" in t:
-            return "get_date", {}
-        if "weather" in t:
-            return "get_weather", {}
-
-        return None, None
 
     # ── RUNNERS ─────────────────────────────────────────────────────
     def run_cli_loop(self):

@@ -3,7 +3,7 @@
 from modules.base import BaseModule
 from core.actions import HestiaActions
 from core.ollama_client import generate
-
+import platform, datetime
 
 class CoreModule(BaseModule):
     name = "core"
@@ -35,8 +35,38 @@ class CoreModule(BaseModule):
                 return {"response": response, "data": {}, "confidence": 0.7}
             except Exception:
                 return {"response": "I'm not sure about that.", "data": {}, "confidence": 0.3}
+            
+        if intent == "get_system_info":
+            return {
+                "response": (
+                    f"Running on {platform.system()} {platform.release()}, "
+                    f"Python {platform.python_version()}, "
+                    f"time {datetime.datetime.now().strftime('%I:%M %p')}."
+                ),
+                "data": {},
+                "confidence": 1.0,
+            }
 
-        result = self.actions.execute(intent, entities, raw_query)
+        if intent == "save_name":
+            result = self.actions._save_name(entities)
+
+        elif intent == "take_note":
+            result = self.actions._take_note(entities, raw_query)
+
+        elif intent == "get_notes":
+            result = self.actions._get_notes()
+
+        elif intent == "get_history":
+            result = self.actions._get_history(entities)
+
+        elif intent == "get_user_info":
+            result = self.actions._get_user_info(entities)
+
+        elif intent == "set_preference":
+            result = self.actions._set_preference(entities)
+
+        else:
+            result = ""
 
         return {
             "response": result or "",

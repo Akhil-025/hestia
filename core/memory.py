@@ -231,6 +231,31 @@ class HestiaMemory:
             self.conn.execute("DELETE FROM interactions")
             self.conn.commit()
 
+    def get_stats(self) -> dict:
+        c = self.conn.cursor()
+
+        c.execute("SELECT COUNT(*) FROM interactions")
+        total = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM interactions WHERE intent='take_note'")
+        notes = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(DISTINCT intent) FROM interactions")
+        intents = c.fetchone()[0]
+
+        try:
+            c.execute("SELECT COUNT(*) FROM user_facts")
+            facts = c.fetchone()[0]
+        except Exception:
+            facts = 0
+
+        return {
+            "total_interactions": total,
+            "notes": notes,
+            "unique_intents": intents,
+            "facts_known": facts,
+        }
+
 
 if __name__ == "__main__":
     # Smoke test
