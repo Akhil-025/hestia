@@ -95,6 +95,10 @@ class IrisAnalyser:
                 return False
         except Exception as e:
             self.logger.error(f"Error analysing file {file_id}: {e}")
+            try:
+                self.db.mark_file_processed(file_id)  # prevent infinite retry
+            except Exception:
+                pass
             return False
 
     def _send_to_ollama(self, image_base64: str, prompt: str) -> str:

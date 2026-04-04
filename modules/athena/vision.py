@@ -16,6 +16,11 @@ class VisionModel:
 
     def describe(self, image) -> str:
         try:
+            import requests as _req
+            try:
+                _req.get(self.url.replace("/api/generate", ""), timeout=2)
+            except Exception:
+                return ""
             img_b64 = self._encode_image(image)
 
             payload = {
@@ -25,7 +30,7 @@ class VisionModel:
                 "stream": False
             }
 
-            response = requests.post(self.url, json=payload, timeout=60)
+            response = requests.post(self.url, json=payload, timeout=30)
             response.raise_for_status()
 
             return response.json().get("response", "").strip()

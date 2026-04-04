@@ -1,42 +1,31 @@
 # main.py
 
 import sys
+import re
 import time
 import logging
 import warnings
 import os
+import json
 from dotenv import load_dotenv
 load_dotenv()
 
 # ── Silence noisy third-party output BEFORE any imports that trigger them ────
-# HuggingFace unauthenticated-request warnings
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Suppress verbose loggers from libraries
 for _noisy in (
-    "huggingface_hub",
-    "transformers",
-    "sentence_transformers",
-    "torch",
-    "urllib3",
-    "httpx",
-    "httpcore",
-    "asyncio",
-    "werkzeug",
+    "huggingface_hub", "transformers", "sentence_transformers",
+    "torch", "urllib3", "httpx", "httpcore", "asyncio", "werkzeug",
 ):
     logging.getLogger(_noisy).setLevel(logging.ERROR)
 
-# Root logger: only WARNING and above from third-party code
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
-
-# Hestia's own logger: INFO (controls our [Tag] lines)
 logging.getLogger("hestia").setLevel(logging.INFO)
 
 import yaml
-import subprocess
 from core.stt import HestiaSTT
 from core.tts import HestiaTTS
 from core.nlu import HestiaNLU
@@ -51,10 +40,19 @@ from web_ui import HestiaWebUI
 from core.ollama_client import generate
 from core.telegram_bot import HestiaTelegramBot
 from skills.base import SkillLoader
+from modules.hecate import HecateEngine
 
 log = logging.getLogger("hestia")
 
-# ── Routing trigger lists ─────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+CORE_INTENTS = {
+    "get_time", "get_date", "get_weather",
+    "take_note", "get_history", "get_user_info",
+    "save_name", "get_system_info",
+}
+
+EXIT_WORDS = {"bye", "exit", "stop", "shutdown"}
 
 _ATHENA_TRIGGERS = [
     "from my notes", "in my documents", "from my files",
@@ -80,6 +78,26 @@ _IRIS_TRIGGERS = [
     "analyse my photos", "analyze my photos", "describe my photos",
 ]
 
+_FILLER_RE = re.compile(r'\b(uh|um|you know)\b\s*', re.IGNORECASE)
+_NOTE_RE   = re.compile(
+    r'^(take a note|note down|remember this|jot this)\s*[:\-]?\s*',
+    re.IGNORECASE,
+)
+
+CHAT_SYSTEM_PROMPT = (
+    "You are Hestia, a warm and witty personal assistant. "
+    "Answer the following question concisely and accurately in 1-2 sentences. "
+    "Do not use poetic language or metaphors. Just answer directly.\n\n"
+    "Question: {query}"
+)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def match_trigger(text: str, triggers: list) -> bool:
+    """Word-boundary-aware trigger matching to avoid false positives."""
+    return any(re.search(r"\b" + re.escape(t) + r"\b", text) for t in triggers)
+
 
 # ── LLM wrapper ───────────────────────────────────────────────────────────────
 
@@ -90,7 +108,6 @@ class HestiaLLM:
         self.model = model
 
     def generate(self, prompt: str) -> str:
-        from core.ollama_client import generate
         return generate(prompt, model=self.model, host=self.host, port=self.port)
 
 
@@ -102,22 +119,20 @@ class Hestia:
     def __init__(self, config_path: str = "config/laptop_config.yaml"):
         print("Initializing Hestia...")
 
-        # Config
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 self.config = yaml.safe_load(f)
-        except FileNotFoundError:
-            print(f"Error: config not found at {config_path}")
-            sys.exit(1)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load config: {e}")
 
         # Memory (must be first)
-        db_path     = self.config.get("database", {}).get("path", "data/hestia.db")
-        self.memory = HestiaMemory(db_path)
+        db_path      = self.config.get("database", {}).get("path", "data/hestia.db")
+        self.memory  = HestiaMemory(db_path)
         self.actions = HestiaActions(self.memory)
 
         # Ollama
-        ollama_cfg         = self.config.get("ollama", {})
-        self.ollama_cfg    = ollama_cfg
+        ollama_cfg          = self.config.get("ollama", {})
+        self.ollama_cfg     = ollama_cfg
         self.ollama_manager = OllamaManager(
             host=ollama_cfg.get("host", "localhost"),
             port=ollama_cfg.get("port", 11434),
@@ -128,7 +143,6 @@ class Hestia:
 
         # NLU
         llm_cfg       = self.config.get("llm", {})
-        from core.memory_summariser import MemorySummariser
         llm_providers = llm_cfg.get("providers", None)
         self.nlu = HestiaNLU(
             model=ollama_cfg.get("model", "mistral"),
@@ -139,8 +153,8 @@ class Hestia:
         )
 
         # Athena
-        self.athena   = None
-        athena_cfg    = self.config.get("athena", {})
+        self.athena = None
+        athena_cfg  = self.config.get("athena", {})
         if athena_cfg.get("enabled", False):
             try:
                 from modules.athena.engine import AthenaEngine
@@ -155,8 +169,8 @@ class Hestia:
                 log.warning("[Athena] Failed to load: %s", e)
 
         # Mnemosyne
-        self.mnemosyne  = None
-        mnemosyne_cfg   = self.config.get("mnemosyne", {})
+        self.mnemosyne = None
+        mnemosyne_cfg  = self.config.get("mnemosyne", {})
         if mnemosyne_cfg.get("enabled", False):
             try:
                 from modules.mnemosyne.engine import MnemosyneEngine
@@ -166,8 +180,8 @@ class Hestia:
                 log.warning("[Mnemosyne] Failed to load: %s", e)
 
         # Iris
-        self.iris   = None
-        iris_cfg    = self.config.get("iris", {})
+        self.iris = None
+        iris_cfg  = self.config.get("iris", {})
         if iris_cfg.get("enabled", False):
             try:
                 from modules.iris import IrisEngine
@@ -176,9 +190,19 @@ class Hestia:
             except Exception as e:
                 log.warning("[Iris] Failed to load: %s", e)
 
-        # STT — suppress Whisper's own loading banner
-        stt_cfg    = self.config.get("stt", {})
-        self.stt   = HestiaSTT(
+        # Hecate
+        self.hecate = HecateEngine()
+        log.info("[Hecate] Decision engine ready.")
+
+        # Active modules list — computed once at init, never changes at runtime
+        self.active_modules = ["core"]
+        if self.athena:    self.active_modules.append("athena")
+        if self.mnemosyne: self.active_modules.append("mnemosyne")
+        if self.iris:      self.active_modules.append("iris")
+
+        # STT
+        stt_cfg  = self.config.get("stt", {})
+        self.stt = HestiaSTT(
             model_size=stt_cfg.get("model_size", "base.en"),
             device=stt_cfg.get("device", "cuda"),
             compute_type=stt_cfg.get("compute_type", "float16"),
@@ -241,7 +265,7 @@ class Hestia:
         if webui_cfg.get("enabled", False):
             self.web_ui = HestiaWebUI(
                 memory=self.memory,
-                skill_loader=self.skill_loader if hasattr(self, "skill_loader") else None,
+                skill_loader=self.skill_loader,
                 process_fn=self.process_text,
                 host=webui_cfg.get("host", "127.0.0.1"),
                 port=webui_cfg.get("port", 5000),
@@ -253,19 +277,13 @@ class Hestia:
         # Telegram
         telegram_cfg = self.config.get("telegram", {})
         if telegram_cfg.get("enabled", False):
-            import os
-
-            env_token = os.getenv("TELEGRAM_BOT_TOKEN")
+            env_token    = os.getenv("TELEGRAM_BOT_TOKEN")
             config_token = telegram_cfg.get("token", "")
-
-            # Environment variable takes priority
-            token = env_token if env_token else config_token
-
-            allowed = telegram_cfg.get("allowed_chat_ids", [])
+            token        = env_token if env_token else config_token
+            allowed      = telegram_cfg.get("allowed_chat_ids", [])
 
             if not token:
                 raise ValueError("TELEGRAM_BOT_TOKEN not set")
-
             if token == "YOUR_BOT_TOKEN_HERE":
                 raise ValueError("Invalid placeholder token")
 
@@ -277,21 +295,14 @@ class Hestia:
             )
             self.telegram_bot.start()
             log.info("[Telegram] Bot started.")
-
         else:
             self.telegram_bot = None
 
         print("Hestia is ready.")
-
         user_name = self.memory.get_preference("user_name", "")
         greeting  = f"Welcome back, {user_name}." if user_name else "Hey there, I'm Hestia."
         self.tts.speak(greeting)
         self.wake_detector.flush_audio_queue()
-
-    # ── Routing helpers ───────────────────────────────────────────────────────
-
-    def _is_athena_query(self, text: str) -> bool:
-        return self.athena is not None and any(p in text for p in _ATHENA_TRIGGERS)
 
     # ── Core query processor ──────────────────────────────────────────────────
 
@@ -299,29 +310,80 @@ class Hestia:
         if not text or not text.strip():
             return ""
 
-        import re
-        cleaned        = text.lower().strip()
-        filler_pattern = re.compile(r'\b(uh|um|you know)\b\s*', re.IGNORECASE)
-        cleaned        = filler_pattern.sub('', cleaned).strip()
+        cleaned = _FILLER_RE.sub('', text.lower().strip()).strip()
         print(f"You: {cleaned}")
 
-        # ── Mnemosyne ─────────────────────────────────────────────────────────
-        if self.mnemosyne and any(p in cleaned for p in _MNEMOSYNE_TRIGGERS):
+        # ── Step 1: Fast rule-based intent ───────────────────────────────────
+        intent, entities = self.fast_intent(cleaned)
+
+        if intent == "__handled__":
+            return ""
+
+        # ── Step 2: NLU fallback if no fast intent ────────────────────────────
+        if not intent:
+            context    = self.memory.get_recent(5)
+            nlu_result = self.nlu.understand(cleaned, context)
+            intent     = nlu_result.get("intent", "chat")
+            entities   = nlu_result.get("entities", {})
+        else:
+            nlu_result = {"intent": intent, "entities": entities or {}, "confidence": 0.9, "response": ""}
+
+        # ── Step 3: Routing — priority order ──────────────────────────────────
+        # Hard triggers always win over Hecate
+        if match_trigger(cleaned, _ATHENA_TRIGGERS) and self.athena:
+            primary    = "athena"
+            secondary  = []
+            confidence = 1.0
+
+        elif match_trigger(cleaned, _MNEMOSYNE_TRIGGERS) and self.mnemosyne:
+            primary    = "mnemosyne"
+            secondary  = []
+            confidence = 1.0
+
+        elif match_trigger(cleaned, _IRIS_TRIGGERS) and self.iris:
+            primary    = "iris"
+            secondary  = []
+            confidence = 1.0
+
+        elif intent in CORE_INTENTS:
+            primary    = "core"
+            secondary  = []
+            confidence = 1.0
+
+        else:
+            try:
+                decision   = self.hecate.decide(cleaned, nlu_result, self.active_modules)
+            except Exception as e:
+                log.debug("[Hecate] Failure: %s", e)
+                decision   = {"primary": "core", "secondary": [], "confidence": 0.0}
+
+            primary    = decision.get("primary", "core")
+            secondary  = decision.get("secondary", [])
+            confidence = decision.get("confidence", 0.0)
+
+            if confidence < 0.4:
+                primary = "core"
+
+        # ── Step 4: Execute routed handler ────────────────────────────────────
+        final_response = ""
+
+        if primary == "athena" and self.athena:
+            try:
+                final_response = self.athena.query(cleaned)
+            except Exception as e:
+                log.debug("[Athena] Query error: %s", e)
+                final_response = "I had trouble searching your documents."
+
+        elif primary == "mnemosyne" and self.mnemosyne:
             try:
                 final_response = self.mnemosyne.remember(cleaned)
             except Exception as e:
                 log.debug("[Mnemosyne] Remember error: %s", e)
                 final_response = "I had trouble accessing my memory."
-            print(f"Hestia: {final_response}")
-            self.tts.speak(final_response)
-            self.wake_detector.flush_audio_queue()
-            self.memory.add_interaction(cleaned, final_response, "mnemosyne_query")
-            return final_response
 
-        # ── Iris ──────────────────────────────────────────────────────────────
-        if self.iris and any(p in cleaned for p in _IRIS_TRIGGERS):
+        elif primary == "iris" and self.iris:
             try:
-                if "organize" in cleaned or "index" in cleaned:
+                if any(w in cleaned for w in ["organize", "index", "sort", "scan", "catalog"]):
                     result         = self.iris.ingest()
                     final_response = f"Done. Indexed {result.get('ingested', 0)} new files."
                 elif any(w in cleaned for w in ["analyse", "analyze", "describe"]):
@@ -339,117 +401,53 @@ class Hestia:
             except Exception as e:
                 log.debug("[Iris] Error: %s", e)
                 final_response = "I had trouble accessing your media files."
-            print(f"Hestia: {final_response}")
-            self.tts.speak(final_response)
-            self.wake_detector.flush_audio_queue()
-            self.memory.add_interaction(cleaned, final_response, "iris_query")
-            return final_response
 
-        # ── Athena ────────────────────────────────────────────────────────────
-        if self._is_athena_query(cleaned):
-            try:
-                final_response = self.athena.query(cleaned)
-            except Exception as e:
-                log.debug("[Athena] Query error: %s", e)
-                final_response = "I had trouble searching your documents."
-            print(f"Hestia: {final_response}")
-            self.tts.speak(final_response)
-            self.wake_detector.flush_audio_queue()
-            self.memory.add_interaction(cleaned, final_response, "athena_query")
-            return final_response
-
-        # ── Fast / NLU intent ─────────────────────────────────────────────────
-        if cleaned.startswith("search") or "search " in cleaned or "look up" in cleaned:
-            intent   = "search_web"
-            entities = {"query": cleaned}
         else:
-            intent, entities = self.fast_intent(cleaned)
+            # Core / actions path
+            action_response = self.actions.execute(intent, entities, raw_query=cleaned)
 
-        nlu_response = ""
-
-        if intent == "__handled__":
-            return ""
-
-        if not intent:
-            context    = self.memory.get_recent(5)
-            nlu_result = self.nlu.understand(cleaned, context)
-            confidence = nlu_result.get("confidence", 0.5)
-            if confidence < 0.5:
-                intent   = "chat"
-                entities = {}
-            else:
-                intent   = nlu_result.get("intent", "chat")
-                entities = nlu_result.get("entities", {})
-            nlu_response = nlu_result.get("response", "")
-
-        if intent == "chat" and ("search" in cleaned or "look up" in cleaned):
-            intent   = "search_web"
-            entities = {"query": cleaned}
-
-        # ── save_preference ───────────────────────────────────────────────────
-        if intent == "save_preference" and self.mnemosyne:
-            key   = entities.get("key", "")
-            value = entities.get("value", "")
-            if key and value:
-                self.mnemosyne.learn(key, value, source="user")
-                final_response = (
-                    f"Got it, I'll remember that your {key.replace('_', ' ')} is {value}."
-                )
-                print(f"Hestia: {final_response}")
-                self.tts.speak(final_response)
-                self.wake_detector.flush_audio_queue()
-                self.memory.add_interaction(cleaned, final_response, intent)
+            # Optional secondary enrichment from Mnemosyne
+            if "mnemosyne" in secondary and self.mnemosyne and confidence > 0.6:
                 try:
-                    self.mnemosyne.push(cleaned, final_response, intent)
+                    memory_result = self.mnemosyne.remember(cleaned)
+                    if memory_result and "don't have any relevant" not in memory_result:
+                        action_response = (action_response or "") + "\n" + memory_result
                 except Exception as e:
-                    log.debug("[Mnemosyne] Push error: %s", e)
-                return final_response
+                    log.debug("[Mnemosyne] Recall error: %s", e)
 
-        # ── Actions ───────────────────────────────────────────────────────────
-        action_response = self.actions.execute(intent, entities, raw_query=cleaned)
+            # Chat fallback via Ollama
+            if intent == "chat" and not action_response:
+                try:
+                    action_response = generate(
+                        CHAT_SYSTEM_PROMPT.format(query=cleaned),
+                        model=self.ollama_cfg.get("model", "mistral"),
+                        host=self.ollama_manager.host,
+                        port=self.ollama_manager.port,
+                    )
+                except Exception as e:
+                    log.debug("[Chat] Ollama error: %s", e)
+                    action_response = nlu_result.get("response", "") or "I'm not sure about that."
 
-        # ── Mnemosyne enrichment ──────────────────────────────────────────────
-        if intent == "get_user_info" and self.mnemosyne:
-            try:
-                memory_result = self.mnemosyne.remember(cleaned)
-                if memory_result and "don't have any relevant" not in memory_result:
-                    action_response = (action_response or "") + "\n" + memory_result
-            except Exception as e:
-                log.debug("[Mnemosyne] Recall error: %s", e)
+            final_response = action_response or nlu_result.get("response", "") or "I'm not sure about that."
 
-        # ── Chat fallback → Ollama ────────────────────────────────────────────
-        if intent == "chat" and not action_response:
-            chat_prompt = (
-                f"You are Hestia, a warm and witty personal assistant. "
-                f"Answer the following question concisely and accurately in 1-2 sentences. "
-                f"Do not use poetic language or metaphors. Just answer directly.\n\n"
-                f"Question: {cleaned}"
-            )
-            try:
-                action_response = generate(
-                    chat_prompt,
-                    model=self.ollama_cfg.get("model", "mistral"),
-                    host=self.ollama_manager.host,
-                    port=self.ollama_manager.port,
-                )
-            except Exception as e:
-                log.debug("[Chat] Ollama error: %s", e)
-                action_response = nlu_response or "I'm not sure about that, love."
-
-        # ── Final response ────────────────────────────────────────────────────
-        final_response = action_response or nlu_response or "I'm not sure about that."
-
+        # ── Step 5: Post-processing ───────────────────────────────────────────
         if intent == "save_name":
             name = self.memory.get_preference("user_name", "")
             if name:
                 final_response = f"{name}, what a lovely name. I won't forget it."
 
-        if "{" in final_response:
+        # Guard: if response is raw JSON, replace with neutral acknowledgement
+        try:
+            json.loads(final_response)
             final_response = "I've handled that for you."
+        except (json.JSONDecodeError, TypeError):
+            pass
 
         print(f"Hestia: {final_response}")
         self.tts.speak(final_response)
         self.wake_detector.flush_audio_queue()
+
+        # Single memory write — no duplicate logging across athena/mnemosyne/iris paths
         self.memory.add_interaction(cleaned, final_response, intent)
 
         if self.mnemosyne:
@@ -479,6 +477,7 @@ class Hestia:
         if "email" in t or "mail" in t or "inbox" in t:
             return "read_email", {"count": 5}
 
+        # Compound: time + weather answered together, marked as handled
         if time_match and weather_match:
             time_resp    = self.actions.execute("get_time", {}, raw_query=t)
             weather_resp = self.actions.execute("get_weather", {}, raw_query=t)
@@ -518,11 +517,7 @@ class Hestia:
             return "get_system_info", {}
 
         if any(p in t for p in ["note", "remember this", "jot this"]):
-            import re
-            cleaned = re.sub(
-                r'^(take a note|note down|remember this|jot this)\s*[:\-]?\s*',
-                '', t, flags=re.IGNORECASE,
-            ).strip()
+            cleaned = _NOTE_RE.sub('', t).strip()
             return "take_note", {"text": cleaned}
 
         if any(t.startswith(p) for p in ["what is ", "what are ", "how does ", "how do ", "explain ", "tell me about "]):
@@ -549,7 +544,8 @@ class Hestia:
                 if not text or len(text.strip()) < 2:
                     self.tts.speak("Say that again?")
                     continue
-                if any(w in text.lower() for w in ["bye", "exit", "stop", "shutdown"]):
+                # Exact-word check — avoids "don't stop the music" false triggers
+                if text.lower().strip() in EXIT_WORDS:
                     self.tts.speak("Okay, resting now.")
                     break
                 self.process_text(text)
@@ -570,7 +566,7 @@ class Hestia:
         try:
             while True:
                 user_input = input("> ")
-                if user_input.lower().strip() in ["quit", "exit", "bye", "goodbye", "good bye"]:
+                if user_input.lower().strip() in EXIT_WORDS | {"quit", "goodbye", "good bye"}:
                     break
                 self.process_text(user_input)
         except KeyboardInterrupt:

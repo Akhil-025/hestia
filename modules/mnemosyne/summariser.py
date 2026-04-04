@@ -35,19 +35,19 @@ class Summariser:
             "Return only valid JSON in the format: {\"summary\": \"...\", \"topic\": \"...\"}. "
             "No preamble, no explanation.\n\n" + joined
         )
-        llm_result = self.hestia_llm.generate(prompt)
-        if isinstance(llm_result, dict):
-            llm_text = llm_result.get("text", "")
-        else:
-            llm_text = llm_result
         try:
+            llm_result = self.hestia_llm._call_llm(prompt)
+            if isinstance(llm_result, dict):
+                llm_text = llm_result.get("text", "")
+            else:
+                llm_text = llm_result or ""
             parsed = json.loads(llm_text)
             summary = parsed.get("summary", "")
             topic = parsed.get("topic", "General")
         except Exception:
-            # Fallback: try to extract summary/topic heuristically
-            summary = llm_text.strip()
+            summary = ""
             topic = "General"
+
         if not summary:
             return False
         summary_id = self.db.add_summary(period_start, period_end, summary, topic, len(interactions))

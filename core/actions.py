@@ -182,9 +182,22 @@ class HestiaActions:
 
     def _get_weather(self, entities: dict) -> str:
         """Fetch current weather from Open-Meteo."""
+        
         location = self.memory.get_preference("location", "Mumbai")
-        # Hardcoded coordinates for Mumbai
-        lat, lon = 19.0760, 72.8777
+        CITY_COORDS = {
+            "mumbai":   (19.0760, 72.8777),
+            "delhi":    (28.6139, 77.2090),
+            "bangalore": (12.9716, 77.5946),
+            "bengaluru": (12.9716, 77.5946),
+            "chennai":  (13.0827, 80.2707),
+            "kolkata":  (22.5726, 88.3639),
+            "hyderabad": (17.3850, 78.4867),
+            "pune":     (18.5204, 73.8567),
+            "london":   (51.5074, -0.1278),
+            "new york": (40.7128, -74.0060),
+            "tokyo":    (35.6762, 139.6503),
+        }
+        lat, lon = CITY_COORDS.get(location.lower(), (19.0760, 72.8777))
 
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&wind_speed_unit=kmh"
         try:
