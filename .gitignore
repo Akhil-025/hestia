@@ -29,11 +29,9 @@ config/*.secret
 data/google_token.json
 
 # ========================
-# Data (keep structure, not contents)
+# Data (fully ignored)
 # ========================
-data/*
-!data/**/*.md
-!data/**/*.json
+data/
 
 # ========================
 # Models (large artifacts)
@@ -69,3 +67,4 @@ Thumbs.db
 
 # Google credentials
 config/google_credentials.json
+
