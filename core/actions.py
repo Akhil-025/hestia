@@ -25,57 +25,51 @@ class HestiaActions:
         self._browser = agent
 
     def execute(self, intent: str, entities: dict, raw_query: str = "") -> str:
-        """Dispatch intent to appropriate handler and emit action_done event."""
-        result = ""
 
+        _MODULE_OWNED = {
+            "get_time", "get_date", "get_weather", "set_reminder",
+            "read_email", "send_email", "list_events", "create_event",
+            "browser_action", "check_flight", "search_web",
+        }
+
+        if intent in _MODULE_OWNED:
+            import logging
+            logging.getLogger("hestia").warning(
+                "[Actions] Intent '%s' bypassed orchestrator — route via modules.", intent
+            )
+            return ""
+
+        result = None
 
         if intent == "save_name":
             result = self._save_name(entities)
-        elif intent == "get_time":
-            result = self._get_time()
-        elif intent == "get_date":
-            result = self._get_date()
-        elif intent == "get_weather":
-            result = self._get_weather(entities)
-        elif intent == "set_reminder":
-            result = self._set_reminder(entities)
+
         elif intent == "take_note":
             result = self._take_note(entities, raw_query)
+
         elif intent == "get_notes":
             result = self._get_notes()
+
         elif intent == "get_history":
             result = self._get_history(entities)
+
         elif intent == "get_user_info":
             result = self._get_user_info(entities)
+
         elif intent == "set_preference":
             result = self._set_preference(entities)
-        elif intent == "read_email":
-            result = self._read_email(entities)
-        elif intent == "send_email":
-            result = self._send_email(entities)
-        elif intent == "list_events":
-            result = self._list_events(entities)
-        elif intent == "create_event":
-            result = self._create_event(entities)
-        elif intent == "browser_action":
-            result = self._browser_action(entities, raw_query)
-        elif intent == "check_flight":
-            result = self._check_flight(entities)
+
         elif intent == "chat":
-            return ""
-            
+            result = ""
+
         else:
-            # Try registered skills before giving up
-            skill_result = SkillLoader.execute_skill(intent, entities, self.memory, raw_query)
-            if skill_result is not None:
-                result = skill_result
-            else:
-                result = "I'm not sure how to help with that yet."
+            result = SkillLoader.execute_skill(intent, entities, self.memory, raw_query)
 
         if result:
             bus.emit("action_done", {"intent": intent, "response": result})
-        return result
-        
+
+        return result or "I'm not sure how to help with that yet."
+
 
 
     def _browser_action(self, entities: dict, raw_query) -> str:

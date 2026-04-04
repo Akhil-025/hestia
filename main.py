@@ -37,7 +37,7 @@ from core.wake_word import WakeWordDetector
 from core.ollama_manager import OllamaManager
 from core.browser_agent import HestiaBrowserAgent
 from core.ollama_client import generate
-
+from modules.hestia.core_module import CoreModule
 from skills.base import SkillLoader
 from skills import browser_tasks
 
@@ -152,6 +152,12 @@ class Hestia:
         self.orchestrator = HestiaOrchestrator()
         self.orchestrator.register_hecate(self.hecate)
 
+        self.core_module = CoreModule(
+            actions=self.actions,
+            ollama_cfg=self.ollama_cfg,
+        )
+        self.orchestrator.register(self.core_module)
+
         # Register modules
         self.orchestrator.register(self.hecate)
         if self.athena: self.orchestrator.register(self.athena)
@@ -208,14 +214,6 @@ class Hestia:
         response = self.orchestrator.dispatch(cleaned, nlu_result)
 
         # Chat fallback if empty
-        if not response and nlu_result.get("intent") == "chat":
-            response = generate(
-                CHAT_SYSTEM_PROMPT.format(query=cleaned),
-                model=self.ollama_cfg.get("model", "mistral"),
-                host=self.ollama_manager.host,
-                port=self.ollama_manager.port,
-            )
-
         if not response:
             response = nlu_result.get("response", "") or "I'm not sure about that."
 
