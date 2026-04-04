@@ -1,4 +1,4 @@
-# HecateEngine: Decision engine for Hestia
+# hecate/engine.py
 
 class HecateEngine:
     def decide(self, query: str, nlu_result: dict, active_modules: list[str]) -> dict:
@@ -44,6 +44,17 @@ class HecateEngine:
                     primary = "mnemosyne"
                     reason = f"Matched Mnemosyne pattern: '{pat}'."
                     break
+
+
+        # Artemis triggers
+        if any(k in q for k in ["habit", "goal", "productivity", "streak"]):
+            if "artemis" in active_modules:
+                return {
+                    "primary": "artemis",
+                    "secondary": [],
+                    "confidence": 0.9,
+                    "reason": "Artemis keyword match."
+                }
 
         # Priority 4: Iris triggers
         if primary == "core" and "iris" in active_modules:

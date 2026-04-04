@@ -41,6 +41,7 @@ from core.ollama_client import generate
 from core.telegram_bot import HestiaTelegramBot
 from skills.base import SkillLoader
 from modules.hecate import HecateEngine
+from modules.artemis import ArtemisEngine
 
 log = logging.getLogger("hestia")
 
@@ -190,6 +191,12 @@ class Hestia:
             except Exception as e:
                 log.warning("[Iris] Failed to load: %s", e)
 
+
+        # Artemis
+        self.artemis = ArtemisEngine()
+        if self.artemis:
+            log.info("[Artemis] Habits/goals engine loaded.")
+
         # Hecate
         self.hecate = HecateEngine()
         log.info("[Hecate] Decision engine ready.")
@@ -199,6 +206,7 @@ class Hestia:
         if self.athena:    self.active_modules.append("athena")
         if self.mnemosyne: self.active_modules.append("mnemosyne")
         if self.iris:      self.active_modules.append("iris")
+        if self.artemis:   self.active_modules.append("artemis")
 
         # STT
         stt_cfg  = self.config.get("stt", {})
@@ -367,6 +375,7 @@ class Hestia:
         # ── Step 4: Execute routed handler ────────────────────────────────────
         final_response = ""
 
+
         if primary == "athena" and self.athena:
             try:
                 final_response = self.athena.query(cleaned)
@@ -401,6 +410,10 @@ class Hestia:
             except Exception as e:
                 log.debug("[Iris] Error: %s", e)
                 final_response = "I had trouble accessing your media files."
+
+        elif primary == "artemis" and self.artemis:
+            result = self.artemis.handle(intent, entities, {})
+            final_response = result.get("response", "")
 
         else:
             # Core / actions path
