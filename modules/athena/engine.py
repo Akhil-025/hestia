@@ -3,24 +3,52 @@ modules/athena/engine.py
 
 AthenaEngine — the single public entry point Hestia calls.
 """
+from modules.base import BaseModule   
 from modules.athena.local_rag import MergedLocalRAG
 from modules.athena.hestia_llm_adapter import HestiaLLMAdapter
 from modules.athena.services.query_service import QueryService
 
 
-class AthenaEngine:
-    """
-    Usage inside Hestia:
+class AthenaEngine(BaseModule): 
+    name = "athena"
 
-        from modules.athena.engine import AthenaEngine
-        athena = AthenaEngine(hestia_llm=self.nlu.llm)
-        answer = athena.query("explain entropy from my notes")
-    """
+    _INTENTS = {
+        "query_documents", "search_notes", "explain_from_docs",
+        "search_documents", "chat",   # "chat" only when routed here by Hecate
+    }
 
     def __init__(self, hestia_llm) -> None:
         self.rag           = MergedLocalRAG()
         self.llm           = HestiaLLMAdapter(hestia_llm)
         self.query_service = QueryService(self.rag, self.llm)
+
+    def can_handle(self, intent: str) -> bool:              # ADD
+        return intent in self._INTENTS
+
+    def handle(self, intent: str, entities: dict, context: dict) -> dict:   # ADD
+        query = (
+            entities.get("query")
+            or entities.get("raw_query")
+            or context.get("raw_query", "")
+        )
+        if not query:
+            return {"response": "What would you like me to look up?", "data": {}, "confidence": 0.0}
+        try:
+            result = self.query_service.execute(query)
+            return {
+                "response":   result.answer,
+                "data":       {"sources": [s.to_dict() for s in result.sources]},
+                "confidence": 0.9,
+            }
+        except Exception as e:
+            return {"response": "I had trouble searching your documents.", "data": {}, "confidence": 0.0}
+
+    def get_context(self) -> dict:                          # ADD
+        try:
+            s = self.stats()
+            return {"athena_chunks": s.get("total_chunks", 0), "athena_subjects": s.get("subjects", [])}
+        except Exception:
+            return {}
 
     def query(self, q: str) -> str:
         """Run the full RAG pipeline and return the answer string."""

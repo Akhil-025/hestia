@@ -1,98 +1,108 @@
-# hecate/engine.py
+# modules/hecate/engine.py  
 
-class HecateEngine:
-    def decide(self, query: str, nlu_result: dict, active_modules: list[str]) -> dict:
-        # Decide which module(s) should handle the query
-        q = query.lower().strip()
-        intent = nlu_result.get("intent", "chat")
-        confidence = nlu_result.get("confidence", 0.5)
-        primary = "core"
-        secondary = []
-        reason = ""
+from modules.base import BaseModule
 
-        # Priority 1: NLU intent is web/search/browser
-        if intent in {"search_web", "browser_action", "check_flight"}:
-            primary = "core"
-            reason = f"Intent '{intent}' is always handled by core."
-            return {
-                "primary": primary,
-                "secondary": [],
-                "confidence": 1.0,
-                "reason": reason
+
+class HecateEngine(BaseModule):
+    """
+    Decision engine. The only component allowed to perform routing.
+    Hestia calls decide() once per query. No module calls decide() on another module.
+    """
+    name = "hecate"
+
+    # Moved verbatim from main.py — single source of truth for trigger matching
+    _ATHENA_TRIGGERS = [
+        "from my notes", "in my documents", "from my files",
+        "according to my notes", "what does my", "explain from",
+        "in my notes", "from my docs", "search my documents",
+    ]
+    _MNEMOSYNE_TRIGGERS = [
+        "do you remember", "what do you know about me",
+        "what are my goals", "remind me", "what did we talk about",
+        "what have i told you", "my goals", "forget that",
+    ]
+    _IRIS_TRIGGERS = [
+        "in my photos", "in my pictures", "in my images", "in my videos",
+        "in my media", "in my gallery", "from my photos", "from my pictures",
+        "find photo", "find image", "find video", "find picture",
+        "search my photos", "analyse my photos", "ingest media",
+        "ingest photos", "describe my photos",
+    ]
+    _ARTEMIS_KEYWORDS = {"habit", "goal", "productivity", "streak"}
+
+    _CHRONOS_INTENTS  = {"get_time", "get_date", "get_weather", "set_reminder"}
+    _HERMES_INTENTS   = {"read_email", "send_email", "list_events", "create_event"}
+    _HEPHAESTUS_INTENTS = {"search_web", "browser_action", "check_flight"}
+
+    def can_handle(self, intent: str) -> bool:
+        return True  # Hecate is consulted for all routing; it does not handle content
+
+    def handle(self, intent: str, entities: dict, context: dict) -> dict:
+        raise NotImplementedError(
+            "HecateEngine.handle() must not be called directly. Use decide()."
+        )
+
+    def get_context(self) -> dict:
+        return {}
+
+    def decide(self, query: str, nlu_result: dict, active_modules: list) -> dict:
+        """
+        Single routing decision. Returns:
+            {
+                "primary":    str,        # module name to dispatch to
+                "secondary":  list[str],  # modules to call get_context() on first
+                "confidence": float,
+                "reason":     str,
             }
+        """
+        q          = query.lower().strip()
+        intent     = nlu_result.get("intent", "chat")
+        confidence = float(nlu_result.get("confidence", 0.5))
 
-        # Priority 2: Athena triggers
-        athena_patterns = [
-            "from my notes", "in my documents", "from my files", "explain from",
-            "in my notes", "from my docs", "search my documents"
-        ]
-        if "athena" in active_modules:
-            for pat in athena_patterns:
-                if pat in q:
-                    primary = "athena"
-                    reason = f"Matched Athena pattern: '{pat}'."
-                    break
+        # --- Tier 1: Hard-wired by intent class (no ambiguity) ---
+        if intent in self._CHRONOS_INTENTS and "chronos" in active_modules:
+            return self._route("chronos", [], 1.0, f"intent '{intent}' → chronos")
 
-        # Priority 3: Mnemosyne triggers
-        if primary == "core" and "mnemosyne" in active_modules:
-            mnemosyne_patterns = [
-                "do you remember", "what do you know about me", "what have i told you",
-                "my goals", "what did we talk"
-            ]
-            for pat in mnemosyne_patterns:
-                if pat in q:
-                    primary = "mnemosyne"
-                    reason = f"Matched Mnemosyne pattern: '{pat}'."
-                    break
+        if intent in self._HERMES_INTENTS and "hermes" in active_modules:
+            return self._route("hermes", [], 1.0, f"intent '{intent}' → hermes")
 
+        if intent in self._HEPHAESTUS_INTENTS and "hephaestus" in active_modules:
+            return self._route("hephaestus", [], 1.0, f"intent '{intent}' → hephaestus")
 
-        # Artemis triggers
-        if any(k in q for k in ["habit", "goal", "productivity", "streak"]):
-            if "artemis" in active_modules:
-                return {
-                    "primary": "artemis",
-                    "secondary": [],
-                    "confidence": 0.9,
-                    "reason": "Artemis keyword match."
-                }
+        # --- Tier 2: Text trigger matching ---
+        if "athena" in active_modules and self._match(q, self._ATHENA_TRIGGERS):
+            return self._route("athena", ["mnemosyne"] if "mnemosyne" in active_modules else [], 1.0, "athena trigger")
 
-        # Priority 4: Iris triggers
-        if primary == "core" and "iris" in active_modules:
-            iris_patterns = [
-                "photo", "picture", "image", "my photos", "my pictures", "find media", "ingest"
-            ]
-            for pat in iris_patterns:
-                if pat in q:
-                    primary = "iris"
-                    reason = f"Matched Iris pattern: '{pat}'."
-                    break
+        if "mnemosyne" in active_modules and self._match(q, self._MNEMOSYNE_TRIGGERS):
+            return self._route("mnemosyne", [], 1.0, "mnemosyne trigger")
 
-        # Priority 5: High-confidence NLU for a known non-chat intent
-        if primary == "core" and confidence >= 0.85 and intent != "chat":
-            reason = f"High-confidence NLU intent '{intent}' ({confidence:.2f}) routed to core."
+        if "iris" in active_modules and self._match(q, self._IRIS_TRIGGERS):
+            return self._route("iris", [], 1.0, "iris trigger")
 
+        # --- Tier 3: Keyword matching ---
+        if "artemis" in active_modules and any(k in q for k in self._ARTEMIS_KEYWORDS):
+            return self._route("artemis", [], 0.9, "artemis keyword match")
 
-        # Priority 6: Low-confidence → force chat
-        if primary == "core" and confidence < 0.5:
-            nlu_result["intent"] = "chat"
-            reason = f"Low NLU confidence ({confidence:.2f}), falling back to chat."
-            confidence = 0.4
+        # --- Tier 4: High-confidence NLU non-chat intent ---
+        if confidence >= 0.85 and intent != "chat":
+            return self._route("core", [], confidence, f"high-confidence intent '{intent}'")
 
-        # Default
-        if not reason:
-            reason = f"Defaulted to core."
+        # --- Tier 5: Low-confidence → force chat ---
+        if confidence < 0.5:
+            return self._route("core", [], 0.4, "low confidence → chat fallback")
 
-        # Secondary enrichment
-        if primary == "core" and intent == "get_user_info" and "mnemosyne" in active_modules:
-            secondary.append("mnemosyne")
-        if primary == "athena" and "mnemosyne" in active_modules:
-            secondary.append("mnemosyne")
-        # Never add primary to secondary
-        secondary = [m for m in secondary if m != primary]
+        return self._route("core", [], confidence, "default core")
 
+    @staticmethod
+    def _match(text: str, triggers: list) -> bool:
+        import re
+        return any(re.search(r"\b" + re.escape(t) + r"\b", text) for t in triggers)
+
+    @staticmethod
+    def _route(primary: str, secondary: list, confidence: float, reason: str) -> dict:
         return {
-            "primary": primary,
-            "secondary": secondary,
-            "confidence": float(confidence),
-            "reason": reason
+            "primary":    primary,
+            "secondary":  secondary,
+            "confidence": confidence,
+            "reason":     reason,
         }

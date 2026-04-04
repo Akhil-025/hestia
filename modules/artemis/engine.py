@@ -1,8 +1,9 @@
 # artemis/engine.py
 
+from modules.base import BaseModule  
 from .tracker import ArtemisTracker
 
-class ArtemisEngine:
+class ArtemisEngine(BaseModule):     
     name = "artemis"
 
     def __init__(self):
@@ -14,7 +15,7 @@ class ArtemisEngine:
             "add_goal", "update_goal", "list_goals", "productivity_summary"
         }
 
-    def handle(self, intent: str, entities: dict, context: dict):
+    def handle(self, intent: str, entities: dict, context: dict) -> dict:
         response = ""
         data = {}
         confidence = 0.9
@@ -90,6 +91,20 @@ class ArtemisEngine:
             response = "Artemis can't handle that request."
             confidence = 0.5
         return {"response": response, "data": data, "confidence": confidence}
+    
+
+    def get_context(self) -> dict:               # ADD
+        """Expose current habit/goal state for Hecate and secondary enrichment."""
+        try:
+            habits = self.tracker.get_habits()
+            goals  = self.tracker.get_goals()
+            return {
+                "habit_count":    len(habits),
+                "active_goals":   [k for k, v in goals.items() if v.get("status") == "active"],
+                "avg_streak":     self.analyze().get("avg_streak", 0),
+            }
+        except Exception:
+            return {}
     
     def analyze(self):
         habits = self.tracker.get_habits()

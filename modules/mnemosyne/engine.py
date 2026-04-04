@@ -6,7 +6,7 @@ MnemosyneEngine: unified entry point for memory, goals, and summarisation.
 import logging
 from datetime import datetime
 from typing import Optional
-
+from modules.base import BaseModule  
 from .config import get_config
 from .db import MnemosyneDB
 
@@ -26,7 +26,14 @@ except ImportError:
     logger.warning("Summariser not available; summarisation disabled.")
     summariser_available = False
 
-class MnemosyneEngine:
+class MnemosyneEngine(BaseModule):           
+    name = "mnemosyne"
+
+    _INTENTS = {
+        "remember", "recall", "get_facts", "learn_fact",
+        "forget_fact", "add_goal", "get_goals", "complete_goal",
+    }
+    
     def __init__(self, hestia_llm):
         self.config = get_config()
         self.db = MnemosyneDB(self.config.db_path)
@@ -38,6 +45,47 @@ class MnemosyneEngine:
         self.summariser = None
         if summariser_available:
             self.summariser = Summariser(self.db, self.vector_store, hestia_llm)
+
+    def can_handle(self, intent: str) -> bool:    #
+        return intent in self._INTENTS
+
+    def handle(self, intent: str, entities: dict, context: dict) -> dict:   
+        query = (
+            entities.get("query")
+            or entities.get("raw_query")
+            or context.get("raw_query", "")
+        )
+        if intent in ("remember", "recall"):
+            response = self.remember(query)
+            return {"response": response, "data": {}, "confidence": 0.85}
+        elif intent == "learn_fact":
+            key   = entities.get("key", "")
+            value = entities.get("value", "")
+            if key and value:
+                self.learn(key, value)
+                return {"response": f"Got it — I'll remember your {key}.", "data": {}, "confidence": 0.95}
+            return {"response": "What should I remember?", "data": {}, "confidence": 0.0}
+        elif intent == "forget_fact":
+            key = entities.get("key", "")
+            self.forget(key)
+            return {"response": f"Forgotten: {key}.", "data": {}, "confidence": 0.9}
+        elif intent == "add_goal":
+            text = entities.get("goal") or entities.get("text", "")
+            return {"response": self.add_goal(text), "data": {}, "confidence": 0.9}
+        elif intent == "get_goals":
+            return {"response": self.get_goals(), "data": {}, "confidence": 0.9}
+        return {"response": "I don't have anything on that.", "data": {}, "confidence": 0.0}
+
+    def get_context(self) -> dict:               
+        try:
+            s = self.status()
+            return {
+                "mnemosyne_facts":   s.get("facts", 0),
+                "mnemosyne_goals":   s.get("active_goals", 0),
+                "mnemosyne_summaries": s.get("summaries", 0),
+            }
+        except Exception:
+            return {}
 
     def push(self, user_text: str, hestia_response: str, intent: str, source_device: str = "hestia") -> None:
         self.db.push_interaction(user_text, hestia_response, intent, source_device)
