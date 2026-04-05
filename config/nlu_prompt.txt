@@ -18,7 +18,12 @@ save_name, get_user_info, set_preference,
 chat,
 iris_search, iris_ingest,
 athena_search,
-add_goal, get_goals, update_goal
+add_goal, get_goals, update_goal,
+ares_analyse_risk, ares_swot_analysis, ares_strategic_plan, ares_decision_support,
+apollo_log_workout, apollo_track_sleep, apollo_log_mood, apollo_log_health, apollo_get_health_summary,
+orpheus_write_poem, orpheus_brainstorm, orpheus_creative_prompt, orpheus_generate_lyrics,
+dionysus_recommend_movie, dionysus_find_restaurant, dionysus_recommend_music, dionysus_plan_outing,
+pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report
 
 ---
 
@@ -75,6 +80,87 @@ User: update goal publish research paper to 50 percent
 {"intent": "update_goal", "entities": {"name": "publish research paper", "progress": 50}, "response": "Updating goal.", "confidence": 0.95}
 
 ---
+
+
+---
+
+# ---- ARES (STRATEGY / RISK) ----
+
+User: analyse the risks of starting a business
+{"intent": "ares_analyse_risk", "entities": {"topic": "starting a business"}, "response": "Analysing risks.", "confidence": 0.92}
+
+User: do a SWOT analysis for my CFD project
+{"intent": "ares_swot_analysis", "entities": {"topic": "CFD project"}, "response": "Running SWOT analysis.", "confidence": 0.93}
+
+User: help me make a strategic plan for the semester
+{"intent": "ares_strategic_plan", "entities": {"topic": "semester"}, "response": "Building your strategic plan.", "confidence": 0.91}
+
+User: I need help making a decision about switching jobs
+{"intent": "ares_decision_support", "entities": {"topic": "switching jobs"}, "response": "Let me help you think this through.", "confidence": 0.90}
+
+---
+
+# ---- APOLLO (HEALTH) ----
+
+User: log my workout today
+{"intent": "apollo_log_workout", "entities": {}, "response": "Logging your workout.", "confidence": 0.93}
+
+User: how did I sleep last night
+{"intent": "apollo_track_sleep", "entities": {}, "response": "Checking your sleep log.", "confidence": 0.91}
+
+User: log my mood as good
+{"intent": "apollo_log_mood", "entities": {"mood": "good"}, "response": "Mood logged.", "confidence": 0.92}
+
+User: give me a health summary
+{"intent": "apollo_get_health_summary", "entities": {}, "response": "Fetching your health summary.", "confidence": 0.93}
+
+---
+
+# ---- ORPHEUS (CREATIVE) ----
+
+User: write me a poem about the ocean
+{"intent": "orpheus_write_poem", "entities": {"topic": "ocean"}, "response": "Writing a poem.", "confidence": 0.94}
+
+User: brainstorm ideas for my project
+{"intent": "orpheus_brainstorm", "entities": {}, "response": "Let's brainstorm.", "confidence": 0.91}
+
+User: give me a creative writing prompt
+{"intent": "orpheus_creative_prompt", "entities": {}, "response": "Here's a prompt.", "confidence": 0.90}
+
+User: generate lyrics about missing home
+{"intent": "orpheus_generate_lyrics", "entities": {"topic": "missing home"}, "response": "Generating lyrics.", "confidence": 0.92}
+
+---
+
+# ---- DIONYSUS (ENTERTAINMENT) ----
+
+User: recommend a movie for tonight
+{"intent": "dionysus_recommend_movie", "entities": {}, "response": "Finding a movie for you.", "confidence": 0.93}
+
+User: suggest a restaurant near me
+{"intent": "dionysus_find_restaurant", "entities": {}, "response": "Looking for restaurants.", "confidence": 0.91}
+
+User: recommend some music for studying
+{"intent": "dionysus_recommend_music", "entities": {"mood": "studying"}, "response": "Finding study music.", "confidence": 0.92}
+
+User: help me plan an outing this weekend
+{"intent": "dionysus_plan_outing", "entities": {"time": "weekend"}, "response": "Planning your outing.", "confidence": 0.90}
+
+---
+
+# ---- PLUTO (FINANCE) ----
+
+User: log an expense of 500 rupees for groceries
+{"intent": "pluto_log_expense", "entities": {"amount": 500, "category": "groceries"}, "response": "Expense logged.", "confidence": 0.94}
+
+User: give me my budget summary
+{"intent": "pluto_get_budget_summary", "entities": {}, "response": "Fetching your budget summary.", "confidence": 0.93}
+
+User: track my investment in index funds
+{"intent": "pluto_track_investment", "entities": {"type": "index funds"}, "response": "Tracking your investment.", "confidence": 0.91}
+
+User: show me my spending report
+{"intent": "pluto_spending_report", "entities": {}, "response": "Generating spending report.", "confidence": 0.92}
 
 # ---- CORE ----
 
