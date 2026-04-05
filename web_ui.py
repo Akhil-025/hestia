@@ -99,7 +99,7 @@ class HestiaWebUI:
                         "query": r["query"],
                         "response": r["response"],
                         "intent": r["intent"],
-                        "pushed_at": r.get("pushed_at"),  # NEW
+                        "timestamp": r.get("pushed_at"),
                     }
                     for r in rows
                 ]
@@ -124,7 +124,7 @@ class HestiaWebUI:
                         "query": r["query"],
                         "response": r["response"],
                         "intent": r["intent"],
-                        "pushed_at": r.get("pushed_at"),  # NEW
+                        "timestamp": r.get("pushed_at"),
                     }
                     for r in rows
                 ]
