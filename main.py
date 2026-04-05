@@ -171,7 +171,10 @@ class Hestia:
             memory=self.mnemosyne,
             ollama_cfg=self.ollama_cfg,
         ))
-        self.orchestrator.register(OrpheusEngine())
+        self.orchestrator.register(OrpheusEngine(
+            ollama_cfg=self.ollama_cfg,
+            memory=self.mnemosyne,
+        ))
         self.orchestrator.register(DionysusEngine(
             ollama_cfg=self.ollama_cfg,
             browser_agent=self.browser_agent,
