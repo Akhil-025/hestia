@@ -173,18 +173,3 @@ class MnemosyneEngine(BaseModule):
             "active_goals": active_goals_count,
             "unsummarised_interactions": unsummarised_count,
         }
-
-    def add_interaction(self, q, r, i):
-        self.memory.add_interaction(q, r, i)
-
-    def get_recent(self, n=5):
-        return self.memory.get_recent(n)
-
-    def set_preference(self, k, v):
-        self.memory.set_preference(k, v)
-
-    def get_preference(self, k, d=None):
-        return self.memory.get_preference(k, d)
-
-    def get_all_preferences(self):
-        return self.memory.get_all_preferences()

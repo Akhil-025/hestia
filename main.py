@@ -30,8 +30,6 @@ import yaml
 from core.stt import HestiaSTT
 from core.tts import HestiaTTS
 from core.nlu import HestiaNLU
-from core.actions import HestiaActions
-from core.memory import HestiaMemory
 from core.google_agent import HestiaGoogleAgent
 from core.wake_word import WakeWordDetector
 from core.ollama_manager import OllamaManager
@@ -39,7 +37,7 @@ from core.browser_agent import HestiaBrowserAgent
 from core.ollama_client import generate
 from modules.hestia.core_module import CoreModule
 
-
+from modules.mnemosyne.engine import MnemosyneEngine
 from modules.hecate import HecateEngine
 from modules.artemis import ArtemisEngine
 from core.event_bus import bus
@@ -47,6 +45,11 @@ from modules.hestia.orchestrator import HestiaOrchestrator
 from modules.chronos.engine import ChronosEngine
 from modules.hermes.engine import HermesEngine
 from modules.hephaestus.engine import HephaestusEngine
+from modules.apollo import ApolloEngine
+from modules.ares import AresEngine
+from modules.orpheus import OrpheusEngine
+from modules.dionysus import DionysusEngine
+from modules.pluto import PlutoEngine
 
 # ── Constants ────────────────────────────────────────────────────────
 CORE_INTENTS = {
@@ -85,8 +88,7 @@ class Hestia:
 
         # Memory + Actions
         db_path = self.config.get("database", {}).get("path", "data/hestia.db")
-        self.memory = HestiaMemory(db_path)
-        self.actions = HestiaActions(self.memory)
+        self.memory = None  # temporary placeholder
 
         # Ollama
         ollama_cfg = self.config.get("ollama", {})
@@ -120,8 +122,7 @@ class Hestia:
 
         self.mnemosyne = None
         if self.config.get("mnemosyne", {}).get("enabled", False):
-            from modules.mnemosyne.engine import MnemosyneEngine
-            self.mnemosyne = MnemosyneEngine(self.nlu)
+            self.mnemosyne = MnemosyneEngine(self.llm if self.athena else self.nlu)
 
         if self.mnemosyne:
             mn = self.mnemosyne
@@ -130,6 +131,9 @@ class Hestia:
                 data["response"],
                 data["intent"]
             ))
+        if self.mnemosyne:
+            self.memory = self.mnemosyne  # TEMP alias (to be removed)
+            self.mnemosyne_engine = self.mnemosyne
 
         self.iris = None
         if self.config.get("iris", {}).get("enabled", False):
@@ -141,7 +145,6 @@ class Hestia:
 
         # Browser + Google
         self.browser_agent = HestiaBrowserAgent()
-        self.actions.set_browser_agent(self.browser_agent)
 
         google_cfg = self.config.get("google", {})
         self.google_agent = None
@@ -150,27 +153,21 @@ class Hestia:
                 credentials_path=google_cfg.get("credentials_path"),
                 token_path=google_cfg.get("token_path"),
             )
-            if self.google_agent.authenticate():
-                self.actions.set_google_agent(self.google_agent)
 
         # ── ORCHESTRATOR (CORE CHANGE) ───────────────────────────────
         self.orchestrator = HestiaOrchestrator()
         self.orchestrator.register_hecate(self.hecate)
 
-        self.core_module = CoreModule(
-            actions=self.actions,
-            ollama_cfg=self.ollama_cfg,
-        )
+        self.core_module = CoreModule(memory=self.mnemosyne_engine, ollama_cfg=self.ollama_cfg)
         self.orchestrator.register(self.core_module)
 
-        # Register modules
+
         if self.athena: self.orchestrator.register(self.athena)
         if self.mnemosyne: self.orchestrator.register(self.mnemosyne)
         if self.iris: self.orchestrator.register(self.iris)
         self.orchestrator.register(self.artemis)
 
-        # New modules
-        self.chronos = ChronosEngine(memory=self.memory)
+        self.chronos = ChronosEngine(memory=self.mnemosyne_engine)
         self.orchestrator.register(self.chronos)
 
         if self.google_agent:
@@ -179,6 +176,12 @@ class Hestia:
 
         self.hephaestus = HephaestusEngine(self.browser_agent)
         self.orchestrator.register(self.hephaestus)
+
+        self.orchestrator.register(ApolloEngine())
+        self.orchestrator.register(AresEngine())
+        self.orchestrator.register(OrpheusEngine())
+        self.orchestrator.register(DionysusEngine())
+        self.orchestrator.register(PlutoEngine())
 
         # STT + TTS
         self.stt = HestiaSTT()
@@ -196,7 +199,7 @@ class Hestia:
         cleaned = _FILLER_RE.sub('', text.lower().strip()).strip()
         print(f"You: {cleaned}")
 
-        context = self.memory.get_recent(5)
+        context = self.mnemosyne.get_recent(5)
         nlu_result = self.nlu.understand(cleaned, context)
 
         # ── SINGLE ENTRY POINT ───────────────────────────────
@@ -216,8 +219,6 @@ class Hestia:
         print(f"Hestia: {response}")
         self.tts.speak(response)
         self.wake_detector.flush_audio_queue()
-
-        self.memory.add_interaction(cleaned, response, nlu_result.get("intent", "chat"))
 
         bus.emit("interaction_logged", {
             "query": cleaned,

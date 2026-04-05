@@ -153,3 +153,37 @@ class MnemosyneDB:
         )
         row = cur.fetchone()
         return row["chroma_id"] if row else None
+    
+    def get_recent_interactions(self, limit: int = 5):
+        cur = self._conn.execute(
+            """
+            SELECT user_text, hestia_response, intent
+            FROM interaction_log
+            ORDER BY id DESC LIMIT ?
+            """,
+            (limit,)
+        )
+        rows = cur.fetchall()
+        result = [
+            {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"]}
+            for r in rows
+        ]
+        result.reverse()
+        return result
+
+
+    def get_by_intent(self, intent: str, limit: int = 10):
+        cur = self._conn.execute(
+            """
+            SELECT user_text, hestia_response, intent
+            FROM interaction_log
+            WHERE intent = ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (intent, limit)
+        )
+        rows = cur.fetchall()
+        return [
+            {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"]}
+            for r in rows
+        ]

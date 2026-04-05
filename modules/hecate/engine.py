@@ -82,6 +82,23 @@ class HecateEngine(BaseModule):
         # --- Tier 3: Keyword matching ---
         if "artemis" in active_modules and any(k in q for k in self._ARTEMIS_KEYWORDS):
             return self._route("artemis", [], 0.9, "artemis keyword match")
+        
+        # --- Tier X: New module routing ---
+
+        if intent.startswith("apollo_") and "apollo" in active_modules:
+            return self._route("apollo", [], 0.95, f"intent '{intent}' → apollo")
+
+        if intent.startswith("ares_") and "ares" in active_modules:
+            return self._route("ares", [], 0.95, f"intent '{intent}' → ares")
+
+        if intent.startswith("orpheus_") and "orpheus" in active_modules:
+            return self._route("orpheus", [], 0.95, f"intent '{intent}' → orpheus")
+
+        if intent.startswith("dionysus_") and "dionysus" in active_modules:
+            return self._route("dionysus", [], 0.95, f"intent '{intent}' → dionysus")
+
+        if intent.startswith("pluto_") and "pluto" in active_modules:
+            return self._route("pluto", [], 0.95, f"intent '{intent}' → pluto")
 
         # --- Tier 4: High-confidence NLU non-chat intent ---
         if confidence >= 0.85 and intent != "chat":

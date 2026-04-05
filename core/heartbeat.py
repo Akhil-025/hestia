@@ -5,13 +5,7 @@ import time
 import os
 import sys
 from datetime import datetime
-from typing import Optional, TYPE_CHECKING
-
 from core.event_bus import bus
-
-if TYPE_CHECKING:
-    from core.memory_summariser import MemorySummariser
-
 
 class HestiaHeartbeat:
     """
@@ -19,9 +13,9 @@ class HestiaHeartbeat:
     using an event-driven architecture.
     """
 
-    def __init__(self, interval: int = 1800, summariser: Optional["MemorySummariser"] = None):
+    def __init__(self, interval: int = 1800, mnemosyne=None):
         self.interval = interval
-        self.summariser = summariser
+        self.mnemosyne = mnemosyne
         self._running = False
         self._thread = threading.Thread(target=self._tick, daemon=True)
 
@@ -65,9 +59,9 @@ class HestiaHeartbeat:
         # Nightly summary
         if "nightly summary" in task_lower:
             if 0 <= now.hour <= 5:
-                if self.summariser:
-                    result = self.summariser.run()
-                    print(f"[Heartbeat] Nightly summary done: {result}", file=sys.stderr)
+                if self.mnemosyne and self.mnemosyne.summariser:
+                    bus.emit("mnemosyne_summarise", {})
+                    print("[Heartbeat] Nightly summary done", file=sys.stderr)
                 return
 
         # Morning brief trigger

@@ -23,7 +23,6 @@ class ChronosEngine(BaseModule):
     }
 
     def __init__(self, memory=None):
-        # memory = HestiaMemory reference for location preference
         self._memory = memory
 
     def can_handle(self, intent: str) -> bool:
