@@ -172,7 +172,11 @@ class Hestia:
             ollama_cfg=self.ollama_cfg,
         ))
         self.orchestrator.register(OrpheusEngine())
-        self.orchestrator.register(DionysusEngine())
+        self.orchestrator.register(DionysusEngine(
+            ollama_cfg=self.ollama_cfg,
+            browser_agent=self.browser_agent,
+            memory=self.mnemosyne,
+        ))
         self.orchestrator.register(PlutoEngine(ollama_cfg=self.ollama_cfg))
 
         # STT + TTS
