@@ -166,7 +166,7 @@ class Hestia:
         self.hephaestus = HephaestusEngine(self.browser_agent)
         self.orchestrator.register(self.hephaestus)
 
-        self.orchestrator.register(ApolloEngine())
+        self.orchestrator.register(ApolloEngine(ollama_cfg=self.ollama_cfg))
         self.orchestrator.register(AresEngine(
             memory=self.mnemosyne,
             ollama_cfg=self.ollama_cfg,
