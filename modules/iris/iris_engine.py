@@ -42,7 +42,7 @@ class IrisEngine(BaseModule):
 
 
     def can_handle(self, intent: str) -> bool:   
-        return intent in {"iris_search", "iris_ingest", "iris_analyse", "iris_status"}
+        return intent in {"iris_search", "iris_ingest", "iris_analyse", "iris_status", "iris_query"}
 
     def handle(self, intent: str, entities: dict, context: dict) -> dict:   
         raw = entities.get("raw_query", context.get("raw_query", "")).lower()

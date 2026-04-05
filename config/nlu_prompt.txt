@@ -37,6 +37,26 @@ User: store this document
 
 # ---- CORE ----
 
+User: remember that my favorite subject is thermodynamics
+Intent: learn_fact
+Entities: { "key": "favorite_subject", "value": "thermodynamics" }
+
+User: what is my favorite subject
+Intent: get_user_info
+Entities: { "key": "favorite_subject" }
+
+User: add goal finish CFD project
+Intent: add_goal
+Entities: { "goal": "finish CFD project" }
+
+User: what are my goals
+Intent: get_goals
+Entities: {}
+
+User: forget my favorite subject
+Intent: forget_fact
+Entities: { "key": "favorite_subject" }
+
 User: what time is it
 {"intent": "get_time", "entities": {}, "response": "Give me just a second, darling~", "confidence": 0.98}
 

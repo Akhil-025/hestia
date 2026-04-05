@@ -14,7 +14,7 @@ class AthenaEngine(BaseModule):
 
     _INTENTS = {
         "query_documents", "search_notes", "explain_from_docs",
-        "search_documents", "chat",   # "chat" only when routed here by Hecate
+        "search_documents", "chat", "iris_search", "iris_query",
     }
 
     def __init__(self, hestia_llm) -> None:

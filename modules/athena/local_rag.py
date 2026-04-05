@@ -249,8 +249,6 @@ class MergedLocalRAG:
                 "total_pages":  chunk.get("total_pages"),
             })
 
-        print("[DEBUG CHUNK]", documents[:3])
-
         return ids, documents, metadatas
 
     def ingest_directory(

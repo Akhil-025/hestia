@@ -10,7 +10,7 @@ class CoreModule(BaseModule):
 
     _INTENTS = {
         "save_name", "take_note", "get_notes",
-        "get_history", "get_user_info", "set_preference",
+        "get_history", "set_preference",
         "get_system_info", "chat"
     }
 
@@ -143,19 +143,6 @@ class CoreModule(BaseModule):
 
         return {"response": body, "data": {"history": recent}, "confidence": 0.9}
 
-    def _get_user_info(self) -> dict:
-        facts = self._memory.db.get_all_facts()
-        prefs = {f["key"]: f["value"] for f in facts}
-
-        if not prefs:
-            return {"response": "I don't know much about you yet.", "data": {}, "confidence": 0.9}
-
-        body = "Here's what I know about you:\n" + "\n".join(
-            f"- {k.replace('_', ' ').capitalize()}: {v}"
-            for k, v in prefs.items()
-        )
-
-        return {"response": body, "data": {"preferences": prefs}, "confidence": 0.9}
 
     def _set_preference(self, entities: dict) -> dict:
         key = entities.get("key", "")

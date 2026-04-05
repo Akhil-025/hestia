@@ -80,7 +80,11 @@ class HecateEngine(BaseModule):
             return self._route("iris", [], 1.0, "iris trigger")
 
         # --- Tier 3: Keyword matching ---
-        if "artemis" in active_modules and any(k in q for k in self._ARTEMIS_KEYWORDS):
+        if (
+            "artemis" in active_modules
+            and any(k in q for k in self._ARTEMIS_KEYWORDS)
+            and intent not in {"add_goal", "get_goals"}
+        ):
             return self._route("artemis", [], 0.9, "artemis keyword match")
         
         # --- Tier X: New module routing ---
@@ -99,6 +103,22 @@ class HecateEngine(BaseModule):
 
         if intent.startswith("pluto_") and "pluto" in active_modules:
             return self._route("pluto", [], 0.95, f"intent '{intent}' → pluto")
+        
+
+        # --- IRIS ROUTING FIX ---
+        if intent in {
+            "iris_search",
+            "iris_ingest",
+            "iris_analyse",
+            "iris_query",
+            "iris_status"
+        } and "iris" in active_modules:
+            return self._route("iris", [], 0.95, f"intent '{intent}' → iris")
+        
+        # --- MNEMOSYNE ROUTING FIX ---
+        if intent in {"get_user_info", "learn_fact", "forget_fact", "add_goal", "get_goals"} \
+                and "mnemosyne" in active_modules:
+            return self._route("mnemosyne", [], 0.95, f"intent '{intent}' → mnemosyne")
 
         # --- Tier 4: High-confidence NLU non-chat intent ---
         if confidence >= 0.85 and intent != "chat":

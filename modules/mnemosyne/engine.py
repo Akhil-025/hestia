@@ -31,7 +31,7 @@ class MnemosyneEngine(BaseModule):
 
     _INTENTS = {
         "remember", "recall", "get_facts", "learn_fact",
-        "forget_fact", "add_goal", "get_goals", "complete_goal",
+        "forget_fact", "add_goal", "get_goals", "complete_goal", "chat","get_user_info",
     }
     
     def __init__(self, hestia_llm):
@@ -55,9 +55,52 @@ class MnemosyneEngine(BaseModule):
             or entities.get("raw_query")
             or context.get("raw_query", "")
         )
-        if intent in ("remember", "recall"):
+        if intent in ("remember", "recall", "chat"):
             response = self.remember(query)
-            return {"response": response, "data": {}, "confidence": 0.85}
+
+            if not response:
+                response = "I don't have any memories about that yet."
+
+            return {
+                "response": response,
+                "data": {},
+                "confidence": 0.85
+            }
+
+        elif intent == "get_user_info":
+            key = entities.get("key")
+
+            if key:
+                value = self.db.get_fact(key)
+                if value:
+                    if key == "user_name":
+                        return {
+                            "response": f"Your name is {value}.",
+                            "data": {},
+                            "confidence": 0.95
+                        }
+
+                    readable = key.replace("_", " ")
+                    return {
+                        "response": f"Your {readable} is {value}.",
+                        "data": {},
+                        "confidence": 0.95
+                    }
+                else:
+                    return {
+                        "response": "I don't have that information yet.",
+                        "data": {},
+                        "confidence": 0.5
+                    }
+
+            # fallback → general recall
+            response = self.remember(query)
+
+            return {
+                "response": response or "I don't have anything on that.",
+                "data": {},
+                "confidence": 0.85
+            }
         elif intent == "learn_fact":
             key   = entities.get("key", "")
             value = entities.get("value", "")
@@ -157,23 +200,37 @@ class MnemosyneEngine(BaseModule):
     def cancel_goal(self, goal_id: int) -> None:
         self.db.cancel_goal(goal_id)
 
-    def status(self) -> dict:
-        facts_count = len(self.db.get_all_facts())
-        summaries_count = 0
-        active_goals_count = len(self.db.get_goals("active"))
-        unsummarised_count = len(self.db.get_unsummarised())
-        if self.vector_store:
-            try:
-                summaries_count = len(self.vector_store.search("*", n_results=100, where={"type": "summary"}))
-            except Exception:
-                summaries_count = 0
-        return {
-            "facts": facts_count,
-            "summaries": summaries_count,
-            "active_goals": active_goals_count,
-            "unsummarised_interactions": unsummarised_count,
-        }
+    def get_stats(self) -> dict:
+        """
+        Efficient stats using SQL COUNT instead of loading full rows.
+        """
+        try:
+            s = self.status()
 
+            cur = self.db._conn.execute("SELECT COUNT(*) FROM interaction_log")
+            total = cur.fetchone()[0]
+
+            cur = self.db._conn.execute(
+                "SELECT COUNT(*) FROM interaction_log WHERE intent='take_note'"
+            )
+            notes = cur.fetchone()[0]
+
+            cur = self.db._conn.execute(
+                "SELECT COUNT(DISTINCT intent) FROM interaction_log"
+            )
+            unique = cur.fetchone()[0]
+
+            return {
+                "total_interactions": total,
+                "notes": notes,
+                "facts_known": s.get("facts", 0),
+                "unique_intents": unique,
+            }
+
+        except Exception as e:
+            logger.error(f"get_stats failed: {e}")
+            return {}
+        
     def get_recent(self, limit: int = 5) -> list:
         """
         Return recent interactions for NLU context.
@@ -185,26 +242,6 @@ class MnemosyneEngine(BaseModule):
         except Exception as e:
             logger.error(f"get_recent failed: {e}")
             return []
-        
-    def get_stats(self) -> dict:
-        """
-        Compatibility layer for web UI stats panel.
-        """
-        try:
-            s = self.status()
-            rows = self.db.get_recent_interactions(9999)
-            notes = self.db.get_by_intent("take_note", 9999)
-            intents = {r["intent"] for r in rows}
-
-            return {
-                "total_interactions": len(rows),
-                "notes": len(notes),
-                "facts_known": s.get("facts", 0),
-                "unique_intents": len(intents),
-            }
-        except Exception as e:
-            logger.error(f"get_stats failed: {e}")
-            return {}
         
     def get_preference(self, key: str, default=None):
         """

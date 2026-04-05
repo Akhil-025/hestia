@@ -42,7 +42,6 @@ from modules.hecate import HecateEngine
 from modules.artemis import ArtemisEngine
 from core.event_bus import bus
 from modules.hestia.orchestrator import HestiaOrchestrator
-from modules.athena.engine import AthenaEngine
 from modules.chronos.engine import ChronosEngine
 from modules.hermes.engine import HermesEngine
 from modules.hephaestus.engine import HephaestusEngine
@@ -53,20 +52,9 @@ from modules.dionysus import DionysusEngine
 from modules.pluto import PlutoEngine
 
 # ── Constants ────────────────────────────────────────────────────────
-CORE_INTENTS = {
-    "get_time", "get_date", "get_weather",
-    "take_note", "get_history", "get_user_info",
-    "save_name", "get_system_info",
-}
-
 EXIT_WORDS = {"bye", "exit", "stop", "shutdown"}
 
 _FILLER_RE = re.compile(r'\b(uh|um|you know)\b\s*', re.IGNORECASE)
-
-CHAT_SYSTEM_PROMPT = (
-    "You are Hestia. Answer concisely in 1-2 sentences.\n\n"
-    "Question: {query}"
-)
 
 # ── LLM Wrapper ─────────────────────────────────────────────────────
 class HestiaLLM:
@@ -122,6 +110,7 @@ class Hestia:
         # Athena (optional)
         self.athena = None
         if self.config.get("athena", {}).get("enabled", False):
+            from modules.athena.engine import AthenaEngine
             self.athena = AthenaEngine(self.llm)
 
         # ── MNEMOSYNE (MANDATORY) ─────────────────────────────
@@ -211,9 +200,12 @@ class Hestia:
         # ── SINGLE ENTRY POINT ───────────────────────────────
         response = self.orchestrator.dispatch(cleaned, nlu_result)
 
-        # Chat fallback if empty
+        # REMOVE NLU RESPONSE FALLBACK FOR NON-CHAT
         if not response:
-            response = nlu_result.get("response", "") or "I'm not sure about that."
+            if nlu_result.get("intent") == "chat":
+                response = nlu_result.get("response", "") or "I'm not sure about that."
+            else:
+                response = "Done."
 
         # Post-processing
         try:
