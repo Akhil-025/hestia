@@ -42,6 +42,7 @@ from modules.hecate import HecateEngine
 from modules.artemis import ArtemisEngine
 from core.event_bus import bus
 from modules.hestia.orchestrator import HestiaOrchestrator
+from modules.athena.engine import AthenaEngine
 from modules.chronos.engine import ChronosEngine
 from modules.hermes.engine import HermesEngine
 from modules.hephaestus.engine import HephaestusEngine
@@ -86,6 +87,8 @@ class Hestia:
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
 
+        self.mnemosyne_engine = None
+
         # Memory + Actions
         db_path = self.config.get("database", {}).get("path", "data/hestia.db")
         self.memory = None  # temporary placeholder
@@ -109,31 +112,34 @@ class Hestia:
             prompt_path=self.config.get("nlu", {}).get("prompt_path"),
         )
 
-        # Modules
+        # ── LLM (ALWAYS INITIALIZED) ─────────────────────────────
+        self.llm = HestiaLLM(
+            self.ollama_manager.host,
+            self.ollama_manager.port,
+            ollama_cfg.get("model", "mistral"),
+        )
+
+        # Athena (optional)
         self.athena = None
         if self.config.get("athena", {}).get("enabled", False):
-            from modules.athena.engine import AthenaEngine
-            self.llm = HestiaLLM(
-                self.ollama_manager.host,
-                self.ollama_manager.port,
-                ollama_cfg.get("model", "mistral"),
-            )
             self.athena = AthenaEngine(self.llm)
 
-        self.mnemosyne = None
-        if self.config.get("mnemosyne", {}).get("enabled", False):
-            self.mnemosyne = MnemosyneEngine(self.llm if self.athena else self.nlu)
+        # ── MNEMOSYNE (MANDATORY) ─────────────────────────────
+        self.mnemosyne = MnemosyneEngine(self.llm)
+        self.mnemosyne_engine = self.mnemosyne
+        self.memory = self.mnemosyne
 
-        if self.mnemosyne:
-            mn = self.mnemosyne
-            bus.on("interaction_logged", lambda data: mn.push(
-                data["query"],
-                data["response"],
-                data["intent"]
-            ))
-        if self.mnemosyne:
-            self.memory = self.mnemosyne  # TEMP alias (to be removed)
-            self.mnemosyne_engine = self.mnemosyne
+        mn = self.mnemosyne
+        bus.on("interaction_logged", lambda data: mn.push(
+            data["query"],
+            data["response"],
+            data["intent"]
+        ))
+
+        if not self.mnemosyne_engine:
+            raise RuntimeError(
+                "Mnemosyne must be enabled — it is the single memory store."
+            )
 
         self.iris = None
         if self.config.get("iris", {}).get("enabled", False):

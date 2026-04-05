@@ -14,36 +14,56 @@ async def health(request: Request):
 @app.get("/sync/pull")
 async def sync_pull(request: Request, since: Optional[str] = None):
     memory = request.app.state.memory
-    c = memory.conn.cursor()
-    if since:
-        c.execute("SELECT id, timestamp, query, response, intent FROM interactions WHERE timestamp > ? ORDER BY timestamp ASC", (since,))
-    else:
-        c.execute("SELECT id, timestamp, query, response, intent FROM interactions ORDER BY timestamp DESC LIMIT 100")
-    rows = c.fetchall()
-    interactions = [
-        {"id": r[0], "timestamp": r[1], "query": r[2], "response": r[3], "intent": r[4]} for r in rows
-    ]
-    now = datetime.now().isoformat()
-    return {"interactions": interactions, "timestamp": now}
+
+    try:
+        if since:
+            rows = memory.db.get_recent_interactions(1000)
+            rows = [r for r in rows if r.get("timestamp") > since]
+        else:
+            rows = memory.db.get_recent_interactions(100)
+
+        now = datetime.now().isoformat()
+        return {"interactions": rows, "timestamp": now}
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
 
 @app.post("/sync/push")
 async def sync_push(request: Request):
     memory = request.app.state.memory
     data = await request.json()
     interactions = data.get("interactions", [])
+
     merged = 0
-    c = memory.conn.cursor()
-    for row in interactions:
-        # Check for duplicates using timestamp and query
-        c.execute("SELECT 1 FROM interactions WHERE timestamp=? AND query=?", 
-                  (row['timestamp'], row['query']))
-        if c.fetchone():
-            continue
-        # Insert without id - let SQLite AUTOINCREMENT assign it
-        c.execute(
-            "INSERT INTO interactions (timestamp, query, response, intent) VALUES (?, ?, ?, ?)",
-            (row['timestamp'], row['query'], row['response'], row['intent'])
+
+    try:
+        existing = memory.db.get_recent_interactions(5000)
+
+        existing_keys = {
+            (r["query"], r["response"], r["intent"])
+            for r in existing
+        }
+
+        for row in interactions:
+            key = (row["query"], row["response"], row["intent"])
+
+            if key in existing_keys:
+                continue
+
+            memory.db.push_interaction(
+                row["query"],
+                row["response"],
+                row["intent"]
+            )
+            merged += 1
+
+        return {"status": "ok", "merged": merged}
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
         )
-        merged += 1
-    memory.conn.commit()
-    return {"status": "ok", "merged": merged}

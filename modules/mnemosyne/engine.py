@@ -173,3 +173,46 @@ class MnemosyneEngine(BaseModule):
             "active_goals": active_goals_count,
             "unsummarised_interactions": unsummarised_count,
         }
+
+    def get_recent(self, limit: int = 5) -> list:
+        """
+        Return recent interactions for NLU context.
+        Matches old HestiaMemory format.
+        """
+        try:
+            rows = self.db.get_recent_interactions(limit)
+            return rows
+        except Exception as e:
+            logger.error(f"get_recent failed: {e}")
+            return []
+        
+    def get_stats(self) -> dict:
+        """
+        Compatibility layer for web UI stats panel.
+        """
+        try:
+            s = self.status()
+            rows = self.db.get_recent_interactions(9999)
+            notes = self.db.get_by_intent("take_note", 9999)
+            intents = {r["intent"] for r in rows}
+
+            return {
+                "total_interactions": len(rows),
+                "notes": len(notes),
+                "facts_known": s.get("facts", 0),
+                "unique_intents": len(intents),
+            }
+        except Exception as e:
+            logger.error(f"get_stats failed: {e}")
+            return {}
+        
+    def get_preference(self, key: str, default=None):
+        """
+        Shim for modules expecting preference lookup.
+        """
+        try:
+            value = self.db.get_fact(key)
+            return value if value is not None else default
+        except Exception as e:
+            logger.error(f"get_preference failed: {e}")
+            return default

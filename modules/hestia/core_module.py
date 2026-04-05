@@ -104,9 +104,12 @@ class CoreModule(BaseModule):
 
         if not note:
             return {"response": "What would you like me to note down?", "data": {}, "confidence": 0.0}
-
-        self._memory.push(note, "Note saved.", "take_note")
-        return {"response": "Note saved.", "data": {}, "confidence": 0.95}
+        
+        return {
+            "response": "Note saved.",
+            "data": {},
+            "confidence": 0.95
+        }
 
     def _get_notes(self) -> dict:
         rows = self._memory.db.get_by_intent("take_note", 10)
