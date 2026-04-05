@@ -173,7 +173,7 @@ class Hestia:
         ))
         self.orchestrator.register(OrpheusEngine())
         self.orchestrator.register(DionysusEngine())
-        self.orchestrator.register(PlutoEngine())
+        self.orchestrator.register(PlutoEngine(ollama_cfg=self.ollama_cfg))
 
         # STT + TTS
         self.stt = HestiaSTT()
