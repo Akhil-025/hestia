@@ -128,6 +128,25 @@ class HecateEngine(BaseModule):
         if intent in {"get_user_info", "learn_fact", "forget_fact"} \
                 and "mnemosyne" in active_modules:
             return self._route("mnemosyne", [], 0.95, f"intent '{intent}' → mnemosyne")
+        
+
+        # --- Tier 3.5: Cross-module queries ---
+        cross_triggers = [
+            "compare", "combine", "across", "and also",
+            "along with", "together with", "as well as"
+        ]
+        if "athena" in active_modules and "mnemosyne" in active_modules:
+            if self._match(q, cross_triggers) or (
+                self._match(q, self._ATHENA_TRIGGERS) and
+                self._match(q, self._MNEMOSYNE_TRIGGERS)
+            ):
+                return self._route(
+                    "athena",
+                    ["mnemosyne"],
+                    0.85,
+                    "cross-module: athena+mnemosyne",
+                    synthesize=True,
+                )
 
         # --- Tier 4: High-confidence NLU non-chat intent ---
         if confidence >= 0.85 and intent != "chat":
@@ -145,10 +164,12 @@ class HecateEngine(BaseModule):
         return any(re.search(r"\b" + re.escape(t) + r"\b", text) for t in triggers)
 
     @staticmethod
-    def _route(primary: str, secondary: list, confidence: float, reason: str) -> dict:
+    def _route(primary: str, secondary: list, confidence: float,
+            reason: str, synthesize: bool = False) -> dict:
         return {
             "primary":    primary,
             "secondary":  secondary,
             "confidence": confidence,
             "reason":     reason,
+            "synthesize": synthesize,
         }
