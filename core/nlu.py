@@ -85,14 +85,13 @@ class HestiaNLU:
         """Inject memory reference so NLU can include user facts in prompts."""
         self._memory = memory
     
-    def _health_check(self):
-        """Light ping only — don't run inference."""
-        try:
-            r = requests.get(self.base_url, timeout=3)
-            return r.status_code == 200
-        except:
-            return False
-        return True
+    def _health_check(self) -> bool:
+        from core.ollama_manager import OllamaManager
+        manager = OllamaManager(
+            host=self.providers[0].get("host", "127.0.0.1"),
+            port=self.providers[0].get("port", 11434),
+        )
+        return manager.is_running()
 
     def understand(self, text, context=None):
         """Parse user input — one health check, then retry real calls only."""
@@ -145,29 +144,15 @@ class HestiaNLU:
         return None
 
     def _call_ollama_provider(self, provider: dict, prompt: str) -> Optional[str]:
-        """Call Ollama API using provider config dict."""
-        host = provider.get("host", "127.0.0.1")
-        port = provider.get("port", 11434)
+        from core.ollama_client import generate
         model = provider.get("model", self.model)
-        url = f"http://{host}:{port}/api/generate"
-        body = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": self.temperature, "num_predict": self.max_tokens}
-        }
+        host  = provider.get("host", "127.0.0.1")
+        port  = provider.get("port", 11434)
         try:
-            resp = requests.post(url, json=body, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-            response_text = data.get("response", "")
-            if not response_text:
-                time.sleep(2)
-                return None
-            return response_text
+            result = generate(prompt, model=model, host=host, port=port, fmt="json")
+            return result if result else None
         except Exception as e:
-            print(f"[NLU ERROR] {e}", file=sys.stderr)
+            print(f"[NLU ERROR] ollama_client failed: {e}", file=sys.stderr)
             return None
 
     def _parse_response(self, response: str) -> Dict[str, Any]:
