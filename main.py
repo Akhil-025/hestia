@@ -50,21 +50,13 @@ from modules.ares import AresEngine
 from modules.orpheus import OrpheusEngine
 from modules.dionysus import DionysusEngine
 from modules.pluto import PlutoEngine
+from core.llm import HestiaLLM
 
 # ── Constants ────────────────────────────────────────────────────────
 EXIT_WORDS = {"bye", "exit", "stop", "shutdown"}
 
 _FILLER_RE = re.compile(r'\b(uh|um|you know)\b\s*', re.IGNORECASE)
 
-# ── LLM Wrapper ─────────────────────────────────────────────────────
-class HestiaLLM:
-    def __init__(self, host, port, model):
-        self.host = host
-        self.port = port
-        self.model = model
-
-    def generate(self, prompt: str) -> str:
-        return generate(prompt, model=self.model, host=self.host, port=self.port)
 
 # ── Main ────────────────────────────────────────────────────────────
 class Hestia:
@@ -193,8 +185,7 @@ class Hestia:
         bus.on("morning_brief_requested", lambda _: self.process_text("give me my morning brief"))
 
         # Mnemosyne summariser trigger
-        if self.mnemosyne.summariser:
-            bus.on("mnemosyne_summarise", lambda _: self.mnemosyne.summariser.run())
+        bus.on("mnemosyne_summarise", lambda _: self.mnemosyne.trigger_summarise())
 
         self.wake_detector = WakeWordDetector()
 
@@ -211,6 +202,17 @@ class Hestia:
         )
 
         self.web_ui.start()
+
+        # ── SYNC API (optional, port 5001) ───────────────────────
+        sync_cfg = self.config.get("sync", {})
+        if sync_cfg.get("enabled", False):
+            from api import app as sync_app
+            import uvicorn, threading
+            sync_app.state.memory = self.mnemosyne
+            def _run_sync():
+                uvicorn.run(sync_app, host="127.0.0.1", port=5001, log_level="warning")
+            threading.Thread(target=_run_sync, daemon=True, name="SyncAPI").start()
+            print("[Hestia] Sync API running at http://127.0.0.1:5001")
 
         print("Hestia is ready.")
 
@@ -251,6 +253,32 @@ class Hestia:
         })
 
         return response
+    
+    def run_voice_loop(self):
+        """Alternate between wake word detection and STT, feeding into process_text."""
+        print("[Voice] Listening for wake word ('hey hestia')…")
+        try:
+            while True:
+                detected = self.wake_detector.listen_for_wake_word(timeout=30)
+                if not detected:
+                    continue
+
+                self.tts.speak("Yes?")
+                text = self.stt.listen_once(max_duration=10)
+
+                if not text or len(text.strip()) < 2:
+                    self.tts.speak("I didn't catch that.")
+                    continue
+
+                if text.lower().strip() in EXIT_WORDS:
+                    self.tts.speak("Goodbye.")
+                    break
+
+                self.process_text(text)
+
+        finally:
+            if hasattr(self, "heartbeat"):
+                self.heartbeat.stop()
 
     # ── RUNNERS ─────────────────────────────────────────────────────
     def run_cli_loop(self):
@@ -266,5 +294,13 @@ class Hestia:
 
 # ── Entry ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Hestia personal AI")
+    parser.add_argument("--voice", action="store_true", help="Run in voice mode")
+    args = parser.parse_args()
+
     hestia = Hestia()
-    hestia.run_cli_loop()
+    if args.voice:
+        hestia.run_voice_loop()
+    else:
+        hestia.run_cli_loop()

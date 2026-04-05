@@ -44,7 +44,7 @@ class MnemosyneEngine(BaseModule):
             self.vector_store = None
         self.summariser = None
         if summariser_available:
-            self.summariser = Summariser(self.db, self.vector_store, hestia_llm)
+            self.summariser = Summariser(self, hestia_llm)
 
     def can_handle(self, intent: str) -> bool:    #
         return intent in self._INTENTS
@@ -119,13 +119,22 @@ class MnemosyneEngine(BaseModule):
             "confidence": 0.0
         }
 
-    def get_context(self) -> dict:               
+    def get_context(self) -> dict:
         try:
             s = self.status()
+            recent = self.db.get_recent_interactions(3)
+            recent_summary = [
+                {"query": r["query"], "intent": r["intent"]}
+                for r in recent
+            ]
+            facts = self.db.get_all_facts()
+            top_facts = {f["key"]: f["value"] for f in facts[:5]}
             return {
-                "mnemosyne_facts":   s.get("facts", 0),
-                "mnemosyne_goals":   s.get("active_goals", 0),
-                "mnemosyne_summaries": s.get("summaries", 0),
+                "mnemosyne_facts":        s.get("facts", 0),
+                "mnemosyne_goals":        s.get("active_goals", 0),
+                "mnemosyne_summaries":    s.get("summaries", 0),
+                "mnemosyne_recent":       recent_summary,
+                "mnemosyne_top_facts":    top_facts,
             }
         except Exception:
             return {}
@@ -236,6 +245,34 @@ class MnemosyneEngine(BaseModule):
         except Exception as e:
             logger.error(f"get_preference failed: {e}")
             return default
+        
+    def trigger_summarise(self) -> None:
+        """Public entry point for triggering summarisation externally."""
+        if self.summariser:
+            self.summariser.run()
+
+
+    def add_summary(self, period_start: str, period_end: str,
+                content: str, topic: str, interaction_count: int) -> int:
+        """Write a summary record and embed it into the vector store."""
+        summary_id = self.db.add_summary(
+            period_start, period_end, content, topic, interaction_count
+        )
+        if self.vector_store:
+            from datetime import datetime
+            metadata = {
+                "type": "summary",
+                "created_at": datetime.utcnow().isoformat(),
+                "topic": topic,
+            }
+            self.vector_store.add(content, metadata, doc_id=str(summary_id))
+        return summary_id
+
+    def get_unsummarised(self, limit: int = 50) -> list:
+        return self.db.get_unsummarised(limit)
+
+    def mark_summarised(self, ids: list) -> None:
+        self.db.mark_summarised(ids)
         
     # ── Reminders ─────────────────────────────────────
 
