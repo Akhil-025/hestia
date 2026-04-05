@@ -273,6 +273,20 @@ class MnemosyneEngine(BaseModule):
 
     def mark_summarised(self, ids: list) -> None:
         self.db.mark_summarised(ids)
+
+    def status(self) -> dict:
+        try:
+            cur = self.db._conn.execute("SELECT COUNT(*) FROM facts")
+            facts = cur.fetchone()[0]
+            cur = self.db._conn.execute(
+                "SELECT COUNT(*) FROM goals WHERE status='active'"
+            )
+            goals = cur.fetchone()[0]
+            cur = self.db._conn.execute("SELECT COUNT(*) FROM summaries")
+            summaries = cur.fetchone()[0]
+            return {"facts": facts, "active_goals": goals, "summaries": summaries}
+        except Exception:
+            return {"facts": 0, "active_goals": 0, "summaries": 0}
         
     # ── Reminders ─────────────────────────────────────
 
