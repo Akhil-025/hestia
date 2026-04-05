@@ -39,6 +39,12 @@ class HestiaOrchestrator:
 
     def dispatch(self, raw_query: str, nlu_result: dict) -> str:
         intent   = nlu_result.get("intent", "chat")
+        _MODULE_PREFIXES = ("apollo_", "ares_", "orpheus_", "dionysus_", "pluto_")
+        normalized_intent = intent
+        for _pfx in _MODULE_PREFIXES:
+            if intent.startswith(_pfx):
+                normalized_intent = intent[len(_pfx):]
+                break        
         entities = nlu_result.get("entities", {})
         entities["raw_query"] = raw_query
 
@@ -80,7 +86,7 @@ class HestiaOrchestrator:
             log.warning("Module '%s' not found. Falling back to chat.", primary)
             return self._chat_fallback(raw_query, nlu_result)
 
-        if not primary_mod.can_handle(intent):
+        if not primary_mod.can_handle(normalized_intent):
             log.warning(
                 "Module '%s' cannot handle intent '%s'. Falling back to chat.",
                 primary, intent
@@ -88,7 +94,7 @@ class HestiaOrchestrator:
             return self._chat_fallback(raw_query, nlu_result)
 
         try:
-            primary_result = primary_mod.handle(intent, entities, safe_context)
+            primary_result = primary_mod.handle(normalized_intent, entities, safe_context)
         except NotImplementedError:
             log.error("Dispatched to Hecate — routing error.")
             return "I had a routing error. Please try again."
@@ -101,9 +107,9 @@ class HestiaOrchestrator:
             secondary_results = []
             for mod_name in secondary:
                 mod = self._modules.get(mod_name)
-                if mod and mod.can_handle(intent):
+                if mod and mod.can_handle(normalized_intent):
                     try:
-                        result = mod.handle(intent, entities, safe_context)
+                        result = mod.handle(normalized_intent, entities, safe_context)
                         if result.get("response"):
                             secondary_results.append({
                                 "module":   mod_name,
