@@ -157,7 +157,7 @@ class MnemosyneDB:
     def get_recent_interactions(self, limit: int = 5):
         cur = self._conn.execute(
             """
-            SELECT user_text, hestia_response, intent
+            SELECT user_text, hestia_response, intent, pushed_at
             FROM interaction_log
             ORDER BY id DESC LIMIT ?
             """,
@@ -165,7 +165,7 @@ class MnemosyneDB:
         )
         rows = cur.fetchall()
         result = [
-            {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"]}
+            {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"],"pushed_at": r["pushed_at"]}
             for r in rows
         ]
         result.reverse()
@@ -175,7 +175,7 @@ class MnemosyneDB:
     def get_by_intent(self, intent: str, limit: int = 10):
         cur = self._conn.execute(
             """
-            SELECT user_text, hestia_response, intent
+            SELECT user_text, hestia_response, intent, pushed_at
             FROM interaction_log
             WHERE intent = ?
             ORDER BY id DESC LIMIT ?
@@ -183,11 +183,17 @@ class MnemosyneDB:
             (intent, limit)
         )
         rows = cur.fetchall()
-        return [
-            {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"]}
+        result = [
+            {
+                "query": r["user_text"],
+                "response": r["hestia_response"],
+                "intent": r["intent"],
+                "pushed_at": r["pushed_at"],  
+            }
             for r in rows
         ]
-    
+        return result
+            
     # ── Reminders ─────────────────────────────────────
 
     def add_reminder(self, text, due_time):

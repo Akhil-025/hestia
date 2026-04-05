@@ -17,8 +17,10 @@ class Summariser:
         self.config = get_config()
 
     def should_summarise(self) -> bool:
-        unsummarised = self.db.get_unsummarised()
-        return len(unsummarised) >= self.config.summarise_every_n
+        cur = self.db._conn.execute(
+            "SELECT COUNT(*) FROM interaction_log WHERE summarised=0"
+        )
+        return cur.fetchone()[0] >= self.config.summarise_every_n
 
     def run(self) -> bool:
         interactions = self.db.get_unsummarised()

@@ -31,7 +31,7 @@ class MnemosyneEngine(BaseModule):
 
     _INTENTS = {
         "remember", "recall", "get_facts", "learn_fact",
-        "forget_fact", "chat", "get_user_info",
+        "forget_fact", "get_user_info",
     }
     
     def __init__(self, hestia_llm):
@@ -55,7 +55,7 @@ class MnemosyneEngine(BaseModule):
             or entities.get("raw_query")
             or context.get("raw_query", "")
         )
-        if intent in ("remember", "recall", "chat"):
+        if intent in ("remember", "recall"):
             response = self.remember(query)
 
             if not response:
@@ -112,6 +112,12 @@ class MnemosyneEngine(BaseModule):
             key = entities.get("key", "")
             self.forget(key)
             return {"response": f"Forgotten: {key}.", "data": {}, "confidence": 0.9}
+        
+        return {
+            "response": "I don't have anything on that.",
+            "data": {},
+            "confidence": 0.0
+        }
 
     def get_context(self) -> dict:               
         try:
@@ -230,7 +236,7 @@ class MnemosyneEngine(BaseModule):
         except Exception as e:
             logger.error(f"get_preference failed: {e}")
             return default
-            
+        
     # ── Reminders ─────────────────────────────────────
 
     def add_reminder(self, text: str, due_time: str):
