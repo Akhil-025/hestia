@@ -167,7 +167,10 @@ class Hestia:
         self.orchestrator.register(self.hephaestus)
 
         self.orchestrator.register(ApolloEngine())
-        self.orchestrator.register(AresEngine())
+        self.orchestrator.register(AresEngine(
+            memory=self.mnemosyne,
+            ollama_cfg=self.ollama_cfg,
+        ))
         self.orchestrator.register(OrpheusEngine())
         self.orchestrator.register(DionysusEngine())
         self.orchestrator.register(PlutoEngine())
