@@ -203,7 +203,10 @@ class MnemosyneDB:
                 (text, due_time)
             )
 
-    def get_due_reminders(self, now_iso):
+    def get_due_reminders(self, now_iso=None):
+        if now_iso is None:
+            from datetime import datetime
+            now_iso = datetime.utcnow().isoformat()
         cur = self._conn.execute(
             "SELECT id, text FROM reminders WHERE due_time <= ? AND status = 'pending'",
             (now_iso,)
