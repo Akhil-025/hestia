@@ -101,15 +101,25 @@ class HestiaNLU:
             return {"intent": "chat", "entities": {}, "response": "My backend isn't responding right now.", "confidence": 0.0}
 
         prompt = self._build_prompt(text, context)
-        for attempt in range(5):
-            print(f"[NLU] Attempt {attempt + 1}/5", file=sys.stderr)
-            response = self._call_llm(prompt)
+
+        retries = 3
+
+        for attempt in range(retries):
+            print(f"[NLU] Attempt {attempt + 1}/{retries}", file=sys.stderr)
+
+            try:
+                response = self._call_llm(prompt)
+            except Exception as e:
+                print(f"[NLU ERROR] Attempt {attempt+1} failed: {e}", file=sys.stderr)
+                response = None
+
             if response:
                 parsed = self._parse_response(response)
                 print(f"[NLU PARSED]: {parsed}", file=sys.stderr)
                 if parsed.get("intent"):
                     return parsed
-            time.sleep(1.5)
+
+            time.sleep(1.0)
 
         return {"intent": "chat", "entities": {}, "response": "Sorry, I had trouble understanding that.", "confidence": 0.5}
 
@@ -148,71 +158,7 @@ class HestiaNLU:
             "options": {"temperature": self.temperature, "num_predict": self.max_tokens}
         }
         try:
-            resp = requests.post(url, json=body, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-            response_text = data.get("response", "")
-            if not response_text:
-                time.sleep(2)
-                return None
-            return response_text
-        except Exception as e:
-            print(f"[NLU ERROR] {e}", file=sys.stderr)
-            return None
-
-    def _call_anthropic_provider(self, provider: dict, prompt: str) -> Optional[str]:
-        """Call Anthropic API using the anthropic SDK."""
-        try:
-            import anthropic
-        except ImportError:
-            print("[NLU] anthropic package not installed.", file=sys.stderr)
-            return None
-        api_key = provider.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            print("[NLU] No ANTHROPIC_API_KEY found.", file=sys.stderr)
-            return None
-        model = provider.get("model", "claude-haiku-4-5-20251001")
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model=model,
-            max_tokens=200,
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return message.content[0].text if message.content else None
-
-    def _call_gemini_provider(self, provider: dict, prompt: str) -> Optional[str]:
-        """Call Google Gemini API using google-generativeai SDK."""
-        try:
-            import google.generativeai as genai
-        except ImportError:
-            print("[NLU] google-generativeai package not installed.", file=sys.stderr)
-            return None
-        api_key = provider.get("api_key") or os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
-            print("[NLU] No GEMINI_API_KEY found.", file=sys.stderr)
-            return None
-        model_name = provider.get("model", "gemini-1.5-flash")
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=self.system_prompt
-        )
-        response = model.generate_content(prompt)
-        return response.text if response.text else None
-
-    def _call_ollama(self, prompt):
-        """Real generate call — no health check, no WSL subprocess."""
-        url = f"{self.base_url}/api/generate"
-        body = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": self.temperature, "num_predict": self.max_tokens}
-        }
-        try:
-            resp = requests.post(url, json=body, timeout=60)
+            resp = requests.post(url, json=body, timeout=20)
             resp.raise_for_status()
             data = resp.json()
             response_text = data.get("response", "")

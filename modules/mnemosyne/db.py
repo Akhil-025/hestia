@@ -187,3 +187,26 @@ class MnemosyneDB:
             {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"]}
             for r in rows
         ]
+    
+    # ── Reminders ─────────────────────────────────────
+
+    def add_reminder(self, text, due_time):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO reminders (text, due_time, status) VALUES (?, ?, 'pending')",
+                (text, due_time)
+            )
+
+    def get_due_reminders(self, now_iso):
+        cur = self._conn.execute(
+            "SELECT id, text FROM reminders WHERE due_time <= ? AND status = 'pending'",
+            (now_iso,)
+        )
+        return [(row["id"], row["text"]) for row in cur.fetchall()]
+
+    def mark_reminder_done(self, reminder_id):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE reminders SET status = 'done' WHERE id = ?",
+                (reminder_id,)
+            )

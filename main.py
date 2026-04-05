@@ -36,7 +36,7 @@ from core.ollama_manager import OllamaManager
 from core.browser_agent import HestiaBrowserAgent
 from core.ollama_client import generate
 from modules.hestia.core_module import CoreModule
-
+from core.heartbeat import HestiaHeartbeat
 from modules.mnemosyne.engine import MnemosyneEngine
 from modules.hecate import HecateEngine
 from modules.artemis import ArtemisEngine
@@ -118,6 +118,8 @@ class Hestia:
         self.mnemosyne_engine = self.mnemosyne
         self.memory = self.mnemosyne
 
+        self.nlu.set_memory(self.mnemosyne)
+
         mn = self.mnemosyne
         bus.on("interaction_logged", lambda data: mn.push(
             data["query"],
@@ -133,7 +135,7 @@ class Hestia:
         self.iris = None
         if self.config.get("iris", {}).get("enabled", False):
             from modules.iris import IrisEngine
-            self.iris = IrisEngine(self.nlu)
+            self.iris = IrisEngine(self.llm)
 
         self.artemis = ArtemisEngine()
         self.hecate = HecateEngine()
@@ -182,7 +184,33 @@ class Hestia:
         self.stt = HestiaSTT()
         self.tts = HestiaTTS()
 
+        # ── EVENT BUS WIRING ─────────────────────────────
+
+        # Speak handler (CRITICAL)
+        bus.on("speak", lambda data: self.tts.speak(data.get("text", "")))
+
+        # Morning brief handler
+        bus.on("morning_brief_requested", lambda _: self.process_text("give me my morning brief"))
+
+        # Mnemosyne summariser trigger
+        if self.mnemosyne.summariser:
+            bus.on("mnemosyne_summarise", lambda _: self.mnemosyne.summariser.run())
+
         self.wake_detector = WakeWordDetector()
+
+        # ── HEARTBEAT ─────────────────────────────
+        self.heartbeat = HestiaHeartbeat(interval=1800, mnemosyne=self.mnemosyne)
+        self.heartbeat.start()
+
+
+        from web_ui import HestiaWebUI
+
+        self.web_ui = HestiaWebUI(
+            memory=self.mnemosyne,
+            process_fn=self.process_text,   # CRITICAL
+        )
+
+        self.web_ui.start()
 
         print("Hestia is ready.")
 
@@ -202,15 +230,13 @@ class Hestia:
 
         # REMOVE NLU RESPONSE FALLBACK FOR NON-CHAT
         if not response:
-            if nlu_result.get("intent") == "chat":
-                response = nlu_result.get("response", "") or "I'm not sure about that."
-            else:
-                response = "Done."
+            response = "Done."
 
         # Post-processing
         try:
-            json.loads(response)
-            response = "I've handled that for you."
+            parsed = json.loads(response)
+            if isinstance(parsed, dict) and "response" in parsed:
+                response = parsed["response"]
         except:
             pass
 
@@ -228,11 +254,15 @@ class Hestia:
 
     # ── RUNNERS ─────────────────────────────────────────────────────
     def run_cli_loop(self):
-        while True:
-            user_input = input("> ")
-            if user_input.lower() in EXIT_WORDS:
-                break
-            self.process_text(user_input)
+        try:
+            while True:
+                user_input = input("> ")
+                if user_input.lower() in EXIT_WORDS:
+                    break
+                self.process_text(user_input)
+        finally:
+            if hasattr(self, "heartbeat"):
+                self.heartbeat.stop()
 
 # ── Entry ───────────────────────────────────────────────────────────
 if __name__ == "__main__":

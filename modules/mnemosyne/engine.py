@@ -31,7 +31,7 @@ class MnemosyneEngine(BaseModule):
 
     _INTENTS = {
         "remember", "recall", "get_facts", "learn_fact",
-        "forget_fact", "add_goal", "get_goals", "complete_goal", "chat","get_user_info",
+        "forget_fact", "chat", "get_user_info",
     }
     
     def __init__(self, hestia_llm):
@@ -112,12 +112,6 @@ class MnemosyneEngine(BaseModule):
             key = entities.get("key", "")
             self.forget(key)
             return {"response": f"Forgotten: {key}.", "data": {}, "confidence": 0.9}
-        elif intent == "add_goal":
-            text = entities.get("goal") or entities.get("text", "")
-            return {"response": self.add_goal(text), "data": {}, "confidence": 0.9}
-        elif intent == "get_goals":
-            return {"response": self.get_goals(), "data": {}, "confidence": 0.9}
-        return {"response": "I don't have anything on that.", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:               
         try:
@@ -183,23 +177,6 @@ class MnemosyneEngine(BaseModule):
         if self.vector_store:
             self.vector_store.delete(key)
 
-    def add_goal(self, text: str, due_date=None) -> str:
-        goal_id = self.db.add_goal(text, due_date)
-        return f"Goal added (ID: {goal_id}): {text}"
-
-    def get_goals(self, status: str = "active") -> str:
-        goals = self.db.get_goals(status)
-        if not goals:
-            return "No goals found."
-        lines = [f"[{g['id']}] {g['text']} (Due: {g['due_date'] or 'N/A'}) - {g['status']}" for g in goals]
-        return "\n".join(lines)
-
-    def complete_goal(self, goal_id: int) -> None:
-        self.db.complete_goal(goal_id)
-
-    def cancel_goal(self, goal_id: int) -> None:
-        self.db.cancel_goal(goal_id)
-
     def get_stats(self) -> dict:
         """
         Efficient stats using SQL COUNT instead of loading full rows.
@@ -253,3 +230,16 @@ class MnemosyneEngine(BaseModule):
         except Exception as e:
             logger.error(f"get_preference failed: {e}")
             return default
+            
+    # ── Reminders ─────────────────────────────────────
+
+    def add_reminder(self, text: str, due_time: str):
+        self.db.add_reminder(text, due_time)
+
+    def get_due_reminders(self):
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        return self.db.get_due_reminders(now)
+
+    def mark_reminder_done(self, rid: int):
+        self.db.mark_reminder_done(rid)

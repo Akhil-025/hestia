@@ -18,8 +18,8 @@ class HecateEngine(BaseModule):
     ]
     _MNEMOSYNE_TRIGGERS = [
         "do you remember", "what do you know about me",
-        "what are my goals", "remind me", "what did we talk about",
-        "what have i told you", "my goals", "forget that",
+        "remind me", "what did we talk about",
+        "what have i told you", "forget that",
     ]
     _IRIS_TRIGGERS = [
         "in my photos", "in my pictures", "in my images", "in my videos",
@@ -68,6 +68,21 @@ class HecateEngine(BaseModule):
 
         if intent in self._HEPHAESTUS_INTENTS and "hephaestus" in active_modules:
             return self._route("hephaestus", [], 1.0, f"intent '{intent}' → hephaestus")
+        
+
+        # --- Tier 1.5: Direct intent routing (NEW — CRITICAL) ---
+
+        if intent == "athena_search" and "athena" in active_modules:
+            return self._route("athena", [], 1.0, "intent 'athena_search' → athena")
+
+        if intent in {
+            "iris_search",
+            "iris_ingest",
+            "iris_analyse",
+            "iris_query",
+            "iris_status"
+        } and "iris" in active_modules:
+            return self._route("iris", [], 1.0, f"intent '{intent}' → iris")
 
         # --- Tier 2: Text trigger matching ---
         if "athena" in active_modules and self._match(q, self._ATHENA_TRIGGERS):
@@ -105,18 +120,12 @@ class HecateEngine(BaseModule):
             return self._route("pluto", [], 0.95, f"intent '{intent}' → pluto")
         
 
-        # --- IRIS ROUTING FIX ---
-        if intent in {
-            "iris_search",
-            "iris_ingest",
-            "iris_analyse",
-            "iris_query",
-            "iris_status"
-        } and "iris" in active_modules:
-            return self._route("iris", [], 0.95, f"intent '{intent}' → iris")
+        if intent in {"add_goal", "get_goals", "update_goal"} \
+                and "artemis" in active_modules:
+            return self._route("artemis", [], 0.95, f"intent '{intent}' → artemis")
         
         # --- MNEMOSYNE ROUTING FIX ---
-        if intent in {"get_user_info", "learn_fact", "forget_fact", "add_goal", "get_goals"} \
+        if intent in {"get_user_info", "learn_fact", "forget_fact"} \
                 and "mnemosyne" in active_modules:
             return self._route("mnemosyne", [], 0.95, f"intent '{intent}' → mnemosyne")
 

@@ -50,6 +50,8 @@ class HestiaOrchestrator:
         entities = nlu_result.get("entities", {})
         entities["raw_query"] = raw_query
 
+        context = dict(self._context)
+
         # 1. Hecate decides
         if self._hecate:
             decision = self._hecate.decide(raw_query, nlu_result, self._context["active_modules"])
@@ -66,9 +68,12 @@ class HestiaOrchestrator:
             if mod:
                 try:
                     ctx_update = mod.get_context()
-                    self._context.update(ctx_update)
+                    context.update(ctx_update)
                 except Exception as e:
                     log.debug("get_context() failed for %s: %s", mod_name, e)
+        
+        
+        safe_context = dict(context)
 
         # 3. Dispatch to primary module
         primary_mod = self._modules.get(primary)
@@ -76,9 +81,19 @@ class HestiaOrchestrator:
             log.warning("Module '%s' not found in registry. Falling back to chat.", primary)
             return self._chat_fallback(raw_query, nlu_result)
 
+        # enforce module contract
+        if not primary_mod.can_handle(intent):
+            log.warning(
+                "Module '%s' cannot handle intent '%s'. Falling back to chat.",
+                primary, intent
+            )
+            return self._chat_fallback(raw_query, nlu_result)
+
         try:
-            result = primary_mod.handle(intent, entities, self._context)
+            result = primary_mod.handle(intent, entities, safe_context)
+            
         except NotImplementedError:
+
             # Hecate itself was accidentally dispatched — shouldn't happen
             log.error("Dispatched to Hecate — routing error.")
             return "I had a routing error. Please try again."
@@ -87,8 +102,12 @@ class HestiaOrchestrator:
             return f"I had trouble with that — {primary} module encountered an error."
 
         # 4. Context updates from module
+        # Apply module updates to local context first
         if "context_update" in result:
-            self._context.update(result["context_update"])
+            context.update(result["context_update"])
+
+        # Then commit final context snapshot
+        self._context = context
 
         # 5. Rolling intent history
         self._context["recent_intents"].append(intent)

@@ -22,10 +22,6 @@ logger = logging.getLogger(__name__)
 class IrisEngine(BaseModule):               
     name = "iris"
 
-    _SEARCH_KEYWORDS  = {"photo", "picture", "image", "media", "gallery"}
-    _INGEST_KEYWORDS  = {"ingest", "import", "add", "index", "scan", "catalog"}
-    _ANALYSE_KEYWORDS = {"analyse", "analyze", "describe", "caption"}
-
     def __init__(self, hestia_llm=None):
         try:
             self.config: IrisConfig = get_config()
@@ -44,10 +40,10 @@ class IrisEngine(BaseModule):
     def can_handle(self, intent: str) -> bool:   
         return intent in {"iris_search", "iris_ingest", "iris_analyse", "iris_status", "iris_query"}
 
-    def handle(self, intent: str, entities: dict, context: dict) -> dict:   
+    def handle(self, intent: str, entities: dict, context: dict) -> dict:
         raw = entities.get("raw_query", context.get("raw_query", "")).lower()
 
-        if intent == "iris_ingest" or any(k in raw for k in self._INGEST_KEYWORDS):
+        if intent == "iris_ingest":
             stats = self.ingest()
             return {
                 "response": (
@@ -58,16 +54,20 @@ class IrisEngine(BaseModule):
                 "data": stats,
                 "confidence": 1.0,
             }
-        elif intent == "iris_analyse" or any(k in raw for k in self._ANALYSE_KEYWORDS):
+
+        elif intent == "iris_analyse":
             response = self.analyse(limit=20)
             return {"response": response, "data": {}, "confidence": 0.9}
-        else:
+
+        elif intent in {"iris_search", "iris_query"}:
             result = self.search(raw or entities.get("query", ""))
             return {
                 "response": result or "No matching media found.",
                 "data": {},
                 "confidence": 0.85 if result else 0.3,
             }
+
+        return {"response": "", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:            
         try:
@@ -83,9 +83,18 @@ class IrisEngine(BaseModule):
     def ingest(self, source_dir: str = None) -> dict:
         try:
             dir_to_use = source_dir or self.config.source_dir
-            stats = asyncio.run(self.ingestor.process_directory(
-                Path(dir_to_use), recursive=True
-            ))
+            loop = asyncio.get_event_loop()
+
+            if loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self.ingestor.process_directory(Path(dir_to_use), recursive=True),
+                    loop
+                )
+                stats = future.result()
+            else:
+                stats = loop.run_until_complete(
+                    self.ingestor.process_directory(Path(dir_to_use), recursive=True)
+                )
             return stats
         except Exception as e:
             logger.error(f"[Iris] Ingest error: {e}")

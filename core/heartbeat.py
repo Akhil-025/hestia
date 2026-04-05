@@ -33,6 +33,15 @@ class HestiaHeartbeat:
             time.sleep(self.interval)
 
     def _run_heartbeat(self) -> None:
+        # ── DB REMINDER CHECK ─────────────────────────────
+        if self.mnemosyne:
+            now_iso = datetime.utcnow().isoformat()
+            reminders = self.mnemosyne.get_due_reminders()
+
+            for rid, text in reminders:
+                bus.emit("speak", {"text": f"Reminder: {text}"})
+                self.mnemosyne.mark_reminder_done(rid)
+
         try:
             root = os.path.dirname(os.path.abspath(__file__))
             project_root = os.path.abspath(os.path.join(root, os.pardir))

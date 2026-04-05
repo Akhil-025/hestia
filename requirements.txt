@@ -56,3 +56,5 @@ easyocr          # GPU OCR fallback — heavy, install only if needed
 imagehash
 
 waitress
+
+dateparser

@@ -99,10 +99,10 @@ class HestiaWebUI:
                         "query": r["query"],
                         "response": r["response"],
                         "intent": r["intent"],
+                        "pushed_at": r.get("pushed_at"),  # NEW
                     }
                     for r in rows
                 ]
-
                 return jsonify(data)
 
             except Exception:
@@ -124,6 +124,7 @@ class HestiaWebUI:
                         "query": r["query"],
                         "response": r["response"],
                         "intent": r["intent"],
+                        "pushed_at": r.get("pushed_at"),  # NEW
                     }
                     for r in rows
                 ]

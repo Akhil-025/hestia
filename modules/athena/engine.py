@@ -13,8 +13,9 @@ class AthenaEngine(BaseModule):
     name = "athena"
 
     _INTENTS = {
-        "query_documents", "search_notes", "explain_from_docs",
-        "search_documents", "chat", "iris_search", "iris_query",
+        "athena_search",
+        "query_documents",
+        "search_documents",
     }
 
     def __init__(self, hestia_llm) -> None:
@@ -50,12 +51,12 @@ class AthenaEngine(BaseModule):
         except Exception:
             return {}
 
-    def query(self, q: str) -> str:
+    def _query(self, q: str) -> str:
         """Run the full RAG pipeline and return the answer string."""
         result = self.query_service.execute(q)
         return result.answer
 
-    def ingest(self, data_dir: str | None = None) -> dict:
+    def _ingest(self, data_dir: str | None = None) -> dict:
         """Ingest all documents under data_dir (or the configured default)."""
         return self.rag.ingest_directory(data_dir)
 

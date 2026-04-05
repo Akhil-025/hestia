@@ -105,12 +105,17 @@ class CoreModule(BaseModule):
         if not note:
             return {"response": "What would you like me to note down?", "data": {}, "confidence": 0.0}
         
+        timestamp = datetime.datetime.utcnow().isoformat()
+        note_key = f"note_{timestamp}"
+
+        self._memory.learn(note_key, note)
+
         return {
             "response": "Note saved.",
-            "data": {},
+            "data": {"note": note},
             "confidence": 0.95
         }
-
+    
     def _get_notes(self) -> dict:
         rows = self._memory.db.get_by_intent("take_note", 10)
         notes = [{"query": r["query"], "response": r["response"], "intent": r["intent"]} for r in rows]

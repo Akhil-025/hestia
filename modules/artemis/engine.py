@@ -12,7 +12,7 @@ class ArtemisEngine(BaseModule):
     def can_handle(self, intent: str) -> bool:
         return intent in {
             "add_habit", "complete_habit", "list_habits",
-            "add_goal", "update_goal", "list_goals", "productivity_summary"
+            "add_goal", "update_goal", "list_goals", "get_goals", "productivity_summary"
         }
 
     def handle(self, intent: str, entities: dict, context: dict) -> dict:
@@ -63,7 +63,7 @@ class ArtemisEngine(BaseModule):
                 response = f"Goal '{name}' is now {pct}% complete."
             else:
                 response = "Please specify a goal name and progress."
-        elif intent == "list_goals":
+        elif intent in ("list_goals", "get_goals"):
             goals = self.tracker.get_goals()
             if not goals:
                 response = "You have no active goals."

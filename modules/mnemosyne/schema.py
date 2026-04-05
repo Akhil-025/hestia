@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS interaction_log (
     summarised BOOLEAN DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY,
+    text TEXT,
+    due_time TIMESTAMP,
+    status TEXT DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_due_time ON reminders(due_time);
 CREATE INDEX IF NOT EXISTS idx_facts_key ON facts(key);
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 CREATE INDEX IF NOT EXISTS idx_interaction_log_summarised ON interaction_log(summarised);

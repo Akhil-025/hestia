@@ -1,7 +1,6 @@
 """
 modules/mnemosyne/summariser.py
 
-Summariser for Mnemosyne: compresses interactions into summaries and stores in DB/vector store.
 """
 import logging
 import json
@@ -36,12 +35,9 @@ class Summariser:
             "No preamble, no explanation.\n\n" + joined
         )
         try:
-            llm_result = self.hestia_llm._call_llm(prompt)
-            if isinstance(llm_result, dict):
-                llm_text = llm_result.get("text", "")
-            else:
-                llm_text = llm_result or ""
-            parsed = json.loads(llm_text)
+            llm_text = self.hestia_llm.generate(prompt)
+
+            parsed = json.loads(llm_text.strip())
             summary = parsed.get("summary", "")
             topic = parsed.get("topic", "General")
         except Exception:
