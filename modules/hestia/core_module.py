@@ -11,7 +11,7 @@ class CoreModule(BaseModule):
     _INTENTS = {
         "save_name", "take_note", "get_notes",
         "get_history", "set_preference",
-        "get_system_info", "chat"
+        "get_system_info", "get_user_info", "chat"
     }
 
     def __init__(self, memory, ollama_cfg: dict):
