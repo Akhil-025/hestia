@@ -44,10 +44,15 @@ class AthenaEngine(BaseModule):
         except Exception as e:
             return {"response": "I had trouble searching your documents.", "data": {}, "confidence": 0.0}
 
-    def get_context(self) -> dict:                          # ADD
+    def get_context(self) -> dict:
         try:
             s = self.stats()
-            return {"athena_chunks": s.get("total_chunks", 0), "athena_subjects": s.get("subjects", [])}
+            return {
+                "athena_chunks":   s.get("total_chunks", 0),
+                "athena_subjects": s.get("subjects", []),
+                "athena_modules":  s.get("modules", []),
+                "athena_ready":    s.get("total_chunks", 0) > 0,
+            }
         except Exception:
             return {}
 

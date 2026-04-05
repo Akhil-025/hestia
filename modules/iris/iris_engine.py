@@ -69,13 +69,18 @@ class IrisEngine(BaseModule):
 
         return {"response": "", "data": {}, "confidence": 0.0}
 
-    def get_context(self) -> dict:            
+    def get_context(self) -> dict:
         try:
             s = self.stats()
+            recent = self.db.get_all_files(limit=3)
+            recent_captions = [
+                f.get("caption", "") for f in recent if f.get("caption")
+            ]
             return {
-                "iris_total":    s.get("total_files", 0),
-                "iris_processed": s.get("processed", 0),
-                "iris_pending":  s.get("pending", 0),
+                "iris_total":         s.get("total_files", 0),
+                "iris_processed":     s.get("processed", 0),
+                "iris_pending":       s.get("pending", 0),
+                "iris_recent_captions": recent_captions,
             }
         except Exception:
             return {}
