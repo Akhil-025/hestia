@@ -104,26 +104,21 @@ class HestiaOrchestrator:
 
         # ── SYNTHESIS PATH ───────────────────────────────────
         if synthesize and secondary:
-            secondary_results = []
+            secondary_context = {}
             for mod_name in secondary:
                 mod = self._modules.get(mod_name)
-                if mod and mod.can_handle(normalized_intent):
+                if mod:
                     try:
-                        result = mod.handle(normalized_intent, entities, safe_context)
-                        if result.get("response"):
-                            secondary_results.append({
-                                "module":   mod_name,
-                                "response": result["response"],
-                            })
+                        secondary_context[mod_name] = mod.get_context()
                     except Exception as e:
-                        log.debug("Secondary module %s failed: %s", mod_name, e)
+                        log.debug("get_context() failed for secondary %s: %s", mod_name, e)
 
-            if secondary_results:
+            if secondary_context:
                 primary_result["response"] = self._synthesize(
                     raw_query,
                     primary,
                     primary_result.get("response", ""),
-                    secondary_results,
+                    secondary_context,
                 )
 
         # Context updates
@@ -136,28 +131,32 @@ class HestiaOrchestrator:
         return primary_result.get("response", "...")
 
     def _synthesize(self, query: str, primary_name: str,
-                    primary_response: str, secondary_results: list) -> str:
-        """Combine multiple module responses into a single coherent answer."""
+                    primary_response: str, secondary_context: dict) -> str:
+        """Combine primary response with secondary module context into one answer."""
         from core.ollama_client import generate
 
-        parts = [f"[{primary_name.upper()}]: {primary_response}"]
-        for r in secondary_results:
-            parts.append(f"[{r['module'].upper()}]: {r['response']}")
+        context_parts = []
+        for mod_name, ctx in secondary_context.items():
+            if ctx:
+                readable = "\n".join(f"  {k}: {v}" for k, v in ctx.items())
+                context_parts.append(f"[{mod_name.upper()} CONTEXT]\n{readable}")
 
-        combined = "\n".join(parts)
+        context_block = "\n\n".join(context_parts) if context_parts else ""
 
         prompt = (
             f"The user asked: \"{query}\"\n\n"
-            f"Multiple sources returned the following information:\n{combined}\n\n"
-            "Synthesize this into a single, coherent, natural response in 2-3 sentences. "
-            "Do not mention the source names. Just answer the question directly."
+            f"Primary answer from {primary_name}:\n{primary_response}\n\n"
+            + (f"Additional context from other sources:\n{context_block}\n\n" if context_block else "")
+            + "Synthesize this into a single, coherent, natural response in 2-3 sentences. "
+            "Use the additional context to enrich the answer where relevant. "
+            "Do not mention source names. Just answer the question directly."
         )
 
         try:
             result = generate(prompt)
             return result if result else primary_response
         except Exception:
-            return primary_response  # graceful fallback to primary alone
+            return primary_response
 
     def _chat_fallback(self, raw_query: str, nlu_result: dict) -> str:
         """Used when no module matches — returns NLU's pre-generated response."""
