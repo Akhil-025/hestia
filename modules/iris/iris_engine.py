@@ -88,22 +88,34 @@ class IrisEngine(BaseModule):
     def ingest(self, source_dir: str = None) -> dict:
         try:
             dir_to_use = source_dir or self.config.source_dir
-            loop = asyncio.get_event_loop()
+            coro = self.ingestor.process_directory(
+                Path(dir_to_use), recursive=True
+            )
 
-            if loop.is_running():
-                future = asyncio.run_coroutine_threadsafe(
-                    self.ingestor.process_directory(Path(dir_to_use), recursive=True),
-                    loop
-                )
-                stats = future.result()
-            else:
-                stats = loop.run_until_complete(
-                    self.ingestor.process_directory(Path(dir_to_use), recursive=True)
-                )
-            return stats
+            try:
+                loop = asyncio.get_running_loop()
+
+                # ⚠️ If we're already inside the event loop thread
+                if loop.is_running():
+                    # Offload to thread to avoid blocking loop
+                    import concurrent.futures
+
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(lambda: asyncio.run(coro))
+                        return future.result()
+
+            except RuntimeError:
+                # No running loop
+                return asyncio.run(coro)
+
         except Exception as e:
             logger.error(f"[Iris] Ingest error: {e}")
-            return {"ingested": 0, "duplicates_skipped": 0, "errors": 1, "total_size": 0}
+            return {
+                "ingested": 0,
+                "duplicates_skipped": 0,
+                "errors": 1,
+                "total_size": 0,
+            }
 
     def search(self, query: str, limit: int = 10) -> str:
         try:

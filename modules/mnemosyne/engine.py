@@ -463,6 +463,18 @@ class MnemosyneEngine(BaseModule):
         except Exception:
             logger.exception("status() failed.")
             return {"facts": 0, "active_goals": 0, "summaries": 0}
+        
+    def get_top_facts_for_context(self, limit: int = 5) -> str:
+        try:
+            facts = self.db.get_top_facts(limit)
+        except Exception:
+            logger.exception("Failed to fetch top facts")
+            return ""
+
+        if not facts:
+            return ""
+
+        return "\n".join(f"- {f['key']}: {f['value']}" for f in facts)
 
     # ------------------------------------------------------------------
     # Private helpers

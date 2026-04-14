@@ -71,8 +71,18 @@ class MnemosyneDB:
         row = cur.fetchone()
         return row["value"] if row else None
 
-    def get_all_facts(self) -> list[dict]:
-        cur = self._conn.execute("SELECT * FROM facts")
+    def get_all_facts(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        limit = max(1, min(limit, 1000))  # hard cap
+
+        cur = self._conn.execute(
+            """
+            SELECT key, value, source, confidence, created_at, updated_at
+            FROM facts
+            ORDER BY updated_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset)
+        )
         return [dict(row) for row in cur.fetchall()]
 
     def delete_fact(self, key) -> None:
@@ -193,6 +203,18 @@ class MnemosyneDB:
             for r in rows
         ]
         return result
+    
+    def get_top_facts(self, limit: int = 5):
+        cursor = self._conn.execute(
+            """
+            SELECT key, value
+            FROM facts
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        return [{"key": r[0], "value": r[1]} for r in cursor.fetchall()]
             
     # ── Reminders ─────────────────────────────────────
 

@@ -6,7 +6,8 @@ import time
 import requests
 import os
 from typing import Optional, List, Dict, Any
-
+import logging
+logger = logging.getLogger(__name__)
 
 
 class HestiaNLU:
@@ -40,6 +41,13 @@ class HestiaNLU:
                 "Always respond with valid JSON: {\"intent\": \"chat\", \"entities\": {}, \"response\": \"...\", \"confidence\": 0.9}\n"
                 "Valid intents: chat, get_time, get_date, get_weather, set_reminder, open_app, take_note, save_name, get_user_info, get_history, get_notes, set_preference\n"
             )
+        
+
+    def set_memory(self, memory) -> None:
+        """Inject memory reference so NLU can include user facts in prompts."""
+        if not hasattr(memory, "get_top_facts_for_context"):
+            raise TypeError("Memory must implement get_top_facts_for_context()")
+        self._memory = memory
 
     def _build_prompt(self, text: str, context: Optional[List[Dict[str, Any]]] = None) -> str:
         """Construct full prompt with system prompt, context, user facts, and user input."""
@@ -55,12 +63,14 @@ class HestiaNLU:
 
         # Inject known user facts
         facts_context = ""
-        try:
-            # memory is not directly available on NLU — skip silently if not injected
-            if hasattr(self, "_memory") and self._memory is not None:
+
+        if self._memory is None:
+            logger.warning("[NLU] Memory not injected — running without user context.")
+        else:
+            try:
                 facts_context = self._memory.get_top_facts_for_context(limit=5)
-        except Exception:
-            pass
+            except Exception as e:
+                logger.error(f"[NLU] Memory retrieval failed: {e}")
         if facts_context:
             prompt += f"\n{facts_context}\n"
 
@@ -80,10 +90,6 @@ class HestiaNLU:
         }}
         """
         return prompt
-
-    def set_memory(self, memory) -> None:
-        """Inject memory reference so NLU can include user facts in prompts."""
-        self._memory = memory
     
     def _health_check(self) -> bool:
         from core.ollama_manager import OllamaManager
