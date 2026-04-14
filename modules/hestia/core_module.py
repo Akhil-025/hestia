@@ -104,12 +104,10 @@ class CoreModule(BaseModule):
 
         if not note:
             return {"response": "What would you like me to note down?", "data": {}, "confidence": 0.0}
-        
-        timestamp = datetime.datetime.utcnow().isoformat()
-        note_key = f"note_{timestamp}"
 
-        self._memory.learn(note_key, note)
-
+        # Do NOT call self._memory.learn() here.
+        # The orchestrator's interaction_logged bus event persists this naturally
+        # to interaction_log, which is where _get_notes reads from.
         return {
             "response": "Note saved.",
             "data": {"note": note},
