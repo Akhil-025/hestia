@@ -3,300 +3,494 @@ modules/mnemosyne/engine.py
 
 MnemosyneEngine: unified entry point for memory, goals, and summarisation.
 """
+from __future__ import annotations
+
 import logging
-from datetime import datetime
-from typing import Optional
-from modules.base import BaseModule  
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from modules.base import BaseModule
 from .config import get_config
 from .db import MnemosyneDB
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Optional dependencies
+# ---------------------------------------------------------------------------
+
 try:
     from .vector_store import MnemosyneVectorStore
-    chroma_available = True
+    _CHROMA_AVAILABLE = True
 except ImportError:
-    logger.warning("ChromaDB or sentence-transformers not available; semantic memory disabled.")
-    chroma_available = False
+    logger.warning(
+        "ChromaDB or sentence-transformers not available; semantic memory disabled."
+    )
+    _CHROMA_AVAILABLE = False
 
 try:
     from .summariser import Summariser
-    summariser_available = True
+    _SUMMARISER_AVAILABLE = True
 except ImportError:
     logger.warning("Summariser not available; summarisation disabled.")
-    summariser_available = False
+    _SUMMARISER_AVAILABLE = False
 
-class MnemosyneEngine(BaseModule):           
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _utc_now() -> str:
+    """Return the current UTC time as an ISO-8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _readable(key: str) -> str:
+    """Convert a snake_case key to a human-readable label."""
+    return key.replace("_", " ")
+
+
+# ---------------------------------------------------------------------------
+# Response builders
+# ---------------------------------------------------------------------------
+
+def _ok(response: str, data: Optional[dict] = None, confidence: float = 0.9) -> dict:
+    return {"response": response, "data": data or {}, "confidence": confidence}
+
+
+def _miss(response: str = "I don't have anything on that.") -> dict:
+    return {"response": response, "data": {}, "confidence": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
+class MnemosyneEngine(BaseModule):
+    """
+    Unified entry point for memory, goals, and summarisation.
+
+    Responsibilities
+    ----------------
+    - Persist and retrieve interactions via SQLite (MnemosyneDB).
+    - Provide semantic recall via an optional ChromaDB vector store.
+    - Delegate periodic summarisation to an optional Summariser.
+    - Expose a stable `handle` / `can_handle` interface for the dispatcher.
+    """
+
     name = "mnemosyne"
 
-    _INTENTS = {
-        "remember", "recall", "get_facts", "learn_fact",
-        "forget_fact", "get_user_info",
-    }
-    
-    def __init__(self, hestia_llm):
+    _INTENTS: frozenset[str] = frozenset(
+        {
+            "remember",
+            "recall",
+            "get_facts",
+            "learn_fact",
+            "forget_fact",
+            "get_user_info",
+        }
+    )
+
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
+    def __init__(self, hestia_llm: Any) -> None:
         self.config = get_config()
         self.db = MnemosyneDB(self.config.db_path)
         self.hestia_llm = hestia_llm
-        if chroma_available:
-            self.vector_store = MnemosyneVectorStore(self.config.chroma_dir, self.config.embedding_model)
-        else:
-            self.vector_store = None
-        self.summariser = None
-        if summariser_available:
+        self.vector_store: Optional[MnemosyneVectorStore] = None
+        self.summariser: Optional[Summariser] = None
+
+        if _CHROMA_AVAILABLE:
+            self.vector_store = MnemosyneVectorStore(
+                self.config.chroma_dir,
+                self.config.embedding_model,
+            )
+
+        if _SUMMARISER_AVAILABLE:
             self.summariser = Summariser(self, hestia_llm)
 
-    def can_handle(self, intent: str) -> bool:    #
+        logger.info(
+            "MnemosyneEngine ready (vector_store=%s, summariser=%s)",
+            self.vector_store is not None,
+            self.summariser is not None,
+        )
+
+    # ------------------------------------------------------------------
+    # BaseModule interface
+    # ------------------------------------------------------------------
+
+    def can_handle(self, intent: str) -> bool:
         return intent in self._INTENTS
 
-    def handle(self, intent: str, entities: dict, context: dict) -> dict:   
-        query = (
+    def handle(self, intent: str, entities: dict, context: dict) -> dict:
+        """
+        Route an intent to the appropriate handler.
+
+        Returns a response dict with keys: response, data, confidence.
+        Never raises; errors are caught and returned as low-confidence misses.
+        """
+        try:
+            return self._dispatch(intent, entities, context)
+        except Exception:
+            logger.exception("handle() failed for intent=%s", intent)
+            return _miss("Something went wrong retrieving that memory.")
+
+    # ------------------------------------------------------------------
+    # Dispatcher (private)
+    # ------------------------------------------------------------------
+
+    def _dispatch(self, intent: str, entities: dict, context: dict) -> dict:
+        query: str = (
             entities.get("query")
             or entities.get("raw_query")
             or context.get("raw_query", "")
         )
-        if intent in ("remember", "recall"):
-            response = self.remember(query)
 
-            if not response:
-                response = "I don't have any memories about that yet."
+        if intent in ("remember", "recall", "get_facts"):
+            return self._handle_recall(query)
 
-            return {
-                "response": response,
-                "data": {},
-                "confidence": 0.85
+        if intent == "get_user_info":
+            return self._handle_get_user_info(entities, query)
+
+        if intent == "learn_fact":
+            return self._handle_learn_fact(entities)
+
+        if intent == "forget_fact":
+            return self._handle_forget_fact(entities)
+
+        return _miss()
+
+    # ------------------------------------------------------------------
+    # Intent handlers (private)
+    # ------------------------------------------------------------------
+
+    def _handle_recall(self, query: str) -> dict:
+        response = self.remember(query)
+        if not response:
+            response = "I don't have any memories about that yet."
+        return _ok(response, confidence=0.85)
+
+    def _handle_get_user_info(self, entities: dict, query: str) -> dict:
+        key: str = entities.get("key", "").strip()
+
+        if key:
+            value = self.db.get_fact(key)
+            if value:
+                label = "name" if key == "user_name" else _readable(key)
+                return _ok(f"Your {label} is {value}.", confidence=0.95)
+            return _ok("I don't have that information yet.", confidence=0.5)
+
+        # Fallback: semantic recall
+        response = self.remember(query)
+        return _ok(response or "I don't have anything on that.", confidence=0.85)
+
+    def _handle_learn_fact(self, entities: dict) -> dict:
+        key: str = entities.get("key", "").strip()
+        value: str = entities.get("value", "").strip()
+
+        if not key or not value:
+            return _ok("What should I remember?", confidence=0.0)
+
+        self.learn(key, value)
+        return _ok(f"Got it — I'll remember your {_readable(key)}.", confidence=0.95)
+
+    def _handle_forget_fact(self, entities: dict) -> dict:
+        key: str = entities.get("key", "").strip()
+        if not key:
+            return _ok("Which fact should I forget?", confidence=0.0)
+
+        self.forget(key)
+        logger.info("Fact forgotten: key=%s", key)
+        return _ok(f"Forgotten: {_readable(key)}.", confidence=0.9)
+
+    # ------------------------------------------------------------------
+    # Core memory operations (public)
+    # ------------------------------------------------------------------
+
+    def push(
+        self,
+        user_text: str,
+        hestia_response: str,
+        intent: str,
+        source_device: str = "hestia",
+    ) -> None:
+        """Persist an interaction and trigger summarisation if due."""
+        if not user_text or not hestia_response:
+            logger.warning("push() called with empty user_text or hestia_response; skipping.")
+            return
+
+        self.db.push_interaction(user_text, hestia_response, intent, source_device)
+
+        if self.summariser and self.summariser.should_summarise():
+            try:
+                self.summariser.run()
+            except Exception:
+                logger.exception("Summarisation failed; continuing without it.")
+
+    def remember(self, query: str, n: int = 5) -> str:
+        """
+        Semantic recall over summaries and facts.
+
+        Returns a natural-language string or an empty string when nothing
+        is found (callers decide how to phrase the fallback).
+        """
+        if not self.vector_store:
+            return ""
+
+        if not query or not query.strip():
+            return ""
+
+        try:
+            summaries = self.vector_store.search(
+                query,
+                n_results=n,
+                where={"type": {"$eq": "summary"}},
+            )
+            facts = self.vector_store.search(
+                query,
+                n_results=n,
+                where={"type": {"$eq": "fact"}},
+            )
+        except Exception:
+            logger.exception("Vector search failed for query=%r", query)
+            return ""
+
+        results = summaries + facts
+        if not results:
+            return ""
+
+        # Deduplicate by id, sorted by relevance score descending
+        seen: set[str] = set()
+        deduped = []
+        for r in sorted(results, key=lambda x: x["score"], reverse=True):
+            if r["id"] not in seen:
+                deduped.append(r)
+                seen.add(r["id"])
+
+        lines: list[str] = []
+        for r in deduped[:n]:
+            line = self._format_result(r)
+            if line:
+                lines.append(line)
+
+        return " ".join(lines)
+
+    def learn(self, key: str, value: str, source: str = "user") -> None:
+        """Persist a key/value fact to SQLite and the vector store."""
+        if not key or not value:
+            raise ValueError(f"learn() requires non-empty key and value; got key={key!r} value={value!r}")
+
+        self.db.set_fact(key, value, source)
+
+        if self.vector_store:
+            metadata = {
+                "type": "fact",
+                "created_at": _utc_now(),
+                "key": key,
+                "source": source,
             }
+            try:
+                self.vector_store.add(value, metadata, doc_id=key)
+            except Exception:
+                logger.exception("Vector store add failed for key=%s", key)
 
-        elif intent == "get_user_info":
-            key = entities.get("key")
+    def forget(self, key: str) -> None:
+        """Remove a fact from SQLite and the vector store."""
+        if not key:
+            raise ValueError("forget() requires a non-empty key.")
 
-            if key:
-                value = self.db.get_fact(key)
-                if value:
-                    if key == "user_name":
-                        return {
-                            "response": f"Your name is {value}.",
-                            "data": {},
-                            "confidence": 0.95
-                        }
+        self.db.delete_fact(key)
 
-                    readable = key.replace("_", " ")
-                    return {
-                        "response": f"Your {readable} is {value}.",
-                        "data": {},
-                        "confidence": 0.95
-                    }
-                else:
-                    return {
-                        "response": "I don't have that information yet.",
-                        "data": {},
-                        "confidence": 0.5
-                    }
+        if self.vector_store:
+            try:
+                self.vector_store.delete(key)
+            except Exception:
+                logger.exception("Vector store delete failed for key=%s", key)
 
-            # fallback → general recall
-            response = self.remember(query)
+    # ------------------------------------------------------------------
+    # Summarisation helpers (public)
+    # ------------------------------------------------------------------
 
-            return {
-                "response": response or "I don't have anything on that.",
-                "data": {},
-                "confidence": 0.85
+    def trigger_summarise(self) -> None:
+        """Externally trigger an immediate summarisation run."""
+        if not self.summariser:
+            logger.warning("trigger_summarise() called but summariser is unavailable.")
+            return
+        try:
+            self.summariser.run()
+        except Exception:
+            logger.exception("trigger_summarise() failed.")
+
+    def add_summary(
+        self,
+        period_start: str,
+        period_end: str,
+        content: str,
+        topic: str,
+        interaction_count: int,
+    ) -> int:
+        """Write a summary to SQLite and embed it in the vector store."""
+        if not content or not content.strip():
+            raise ValueError("add_summary() requires non-empty content.")
+
+        summary_id = self.db.add_summary(
+            period_start, period_end, content, topic, interaction_count
+        )
+
+        if self.vector_store:
+            metadata = {
+                "type": "summary",
+                "created_at": _utc_now(),
+                "topic": topic,
             }
-        elif intent == "learn_fact":
-            key   = entities.get("key", "")
-            value = entities.get("value", "")
-            if key and value:
-                self.learn(key, value)
-                return {"response": f"Got it — I'll remember your {key}.", "data": {}, "confidence": 0.95}
-            return {"response": "What should I remember?", "data": {}, "confidence": 0.0}
-        elif intent == "forget_fact":
-            key = entities.get("key", "")
-            self.forget(key)
-            return {"response": f"Forgotten: {key}.", "data": {}, "confidence": 0.9}
-        
-        return {
-            "response": "I don't have anything on that.",
-            "data": {},
-            "confidence": 0.0
-        }
+            try:
+                self.vector_store.add(content, metadata, doc_id=str(summary_id))
+            except Exception:
+                logger.exception("Vector store add failed for summary_id=%d", summary_id)
+
+        return summary_id
+
+    def get_unsummarised(self, limit: int = 50) -> list[dict]:
+        return self.db.get_unsummarised(limit)
+
+    def mark_summarised(self, ids: list[int]) -> None:
+        if ids:
+            self.db.mark_summarised(ids)
+
+    # ------------------------------------------------------------------
+    # Reminder helpers (public)
+    # ------------------------------------------------------------------
+
+    def add_reminder(self, text: str, due_time: str) -> None:
+        if not text or not due_time:
+            raise ValueError("add_reminder() requires non-empty text and due_time.")
+        self.db.add_reminder(text, due_time)
+
+    def get_due_reminders(self) -> list[dict]:
+        return self.db.get_due_reminders(_utc_now())
+
+    def mark_reminder_done(self, rid: int) -> None:
+        self.db.mark_reminder_done(rid)
+
+    # ------------------------------------------------------------------
+    # Context and stats (public)
+    # ------------------------------------------------------------------
 
     def get_context(self) -> dict:
+        """
+        Return a lightweight context snapshot for NLU enrichment.
+        Never raises; returns an empty dict on failure.
+        """
         try:
             s = self.status()
             recent = self.db.get_recent_interactions(3)
             recent_summary = [
-                {"query": r["query"], "intent": r["intent"]}
-                for r in recent
+                {"query": r["query"], "intent": r["intent"]} for r in recent
             ]
             facts = self.db.get_all_facts()
             top_facts = {f["key"]: f["value"] for f in facts[:5]}
+
             return {
-                "mnemosyne_facts":        s.get("facts", 0),
-                "mnemosyne_goals":        s.get("active_goals", 0),
-                "mnemosyne_summaries":    s.get("summaries", 0),
-                "mnemosyne_recent":       recent_summary,
-                "mnemosyne_top_facts":    top_facts,
+                "mnemosyne_facts": s.get("facts", 0),
+                "mnemosyne_goals": s.get("active_goals", 0),
+                "mnemosyne_summaries": s.get("summaries", 0),
+                "mnemosyne_recent": recent_summary,
+                "mnemosyne_top_facts": top_facts,
             }
         except Exception:
+            logger.exception("get_context() failed.")
             return {}
 
-    def push(self, user_text: str, hestia_response: str, intent: str, source_device: str = "hestia") -> None:
-        self.db.push_interaction(user_text, hestia_response, intent, source_device)
-        if self.summariser and self.summariser.should_summarise():
-            self.summariser.run()
-
-    def remember(self, query: str, n: int = 5) -> str:
-        if not self.vector_store:
-            return ""
-        # Search summaries
-        summaries = self.vector_store.search(query, n_results=n, where={"type": "summary"}) if chroma_available else []
-        # Search facts
-        facts = self.vector_store.search(query, n_results=n, where={"type": "fact"}) if chroma_available else []
-        results = summaries + facts
-        if not results:
-            return "I don't have any relevant memories for that."
-        # Sort by score descending, deduplicate by id
-        seen = set()
-        sorted_results = []
-        for r in sorted(results, key=lambda x: x["score"], reverse=True):
-            if r["id"] not in seen:
-                sorted_results.append(r)
-                seen.add(r["id"])
-        # Format as natural language
-        lines = []
-        for r in sorted_results[:n]:
-            meta = r["metadata"]
-            text = r["text"]
-            if meta.get("type") == "fact":
-                key = meta.get("key", "")
-                key_readable = key.replace("_", " ")
-                lines.append(f"Your {key_readable} is {text}.")
-            elif meta.get("type") == "summary":
-                topic = meta.get("topic", "")
-                prefix = f"Regarding {topic}: " if topic and topic != "General" else ""
-                lines.append(f"{prefix}{text}")
-            else:
-                lines.append(text)
-
-        if not lines:
-            return "I don't have any relevant memories for that."
-        return " ".join(lines)
-
-    def learn(self, key: str, value: str, source: str = "user") -> None:
-        self.db.set_fact(key, value, source)
-        if self.vector_store:
-            metadata = {"type": "fact", "created_at": datetime.utcnow().isoformat(), "key": key, "source": source}
-            self.vector_store.add(value, metadata, doc_id=key)
-
-    def forget(self, key: str) -> None:
-        self.db.delete_fact(key)
-        if self.vector_store:
-            self.vector_store.delete(key)
-
     def get_stats(self) -> dict:
-        """
-        Efficient stats using SQL COUNT instead of loading full rows.
-        """
+        """Return aggregate statistics using SQL COUNT queries."""
         try:
             s = self.status()
+            conn = self.db._conn
 
-            cur = self.db._conn.execute("SELECT COUNT(*) FROM interaction_log")
-            total = cur.fetchone()[0]
+            total: int = conn.execute(
+                "SELECT COUNT(*) FROM interaction_log"
+            ).fetchone()[0]
 
-            cur = self.db._conn.execute(
-                "SELECT COUNT(*) FROM interaction_log WHERE intent='take_note'"
-            )
-            notes = cur.fetchone()[0]
+            notes: int = conn.execute(
+                "SELECT COUNT(*) FROM interaction_log WHERE intent = 'take_note'"
+            ).fetchone()[0]
 
-            cur = self.db._conn.execute(
+            unique_intents: int = conn.execute(
                 "SELECT COUNT(DISTINCT intent) FROM interaction_log"
-            )
-            unique = cur.fetchone()[0]
+            ).fetchone()[0]
 
             return {
                 "total_interactions": total,
                 "notes": notes,
                 "facts_known": s.get("facts", 0),
-                "unique_intents": unique,
+                "unique_intents": unique_intents,
             }
-
-        except Exception as e:
-            logger.error(f"get_stats failed: {e}")
+        except Exception:
+            logger.exception("get_stats() failed.")
             return {}
-        
-    def get_recent(self, limit: int = 5) -> list:
-        """
-        Return recent interactions for NLU context.
-        Matches old HestiaMemory format.
-        """
+
+    def get_recent(self, limit: int = 5) -> list[dict]:
+        """Return the most recent interactions (matches legacy HestiaMemory API)."""
         try:
-            rows = self.db.get_recent_interactions(limit)
-            return rows
-        except Exception as e:
-            logger.error(f"get_recent failed: {e}")
+            return self.db.get_recent_interactions(limit)
+        except Exception:
+            logger.exception("get_recent() failed.")
             return []
-        
-    def get_preference(self, key: str, default=None):
-        """
-        Shim for modules expecting preference lookup.
-        """
+
+    def get_preference(self, key: str, default: Any = None) -> Any:
+        """Shim for modules that expect a preference lookup."""
         try:
             value = self.db.get_fact(key)
             return value if value is not None else default
-        except Exception as e:
-            logger.error(f"get_preference failed: {e}")
+        except Exception:
+            logger.exception("get_preference() failed for key=%s", key)
             return default
-        
-    def trigger_summarise(self) -> None:
-        """Public entry point for triggering summarisation externally."""
-        if self.summariser:
-            self.summariser.run()
-
-
-    def add_summary(self, period_start: str, period_end: str,
-                content: str, topic: str, interaction_count: int) -> int:
-        """Write a summary record and embed it into the vector store."""
-        summary_id = self.db.add_summary(
-            period_start, period_end, content, topic, interaction_count
-        )
-        if self.vector_store:
-            from datetime import datetime
-            metadata = {
-                "type": "summary",
-                "created_at": datetime.utcnow().isoformat(),
-                "topic": topic,
-            }
-            self.vector_store.add(content, metadata, doc_id=str(summary_id))
-        return summary_id
-
-    def get_unsummarised(self, limit: int = 50) -> list:
-        return self.db.get_unsummarised(limit)
-
-    def mark_summarised(self, ids: list) -> None:
-        self.db.mark_summarised(ids)
 
     def status(self) -> dict:
+        """Return live counts for facts, active goals, and summaries."""
         try:
-            cur = self.db._conn.execute("SELECT COUNT(*) FROM facts")
-            facts = cur.fetchone()[0]
-            cur = self.db._conn.execute(
-                "SELECT COUNT(*) FROM goals WHERE status='active'"
-            )
-            goals = cur.fetchone()[0]
-            cur = self.db._conn.execute("SELECT COUNT(*) FROM summaries")
-            summaries = cur.fetchone()[0]
+            conn = self.db._conn
+            facts: int = conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+            goals: int = conn.execute(
+                "SELECT COUNT(*) FROM goals WHERE status = 'active'"
+            ).fetchone()[0]
+            summaries: int = conn.execute(
+                "SELECT COUNT(*) FROM summaries"
+            ).fetchone()[0]
             return {"facts": facts, "active_goals": goals, "summaries": summaries}
         except Exception:
+            logger.exception("status() failed.")
             return {"facts": 0, "active_goals": 0, "summaries": 0}
-        
-    # ── Reminders ─────────────────────────────────────
 
-    def add_reminder(self, text: str, due_time: str):
-        self.db.add_reminder(text, due_time)
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
-    def get_due_reminders(self):
-        from datetime import datetime
-        now = datetime.utcnow().isoformat()
-        return self.db.get_due_reminders(now)
+    @staticmethod
+    def _format_result(result: dict) -> str:
+        """Convert a vector-store search result into a readable sentence."""
+        meta: dict = result.get("metadata", {})
+        text: str = result.get("text", "").strip()
 
-    def mark_reminder_done(self, rid: int):
-        self.db.mark_reminder_done(rid)
+        if not text:
+            return ""
+
+        kind = meta.get("type")
+
+        if kind == "fact":
+            key = meta.get("key", "")
+            label = _readable(key) if key else "detail"
+            return f"Your {label} is {text}."
+
+        if kind == "summary":
+            topic = meta.get("topic", "")
+            prefix = (
+                f"Regarding {topic}: "
+                if topic and topic.lower() != "general"
+                else ""
+            )
+            return f"{prefix}{text}"
+
+        return text
