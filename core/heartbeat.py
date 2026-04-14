@@ -1,23 +1,20 @@
-# core/heartbeat.py
+# core/heartbeat.py 
 
 import threading
 import time
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, date
 from core.event_bus import bus
 
 class HestiaHeartbeat:
-    """
-    Periodically checks and processes tasks from HEARTBEAT.md
-    using an event-driven architecture.
-    """
-
     def __init__(self, interval: int = 1800, mnemosyne=None):
         self.interval = interval
         self.mnemosyne = mnemosyne
         self._running = False
         self._thread = threading.Thread(target=self._tick, daemon=True)
+        self._last_brief_date = None          # tracks date of last morning brief
+        self._reminder_last_fired: dict = {}  # task_text -> timestamp
 
     def start(self) -> None:
         self._running = True
@@ -33,11 +30,8 @@ class HestiaHeartbeat:
             time.sleep(self.interval)
 
     def _run_heartbeat(self) -> None:
-        # ── DB REMINDER CHECK ─────────────────────────────
         if self.mnemosyne:
-            now_iso = datetime.utcnow().isoformat()
             reminders = self.mnemosyne.get_due_reminders()
-
             for rid, text in reminders:
                 bus.emit("speak", {"text": f"Reminder: {text}"})
                 self.mnemosyne.mark_reminder_done(rid)
@@ -59,48 +53,47 @@ class HestiaHeartbeat:
                     self._evaluate_task(task)
 
         except Exception:
-            pass  # intentionally silent
+            pass
 
     def _evaluate_task(self, task: str) -> None:
         task_lower = task.lower()
         now = datetime.now()
 
-        # Nightly summary
         if "nightly summary" in task_lower:
             if 0 <= now.hour <= 5:
                 if self.mnemosyne and self.mnemosyne.summariser:
                     bus.emit("mnemosyne_summarise", {})
-                    print("[Heartbeat] Nightly summary done", file=sys.stderr)
-                return
+            return
 
-        # Morning brief trigger
-        if "morning brief" in task_lower and 7 <= now.hour <= 9:
-            self._morning_brief()
+        if "morning brief" in task_lower:
+            if 7 <= now.hour <= 9:
+                today = date.today()
+                if self._last_brief_date != today:
+                    self._last_brief_date = today
+                    self._morning_brief()
+            return
 
-        # Reminder handling
-        elif "reminder:" in task_lower:
+        if "reminder:" in task_lower:
             idx = task_lower.find("reminder:")
             reminder_text = task[idx + 9:].strip()
-            if reminder_text:
-                bus.emit("speak", {"text": reminder_text})
+            if not reminder_text:
+                return
 
-        # Future: send unknown tasks to NLU
-        else:
-            bus.emit("heartbeat_unhandled_task", {"task": task})
+            # Cooldown: don't re-fire the same reminder within 4 hours
+            last = self._reminder_last_fired.get(reminder_text, 0)
+            cooldown = 4 * 3600  # 4 hours in seconds
+            if time.time() - last < cooldown:
+                return
+
+            self._reminder_last_fired[reminder_text] = time.time()
+            bus.emit("speak", {"text": reminder_text})
+            return
+
+        bus.emit("heartbeat_unhandled_task", {"task": task})
 
     def _morning_brief(self) -> None:
-        """
-        Emit events instead of directly accessing memory or TTS.
-        """
         now = datetime.now()
-
-        date_str = now.strftime(
-            "Today is %A, %B %d, %Y. The time is %I:%M %p."
-        )
-
-        # Speak intro + time
+        date_str = now.strftime("Today is %A, %B %d, %Y. The time is %I:%M %p.")
         bus.emit("speak", {"text": "Good morning! Here is your morning brief."})
         bus.emit("speak", {"text": date_str})
-
-        # Delegate full brief construction
         bus.emit("morning_brief_requested", {})
