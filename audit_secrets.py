@@ -1,3 +1,5 @@
+# audit_secrets.py
+
 import os
 import re
 import json
@@ -6,6 +8,7 @@ import yaml
 import hashlib
 from collections import namedtuple
 from typing import List, Dict, Any
+import math
 
 # --- CONFIGURATION ---
 
@@ -45,6 +48,8 @@ PATTERNS = [
 
 # --- UTILITY FUNCTIONS ---
 
+
+
 def is_allowed_file(filename: str) -> bool:
     return any(filename.endswith(ext) for ext in ALLOWED_EXTENSIONS)
 
@@ -57,10 +62,11 @@ def is_allowlisted(key: str, value: str) -> bool:
 def shannon_entropy(data: str) -> float:
     if not data:
         return 0.0
-    entropy = 0
+    entropy = 0.0
     for x in set(data):
         p_x = float(data.count(x)) / len(data)
-        entropy -= p_x * (p_x and (p_x).bit_length())
+        if p_x > 0:
+            entropy -= p_x * math.log2(p_x)
     return entropy
 
 def scan_file(filepath: str) -> List[Secret]:
