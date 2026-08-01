@@ -47,6 +47,13 @@ class HestiaHeartbeat:
             with open(heartbeat_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
+            # NOTE: `- [ ] ` here does not mean "one-time to-do" — every
+            # matching line is a *recurring* condition that gets
+            # re-evaluated on every tick, and this code intentionally never
+            # rewrites the file to check a box off. Each task's own
+            # in-memory state (see `_last_brief_date`, `_reminder_last_fired`
+            # below) is what controls how often it actually fires. See
+            # HEARTBEAT.md for the same note aimed at anyone editing tasks.
             for line in lines:
                 if line.startswith("- [ ] "):
                     task = line[6:].strip()

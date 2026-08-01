@@ -218,10 +218,11 @@ class HermesEngine(BaseModule):
         try:
             start_dt = _parse_datetime(date_str, time_str)
         except DateTimeParseError as exc:
-            logger.warning(
-                "_create_event: datetime parse failed (%s); defaulting to +1 h.", exc
+            logger.warning("_create_event: datetime parse failed: %s", exc)
+            return _clarify(
+                "I couldn't understand that date/time. Could you say it "
+                "differently? (e.g. 'tomorrow at 3pm' or '2024-12-25 at 09:00')"
             )
-            start_dt = datetime.now(timezone.utc) + timedelta(hours=1)
 
         try:
             success = self._google.create_event(title=title, start_dt=start_dt)

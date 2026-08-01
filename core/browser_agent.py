@@ -24,8 +24,14 @@ class HestiaBrowserAgent:
     def _get_browser(self):
         """Lazy-init Playwright and Chromium browser. Reuse if already running."""
         with self._lock:
-            if self._browser and self._browser.is_connected():
-                return self._browser
+            if self._browser:
+                try:
+                    if self._browser.is_connected():
+                        return self._browser
+                except Exception:
+                    # Playwright crashed or the connection is dead — reset and
+                    # fall through to re-initialize below.
+                    self._browser = None
             try:
                 from playwright.sync_api import sync_playwright
             except ImportError:
@@ -82,7 +88,8 @@ class HestiaBrowserAgent:
             return "Browser is not available right now."
 
         try:
-            url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
+            from urllib.parse import quote_plus
+            url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
             if not url.startswith("http"):
                 url = "https://" + url
             page.goto(url, timeout=20000)

@@ -182,8 +182,10 @@ class ApolloEngine(BaseModule):
         self,
         ollama_cfg: Optional[dict[str, Any]] = None,
         db_path: Optional[Path] = None,
+        llm: Optional[Any] = None,
     ) -> None:
         self._cfg = OllamaConfig.from_dict(ollama_cfg or {})
+        self._llm_instance = llm  # HestiaLLM | None — preferred path
         resolved = (db_path or _DB_PATH).resolve()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db = ApolloDB(str(resolved))
@@ -252,12 +254,15 @@ class ApolloEngine(BaseModule):
         LLMError
             If the LLM returns an empty string.
         """
-        result = generate(
-            prompt,
-            model=self._cfg.model,
-            host=self._cfg.host,
-            port=self._cfg.port,
-        )
+        if self._llm_instance is not None:
+            result = self._llm_instance.generate(prompt)
+        else:
+            result = generate(
+                prompt,
+                model=self._cfg.model,
+                host=self._cfg.host,
+                port=self._cfg.port,
+            )
         if not result or not result.strip():
             raise LLMError("LLM returned an empty response.")
         return result.strip()

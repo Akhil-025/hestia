@@ -37,6 +37,7 @@ class IrisDB:
         ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         analyzed_at TIMESTAMP,
         processed BOOLEAN DEFAULT 0,
+        analysis_status TEXT DEFAULT 'pending',
         caption TEXT,
         tags TEXT,
         objects TEXT,
@@ -87,6 +88,14 @@ class IrisDB:
         total_size INTEGER DEFAULT 0
     );
     ''')
+                # Migration: add analysis_status to pre-existing DBs (CREATE TABLE
+                # IF NOT EXISTS above only applies to brand-new databases).
+                try:
+                    self._conn.execute(
+                        "ALTER TABLE files ADD COLUMN analysis_status TEXT DEFAULT 'pending'"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column already exists
 
         # --- Files ---
         def file_exists(self, file_path: str) -> bool:
@@ -120,7 +129,18 @@ class IrisDB:
 
         def mark_file_processed(self, file_id: int) -> None:
             with self._lock, self._conn:
-                self._conn.execute("UPDATE files SET processed=1 WHERE id=?", (file_id,))
+                self._conn.execute(
+                    "UPDATE files SET processed=1, analysis_status='processed' WHERE id=?",
+                    (file_id,)
+                )
+
+        def mark_file_error(self, file_id: int, error_msg: str) -> None:
+            """Mark a file as errored (not processed) so it can be retried later."""
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "UPDATE files SET analysis_status='error', error=? WHERE id=?",
+                    (error_msg, file_id)
+                )
 
         def get_file(self, file_id: int) -> Optional[dict]:
             cur = self._conn.execute("SELECT * FROM files WHERE id=?", (file_id,))

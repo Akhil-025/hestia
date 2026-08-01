@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _NAVIGATE_ACTIONS: frozenset[str] = frozenset(
-    {"open", "browse", "navigate", "go", "go to", "visit", "load", ""}
+    {"open", "browse", "navigate", "go", "go to", "visit", "load"}
 )
 
 _NOT_AVAILABLE = (
@@ -206,12 +206,14 @@ class HephaestusEngine(BaseModule):
         query = _extract(entities, "query", "topic", "raw_query")
 
         if url:
-            if action not in _NAVIGATE_ACTIONS:
-                logger.debug(
-                    "_browser_action: action=%r is not a navigation verb; "
-                    "treating as navigate anyway (url present).",
-                    action,
-                )
+            if not action or action in _NAVIGATE_ACTIONS:
+                return self._open_url(url)
+            logger.debug(
+                "_browser_action: action=%r is not a recognized navigation verb "
+                "but a url is present; opening it anyway (no other url-consuming "
+                "action exists in this module).",
+                action,
+            )
             return self._open_url(url)
 
         if query:

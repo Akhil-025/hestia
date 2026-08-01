@@ -239,7 +239,30 @@ class ChronosEngine(BaseModule):
             or _DEFAULT_LOCATION
         )
         location = location.strip()
-        lat, lon = self._coords.get(location.lower(), (_DEFAULT_LAT, _DEFAULT_LON))
+        coords = self._coords.get(location.lower())
+        if coords is None:
+            logger.info("Weather: location %r not recognized, using default.", location)
+            coords = (_DEFAULT_LAT, _DEFAULT_LON)
+            lat, lon = coords
+
+            try:
+                weather = _fetch_weather(lat, lon)
+            except WeatherFetchError:
+                logger.exception("Weather fetch failed for location=%r.", location)
+                return _err("I couldn't fetch the weather right now.")
+
+            condition = _WMO_CODES.get(weather.get("weathercode", -1), "")
+            condition_str = f", {condition}" if condition else ""
+            temp = weather.get("temperature", "?")
+            wind = weather.get("windspeed", "?")
+
+            return _ok(
+                f"I don't have coordinates for {location!r}, so here's the weather "
+                f"for {_DEFAULT_LOCATION} instead: {temp}°C{condition_str}, wind {wind} km/h.",
+                data={"location": _DEFAULT_LOCATION, "weather": weather, "requested_location": location},
+                confidence=0.5,
+            )
+        lat, lon = coords
 
         try:
             weather = _fetch_weather(lat, lon)

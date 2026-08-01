@@ -49,16 +49,26 @@ class SearchResults:
     total_results:   int                   = 0
 
     @classmethod
-    def from_rag_response(cls, response: Dict[str, Any]) -> "SearchResults":
-        """Build a SearchResults from the dict returned by MergedLocalRAG.search()."""
+    def from_rag_response(cls, response: Any) -> "SearchResults":
+        """
+        Build SearchResults from either:
+        - old dict-based RAG responses
+        - new SearchResponse objects
+        """
+
+        def read(name: str, default):
+            if isinstance(response, dict):
+                return response.get(name, default)
+            return getattr(response, name, default)
+
         return cls(
-            documents       = response.get("documents",       []),
-            metadatas       = response.get("metadatas",       []),
-            scores          = response.get("scores",          []),
-            semantic_scores = response.get("semantic_scores", []),
-            bm25_scores     = response.get("bm25_scores",     []),
-            query           = response.get("query",           ""),
-            total_results   = response.get("total_results",   0),
+            documents       = read("documents", []),
+            metadatas       = read("metadatas", []),
+            scores          = read("scores", []),
+            semantic_scores = read("semantic_scores", []),
+            bm25_scores     = read("bm25_scores", []),
+            query           = read("query", ""),
+            total_results   = read("total_results", 0),
         )
 
     def to_source_documents(self) -> List[SourceDocument]:

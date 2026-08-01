@@ -15,11 +15,14 @@ class HestiaLLM:
         self.port  = port
         self.model = model
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, fmt: str = None) -> str:
+        # Callers must specify fmt explicitly (e.g. fmt="json") when they need
+        # structured output. Auto-detecting JSON from a trailing "}" in the
+        # prompt text was unreliable and has been removed.
         return generate(
             prompt,
             model=self.model,
             host=self.host,
             port=self.port,
-            fmt="json" if prompt.strip().endswith("}") else None,
+            fmt=fmt,
         )

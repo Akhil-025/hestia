@@ -96,7 +96,7 @@ class IrisAnalyser:
         except Exception as e:
             self.logger.error(f"Error analysing file {file_id}: {e}")
             try:
-                self.db.mark_file_processed(file_id)  # prevent infinite retry
+                self.db.mark_file_error(file_id, str(e))  # retryable, unlike mark_file_processed
             except Exception:
                 pass
             return False
@@ -120,7 +120,6 @@ class IrisAnalyser:
 
     def run_batch(self, limit: int = 10) -> dict:
         analysed = 0
-        skipped = 0
         errors = 0
 
         for _ in range(limit):
@@ -139,9 +138,6 @@ class IrisAnalyser:
                 if result is True:
                     self.db.mark_queue_done(queue_id)
                     analysed += 1
-                elif result == "skipped":
-                    self.db.mark_queue_done(queue_id)
-                    skipped += 1
                 else:
                     self.db.mark_queue_failed(queue_id, "Analysis returned False")
                     errors += 1
@@ -150,7 +146,7 @@ class IrisAnalyser:
                 self.db.mark_queue_failed(queue_id, str(e))
                 errors += 1
 
-        return {"analysed": analysed, "skipped": skipped, "errors": errors}
+        return {"analysed": analysed, "errors": errors}
 
     def _parse_response(self, response: str):
         import re

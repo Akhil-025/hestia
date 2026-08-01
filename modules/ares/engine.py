@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from modules.base import BaseModule
 from core.ollama_client import generate
@@ -88,9 +89,10 @@ class AresEngine(BaseModule):
         "decision_support",
     }
 
-    def __init__(self, memory=None, ollama_cfg: dict = None):
+    def __init__(self, memory=None, ollama_cfg: dict = None, llm=None):
         self._memory = memory
         self._ollama = ollama_cfg or {}
+        self._llm_instance = llm  # HestiaLLM | None — preferred path
 
     def can_handle(self, intent: str) -> bool:
         return intent in self._INTENTS
@@ -116,6 +118,8 @@ class AresEngine(BaseModule):
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _ollama_call(self, prompt: str) -> str:
+        if self._llm_instance is not None:
+            return self._llm_instance.generate(prompt, fmt="json")
         return generate(
             prompt,
             model=self._ollama.get("model", "mistral"),
@@ -280,6 +284,16 @@ class AresEngine(BaseModule):
     def _decision_support(self, entities: dict, context: dict) -> dict:
         topic   = self._topic(entities)
         options = entities.get("options", "")
+
+        # Fallback: try to extract options from the raw query using an "or"/
+        # comma split before giving up and asking the user to list them.
+        if not options:
+            raw_query = entities.get("raw_query", "")
+            if raw_query:
+                parts = re.split(r'\bor\b|,', raw_query, flags=re.IGNORECASE)
+                parts = [p.strip() for p in parts if len(p.strip()) > 3]
+                if len(parts) >= 2:
+                    options = ", ".join(parts)
 
         # clarifying question if no options provided
         if not options:

@@ -397,9 +397,6 @@ class MergedLocalRAG:
 
         return len(chunks)
 
-    # Backward compatibility alias
-    ingest_pdf = ingest_file
-
     def ingest_directory(
         self,
         data_dir: Optional[str] = None,

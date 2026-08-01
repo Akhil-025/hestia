@@ -16,9 +16,14 @@ class HestiaSTT:
 
     def __init__(self, model_size: str = "base.en", device: str = "cuda",
                  compute_type: str = "int8", samplerate: int = 16000,
-                 noise_filter: bool = True):
-        """Initialize Whisper model, VAD, and noise filter."""
+                 noise_filter: bool = True, silence_frames: int = 33):
+        """Initialize Whisper model, VAD, and noise filter.
+
+        silence_frames: number of consecutive non-speech 30ms VAD frames that
+        must elapse before recording stops (33 frames ≈ 990ms of silence).
+        """
         self.samplerate = samplerate
+        self.silence_frames = silence_frames
         import os
 
         base_cache = os.path.join(os.getcwd(), "data", "hf_cache")
@@ -78,10 +83,10 @@ class HestiaSTT:
                             silence_counter += 1
                             frames.append(data)
 
-                    # Stop after ~1 second of silence (10 * 100ms? No: 30ms * 10 = 300ms? Wait.)
-                    # VAD frame is 30ms. 10 frames = 300ms, not 1s. Use 33 frames ≈ 1s.
-                    # But original code used 10 * 100ms chunks. Let's use 33 for ~1s.
-                    if speech_started and silence_counter > 33:  # ~1 second (33 * 30ms = 990ms)
+                    # Stop after `silence_frames` consecutive non-speech VAD
+                    # frames (each frame is 30ms), i.e. ~silence_frames*30ms
+                    # of continuous silence following detected speech.
+                    if speech_started and silence_counter > self.silence_frames:
                         print("[Silence detected → stopping]")
                         break
 

@@ -20,7 +20,14 @@ class MnemosyneDB:
             self._conn.execute("PRAGMA foreign_keys=ON;")
 
     # Interaction log
+    _MAX_USER_TEXT = 10_000
+    _MAX_RESPONSE = 50_000
+    _MAX_INTENT = 256
+
     def push_interaction(self, user_text, hestia_response, intent, source_device="hestia") -> int:
+        user_text = str(user_text)[: self._MAX_USER_TEXT]
+        hestia_response = str(hestia_response)[: self._MAX_RESPONSE]
+        intent = str(intent)[: self._MAX_INTENT]
         with self._lock, self._conn:
             cur = self._conn.execute(
                 """
@@ -182,6 +189,27 @@ class MnemosyneDB:
         return result
 
 
+    def get_recent_interactions_excluding(self, limit: int, exclude_intents: list[str]) -> list[dict]:
+        if not exclude_intents:
+            return self.get_recent_interactions(limit)
+        placeholders = ",".join("?" * len(exclude_intents))
+        cur = self._conn.execute(
+            f"""
+            SELECT user_text, hestia_response, intent, pushed_at
+            FROM interaction_log
+            WHERE intent NOT IN ({placeholders})
+            ORDER BY id DESC LIMIT ?
+            """,
+            (*exclude_intents, limit)
+        )
+        rows = cur.fetchall()
+        result = [
+            {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"], "pushed_at": r["pushed_at"]}
+            for r in rows
+        ]
+        result.reverse()
+        return result
+
     def get_by_intent(self, intent: str, limit: int = 10):
         cur = self._conn.execute(
             """
@@ -205,17 +233,44 @@ class MnemosyneDB:
         return result
     
     def get_top_facts(self, limit: int = 5):
-        cursor = self._conn.execute(
-            """
-            SELECT key, value
-            FROM facts
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (limit,)
-        )
-        return [{"key": r[0], "value": r[1]} for r in cursor.fetchall()]
-            
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT key, value
+                FROM facts
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            return [{"key": r[0], "value": r[1]} for r in cursor.fetchall()]
+
+    def get_interaction_stats(self) -> dict:
+        with self._lock:
+            cur = self._conn.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN intent = 'take_note' THEN 1 ELSE 0 END) as notes,
+                    COUNT(DISTINCT intent) as unique_intents
+                FROM interaction_log
+            """)
+            row = cur.fetchone()
+            return {
+                "total": row[0] or 0,
+                "notes": row[1] or 0,
+                "unique_intents": row[2] or 0,
+            }
+
+    def get_memory_stats(self) -> dict:
+        """Facts / active goals / summaries counts, queried under the DB lock."""
+        with self._lock:
+            facts = self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+            goals = self._conn.execute(
+                "SELECT COUNT(*) FROM goals WHERE status = 'active'"
+            ).fetchone()[0]
+            summaries = self._conn.execute("SELECT COUNT(*) FROM summaries").fetchone()[0]
+            return {"facts": facts, "goals": goals, "summaries": summaries}
+
     # ── Reminders ─────────────────────────────────────
 
     def add_reminder(self, text, due_time):

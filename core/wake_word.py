@@ -31,7 +31,14 @@ class WakeWordDetector:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Vosk model not found at '{model_path}'")
 
-        self.model = vosk.Model(model_path)
+        try:
+            self.model = vosk.Model(model_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load Vosk model at {model_path!r}. "
+                "The model may be corrupted or the wrong version. "
+                "Re-download from https://alphacephei.com/vosk/models"
+            ) from exc
         self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
         self.q = queue.Queue()
 
@@ -79,15 +86,19 @@ class WakeWordDetector:
 
                     print(f"[Wake] Heard: {text}")
 
-                    words = text.split()
-                    if len(words) > 4:
-                        continue
-
-                    # Match exact or prefix (allow trailing partial words)
+                    # Check if any wake word appears anywhere in the heard text
+                    # (sliding window match), rather than rejecting longer
+                    # utterances outright — a wake phrase can appear mid-sentence.
+                    text_tokens = text.split()
                     matched = False
                     for ww in self.wake_words:
-                        if text == ww or text.startswith(ww):
-                            matched = True
+                        ww_tokens = ww.split()
+                        n = len(ww_tokens)
+                        for i in range(len(text_tokens) - n + 1):
+                            if text_tokens[i:i + n] == ww_tokens:
+                                matched = True
+                                break
+                        if matched:
                             break
 
                     if matched:

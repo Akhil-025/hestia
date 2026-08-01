@@ -2,6 +2,7 @@
 web_ui.py — Hestia local Flask dashboard (Mnemosyne-compatible).
 """
 
+import collections
 import datetime
 import logging
 import threading
@@ -15,6 +16,10 @@ logger = logging.getLogger(__name__)
 MAX_TEXT_LENGTH = 2_000
 STATS_TTL = 30
 
+# Rate limiting for /api/chat — simple fixed-window-per-IP counter.
+_RATE_LIMIT = 10
+_RATE_WINDOW = 10.0
+
 
 class HestiaWebUI:
     def __init__(
@@ -24,19 +29,28 @@ class HestiaWebUI:
         process_fn: Optional[Callable[[str], str]] = None,
         host: str = "127.0.0.1",
         port: int = 5000,
+        api_key: Optional[str] = None,
+        apollo=None,  # ApolloEngine | None — powers /api/moods
     ) -> None:
         self.memory = memory
         self.skill_loader = skill_loader
         self.process_fn = process_fn
         self.host = host
         self.port = port
+        self.apollo = apollo
+        # Optional shared-secret auth for /api/*. If unset, the API is
+        # unauthenticated (fine for strictly-localhost, single-user use —
+        # but anything reachable beyond localhost should set this).
+        self.api_key = api_key
 
         self._thread: Optional[threading.Thread] = None
         self._stats_cache: dict = {}
+        self._rate_buckets: dict = collections.defaultdict(list)
 
         self.app = Flask(__name__, template_folder="templates")
 
         self._warn_missing_deps()
+        self._register_auth_guard()
         self._register_ui_routes()
         self._register_memory_routes()
         self._register_chat_routes()
@@ -45,10 +59,33 @@ class HestiaWebUI:
     # ── Startup ─────────────────────────────────────────
 
     def _warn_missing_deps(self) -> None:
+        # skill_loader is an optional, not-yet-implemented feature — its
+        # absence is expected in most deployments, so this stays at debug
+        # level rather than warning on every single startup.
         if self.skill_loader is None:
-            logger.warning("[WebUI] skill_loader not provided")
+            logger.debug("[WebUI] skill_loader not provided (optional).")
         if self.process_fn is None:
             logger.warning("[WebUI] process_fn not provided")
+
+    def _register_auth_guard(self) -> None:
+        """If api_key is configured, require it (via X-API-Key header or
+        ?api_key= query param) on every /api/* request. The UI page itself
+        (/) and static assets remain open so the dashboard can load."""
+        if not self.api_key:
+            logger.warning(
+                "[WebUI] No api_key configured — /api/* endpoints are "
+                "unauthenticated. Set api_key if this is reachable beyond localhost."
+            )
+            return
+
+        @self.app.before_request
+        def _check_api_key():
+            if not request.path.startswith("/api/"):
+                return None
+            supplied = request.headers.get("X-API-Key") or request.args.get("api_key")
+            if supplied != self.api_key:
+                return jsonify({"error": "Unauthorized"}), 401
+            return None
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -155,8 +192,14 @@ class HestiaWebUI:
 
         @app.route("/api/moods")
         def api_moods():
-            # Not implemented in Mnemosyne yet
-            return jsonify([])
+            if not self.apollo:
+                return jsonify([])
+            try:
+                days = max(1, min(int(request.args.get("days", 7)), 90))
+                return jsonify(self.apollo.db.get_mood(days))
+            except Exception:
+                logger.exception("[WebUI] moods error")
+                return jsonify([])
 
         @app.route("/api/stats")
         def api_stats():
@@ -208,6 +251,14 @@ class HestiaWebUI:
         def api_chat():
             if not self.process_fn:
                 return jsonify({"error": "Chat disabled"}), 503
+
+            ip = request.remote_addr or "unknown"
+            now = time.monotonic()
+            bucket = self._rate_buckets[ip]
+            bucket[:] = [t for t in bucket if now - t < _RATE_WINDOW]
+            if len(bucket) >= _RATE_LIMIT:
+                return jsonify({"error": "Rate limit exceeded"}), 429
+            bucket.append(now)
 
             if not request.is_json:
                 return jsonify({"error": "JSON required"}), 415

@@ -51,10 +51,11 @@ class _Subscription:
     once after each `on()` call rather than on every `emit()`.
     """
 
-    # Negated so that higher priority sorts first with the default ascending sort.
+    # Used for ordering (higher priority sorts first)
     _sort_key: int = field(init=False, repr=False)
-    priority: int = field(default=_DEFAULT_PRIORITY)
+
     callback: Callable[..., Any] = field(compare=False)
+    priority: int = field(default=_DEFAULT_PRIORITY, compare=False)
     one_shot: bool = field(default=False, compare=False)
 
     def __post_init__(self) -> None:

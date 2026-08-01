@@ -1,8 +1,11 @@
 # modules/hestia/core_module.py
 
+import logging
 from modules.base import BaseModule
 from core.ollama_client import generate
 import platform, datetime, re
+
+logger = logging.getLogger(__name__)
 
 
 class CoreModule(BaseModule):
@@ -14,9 +17,10 @@ class CoreModule(BaseModule):
         "get_system_info", "get_user_info", "chat"
     }
 
-    def __init__(self, memory, ollama_cfg: dict):
+    def __init__(self, memory, ollama_cfg: dict, llm=None):
         self._memory = memory
         self._ollama = ollama_cfg
+        self._llm_instance = llm  # HestiaLLM | None — preferred path
 
     def can_handle(self, intent: str) -> bool:
         return intent in self._INTENTS
@@ -57,14 +61,19 @@ class CoreModule(BaseModule):
 
     def _chat(self, query: str) -> dict:
         try:
-            text = generate(
-                f"You are Hestia. Answer concisely in 1-2 sentences.\n\nQuestion: {query}",
-                model=self._ollama.get("model", "mistral"),
-                host=self._ollama.get("host", "127.0.0.1"),
-                port=self._ollama.get("port", 11434),
-            )
+            prompt = f"You are Hestia. Answer concisely in 1-2 sentences.\n\nQuestion: {query}"
+            if self._llm_instance is not None:
+                text = self._llm_instance.generate(prompt)
+            else:
+                text = generate(
+                    prompt,
+                    model=self._ollama.get("model", "mistral"),
+                    host=self._ollama.get("host", "127.0.0.1"),
+                    port=self._ollama.get("port", 11434),
+                )
             return {"response": text, "data": {}, "confidence": 0.7}
         except Exception:
+            logger.exception("CoreModule._chat() failed for query=%r", query[:80])
             return {"response": "I'm not sure about that.", "data": {}, "confidence": 0.3}
 
     def _sys_info(self) -> dict:
@@ -128,14 +137,9 @@ class CoreModule(BaseModule):
     def _get_history(self, entities: dict) -> dict:
         limit = int(entities.get("limit", 5))
 
-        rows = self._memory.db.get_recent_interactions(limit * 2)
-
-        recent = [
-            r for r in rows
-            if r["intent"] not in ["take_note", "set_reminder"]
-        ][:limit]
-
-        recent = [{"query": r["query"], "response": r["response"], "intent": r["intent"]} for r in recent]
+        recent = self._memory.db.get_recent_interactions_excluding(
+            limit, ["take_note", "set_reminder"]
+        )
 
         if not recent:
             return {"response": "We haven't talked much yet.", "data": {}, "confidence": 0.9}
@@ -155,7 +159,14 @@ class CoreModule(BaseModule):
             return {"response": "What should I remember?", "data": {}, "confidence": 0.0}
 
         if not key or key == "preference":
-            key = "_".join(value.strip().split()[:3]).lower()
+            # No deterministic key was extracted by NLU. Rather than fabricate one
+            # from the value's leading words (which produced unpredictable, hard
+            # to look up keys), ask the user to be specific.
+            return {
+                "response": "What should I call this preference? (e.g. 'set my location preference to Mumbai')",
+                "data": {},
+                "confidence": 0.3,
+            }
 
         self._memory.learn(key, value)
 

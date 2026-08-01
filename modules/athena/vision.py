@@ -1,8 +1,12 @@
 #athena/vision.py
 
 import base64
+import logging
 import requests
 from io import BytesIO
+
+logger = logging.getLogger(__name__)
+
 
 class VisionModel:
     def __init__(self, model="llava"):
@@ -16,11 +20,6 @@ class VisionModel:
 
     def describe(self, image) -> str:
         try:
-            import requests as _req
-            try:
-                _req.get(self.url.replace("/api/generate", ""), timeout=2)
-            except Exception:
-                return ""
             img_b64 = self._encode_image(image)
 
             payload = {
@@ -36,5 +35,5 @@ class VisionModel:
             return response.json().get("response", "").strip()
 
         except Exception as e:
-            print("[VISION ERROR]", e)
+            logger.warning("[VisionModel] describe() failed: %s", e, exc_info=True)
             return ""

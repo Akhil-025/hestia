@@ -106,6 +106,244 @@ _RECENT_CONTEXT_TURNS = 5
 
 
 # ---------------------------------------------------------------------------
+# HestiaBuilder
+# ---------------------------------------------------------------------------
+
+class HestiaBuilder:
+    """
+    Constructs Hestia's subsystems from configuration.
+
+    Each ``build_*`` method is a factory that takes its dependencies as
+    explicit arguments (not a ``Hestia`` instance) and returns a fully
+    constructed object. That makes every subsystem independently
+    constructible and testable in isolation — e.g.
+    ``HestiaBuilder(cfg).build_llm(manager)`` can be unit-tested, or a
+    single subsystem swapped for a mock, without booting the rest of the
+    app.
+
+    ``Hestia.__init__`` is left owning only *wiring*: deciding the
+    dependency order, holding the resulting references, and connecting
+    already-built subsystems together (e.g. the event bus). Construction
+    (this class) and wiring/startup (``Hestia``) are deliberately kept
+    separate.
+    """
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.config = config
+        self.ollama_cfg: dict[str, Any] = config.get("ollama", {})
+        self.google_cfg: dict[str, Any] = config.get("google", {})
+        self.sync_cfg: dict[str, Any] = config.get("sync", {})
+
+    # -- Core inference stack -------------------------------------------------
+
+    def build_ollama_manager(self) -> OllamaManager:
+        manager = OllamaManager(
+            host=self.ollama_cfg.get("host", "localhost"),
+            port=self.ollama_cfg.get("port", 11434),
+        )
+        manager.ensure_running()
+        time.sleep(_OLLAMA_STARTUP_DELAY)
+        logger.info("Ollama running at %s:%s.", manager.host, manager.port)
+        return manager
+
+    def build_llm(self, ollama_manager: OllamaManager) -> HestiaLLM:
+        return HestiaLLM(
+            ollama_manager.host,
+            ollama_manager.port,
+            self.ollama_cfg.get("model", "mistral"),
+        )
+
+    def build_nlu(self) -> HestiaNLU:
+        return HestiaNLU(
+            model=self.ollama_cfg.get("model", "mistral"),
+            host=self.ollama_cfg.get("host", "127.0.0.1"),
+            port=self.ollama_cfg.get("port", 11434),
+            prompt_path=self.config.get("nlu", {}).get("prompt_path"),
+        )
+
+    def build_mnemosyne(self, llm: HestiaLLM) -> MnemosyneEngine:
+        """
+        Mnemosyne is the single mandatory memory store.
+
+        Every other module that needs memory receives a reference to this
+        instance; no other memory object is created.
+        """
+        mnemosyne = MnemosyneEngine(llm)
+        logger.info("Mnemosyne engine initialised.")
+        return mnemosyne
+
+    # -- Optional, feature-flagged modules ------------------------------------
+
+    def build_optional_modules(self, llm: HestiaLLM) -> dict[str, Any]:
+        """
+        Build feature-flagged modules (Athena, Iris, Google, browser).
+
+        Each is ``None`` in the returned dict when disabled or when its own
+        initialisation fails, so callers can guard with ``if modules["x"]``.
+        """
+        modules: dict[str, Any] = {
+            "athena": None,
+            "iris": None,
+            "google_agent": None,
+            "browser_agent": None,
+        }
+
+        if self.config.get("athena", {}).get("enabled", False):
+            try:
+                from modules.athena.engine import AthenaEngine
+                modules["athena"] = AthenaEngine(llm)
+                logger.info("Athena enabled.")
+            except Exception:
+                logger.exception("Athena failed to initialise; disabling.")
+
+        if self.config.get("iris", {}).get("enabled", False):
+            try:
+                from modules.iris import IrisEngine
+                modules["iris"] = IrisEngine(llm)
+                logger.info("Iris enabled.")
+            except Exception:
+                logger.exception("Iris failed to initialise; disabling.")
+
+        if self.google_cfg.get("enabled", False):
+            try:
+                from core.google_agent import HestiaGoogleAgent
+                agent = HestiaGoogleAgent(
+                    credentials_path=self.google_cfg.get("credentials_path"),
+                    token_path=self.google_cfg.get("token_path"),
+                )
+                agent.authenticate()
+                modules["google_agent"] = agent
+                logger.info("Google agent authenticated.")
+            except Exception:
+                logger.exception("Google agent failed to initialise; disabling.")
+
+        try:
+            modules["browser_agent"] = HestiaBrowserAgent()
+        except Exception:
+            logger.exception("Browser agent failed to initialise; disabling.")
+
+        return modules
+
+    # -- Orchestrator + module registration -----------------------------------
+
+    def build_orchestrator(
+        self, mnemosyne: MnemosyneEngine, optional_modules: dict[str, Any]
+    ) -> tuple[HestiaOrchestrator, ApolloEngine]:
+        """
+        Build the orchestrator and register every module in priority order.
+
+        Mandatory modules are registered unconditionally; optional ones are
+        skipped when their subsystem is ``None``. Returns the orchestrator
+        together with the ``ApolloEngine`` instance, since ``Hestia`` keeps
+        a direct reference to Apollo for the web UI's mood endpoint.
+        """
+        athena       = optional_modules.get("athena")
+        iris         = optional_modules.get("iris")
+        google_agent = optional_modules.get("google_agent")
+        browser_agent = optional_modules.get("browser_agent")
+
+        orchestrator = HestiaOrchestrator(ollama_cfg=self.ollama_cfg)
+        orchestrator.register_hecate(HecateEngine())
+
+        # Core – always first so chat fallback is always available
+        orchestrator.register(
+            CoreModule(memory=mnemosyne, ollama_cfg=self.ollama_cfg)
+        )
+
+        # Memory
+        orchestrator.register(mnemosyne)
+
+        # Optional knowledge modules
+        for mod in (athena, iris):
+            if mod is not None:
+                orchestrator.register(mod)
+
+        # Time / calendar / communication
+        orchestrator.register(ChronosEngine(memory=mnemosyne))
+        orchestrator.register(ArtemisEngine())
+
+        if google_agent:
+            orchestrator.register(HermesEngine(google_agent))
+
+        orchestrator.register(HephaestusEngine(browser_agent))
+
+        # Specialist modules
+        apollo = ApolloEngine(ollama_cfg=self.ollama_cfg)
+        orchestrator.register(apollo)
+        orchestrator.register(
+            AresEngine(memory=mnemosyne, ollama_cfg=self.ollama_cfg)
+        )
+        orchestrator.register(
+            OrpheusEngine(ollama_cfg=self.ollama_cfg, memory=mnemosyne)
+        )
+        orchestrator.register(
+            DionysusEngine(
+                ollama_cfg=self.ollama_cfg,
+                browser_agent=browser_agent,
+                memory=mnemosyne,
+            )
+        )
+        orchestrator.register(PlutoEngine(ollama_cfg=self.ollama_cfg))
+
+        logger.info(
+            "Orchestrator ready (%d module(s) registered).",
+            len(orchestrator.registered_modules),
+        )
+        return orchestrator, apollo
+
+    # -- I/O --------------------------------------------------------------
+
+    def build_io(self) -> tuple[HestiaSTT, HestiaTTS, WakeWordDetector]:
+        stt = HestiaSTT(
+            silence_frames=self.config.get("stt", {}).get("silence_frames", 33)
+        )
+        tts = HestiaTTS()
+        wake_detector = WakeWordDetector()
+        return stt, tts, wake_detector
+
+    # -- Heartbeat / web UI / sync API ------------------------------------
+
+    def build_heartbeat(self, mnemosyne: MnemosyneEngine) -> HestiaHeartbeat:
+        return HestiaHeartbeat(interval=1800, mnemosyne=mnemosyne)
+
+    def build_web_ui(
+        self, mnemosyne: MnemosyneEngine, process_fn, apollo: Optional[ApolloEngine]
+    ) -> Optional[Any]:
+        try:
+            from web_ui import HestiaWebUI
+            web_ui = HestiaWebUI(
+                memory=mnemosyne,
+                process_fn=process_fn,
+                apollo=apollo,
+            )
+            web_ui.start()
+            logger.info("Web UI started.")
+            return web_ui
+        except Exception:
+            logger.exception("Web UI failed to start; continuing without it.")
+            return None
+
+    def start_sync_api(self, mnemosyne: MnemosyneEngine) -> None:
+        if not self.sync_cfg.get("enabled", False):
+            return
+        try:
+            import uvicorn
+            from api import app as sync_app
+
+            sync_app.state.memory = mnemosyne
+            host = self.sync_cfg.get("host", "127.0.0.1")
+            port = int(self.sync_cfg.get("port", 5001))
+
+            def _run() -> None:
+                uvicorn.run(sync_app, host=host, port=port, log_level="warning")
+
+            threading.Thread(target=_run, daemon=True, name="SyncAPI").start()
+            logger.info("Sync API running at http://%s:%d", host, port)
+        except Exception:
+            logger.exception("Sync API failed to start; continuing without it.")
+
+
+# ---------------------------------------------------------------------------
 # Hestia
 # ---------------------------------------------------------------------------
 
@@ -113,188 +351,59 @@ class Hestia:
     """
     Top-level wiring class.
 
-    Initialises every subsystem exactly once, in dependency order, and
-    exposes ``process_text`` as the single synchronous query entry point.
+    Delegates all subsystem construction to ``HestiaBuilder`` and owns only
+    the dependency order, the resulting references, and connecting
+    already-built subsystems together (the event bus). Exposes
+    ``process_text`` as the single synchronous query entry point.
     """
 
     def __init__(self, config_path: str | Path = _DEFAULT_CONFIG) -> None:
         logger.info("Initialising Hestia…")
         self.config = _load_config(Path(config_path))
+        builder = HestiaBuilder(self.config)
 
         # Derived config sections (read-only after __init__)
-        self._ollama_cfg: dict[str, Any] = self.config.get("ollama", {})
-        self._google_cfg: dict[str, Any] = self.config.get("google", {})
-        self._sync_cfg: dict[str, Any] = self.config.get("sync", {})
+        self._ollama_cfg: dict[str, Any] = builder.ollama_cfg
+        self._google_cfg: dict[str, Any] = builder.google_cfg
+        self._sync_cfg: dict[str, Any] = builder.sync_cfg
 
-        # Subsystem attributes – declared here for IDE / type-checker visibility
-        self.mnemosyne: MnemosyneEngine
-        self.orchestrator: HestiaOrchestrator
-        self.stt: HestiaSTT
-        self.tts: HestiaTTS
-        self.wake_detector: WakeWordDetector
-        self.heartbeat: HestiaHeartbeat
+        # -- Construction (via builder), in dependency order --------------
+        self.ollama_manager = builder.build_ollama_manager()
 
-        self._init_ollama()
-        self._init_llm()
-        self._init_mnemosyne()
-        self._init_optional_modules()
-        self._init_orchestrator()
-        self._init_io()
+        self.llm = builder.build_llm(self.ollama_manager)
+        self.nlu = builder.build_nlu()
+
+        self.mnemosyne = builder.build_mnemosyne(self.llm)
+        self.nlu.set_memory(self.mnemosyne)
+
+        optional_modules = builder.build_optional_modules(self.llm)
+        self.athena        = optional_modules["athena"]
+        self.iris           = optional_modules["iris"]
+        self.google_agent   = optional_modules["google_agent"]
+        self.browser_agent: Optional[HestiaBrowserAgent] = optional_modules["browser_agent"]
+
+        self.orchestrator, self.apollo = builder.build_orchestrator(
+            self.mnemosyne, optional_modules
+        )
+
+        self.stt, self.tts, self.wake_detector = builder.build_io()
+
+        # -- Wiring: connect already-built subsystems together -------------
         self._init_event_bus()
-        self._init_heartbeat()
-        self._init_web_ui()
-        self._init_sync_api()
+
+        self.heartbeat = builder.build_heartbeat(self.mnemosyne)
+        self.heartbeat.start()
+        logger.info("Heartbeat started (interval=1800 s).")
+
+        self.web_ui = builder.build_web_ui(self.mnemosyne, self.process_text, self.apollo)
+
+        builder.start_sync_api(self.mnemosyne)
 
         logger.info("Hestia is ready.")
 
     # ------------------------------------------------------------------
-    # Initialisation helpers (private, each owns one concern)
+    # Event-bus wiring (connects already-built subsystems; not construction)
     # ------------------------------------------------------------------
-
-    def _init_ollama(self) -> None:
-        self.ollama_manager = OllamaManager(
-            host=self._ollama_cfg.get("host", "localhost"),
-            port=self._ollama_cfg.get("port", 11434),
-        )
-        self.ollama_manager.ensure_running()
-        time.sleep(_OLLAMA_STARTUP_DELAY)
-        logger.info(
-            "Ollama running at %s:%s.",
-            self.ollama_manager.host,
-            self.ollama_manager.port,
-        )
-
-    def _init_llm(self) -> None:
-        self.llm = HestiaLLM(
-            self.ollama_manager.host,
-            self.ollama_manager.port,
-            self._ollama_cfg.get("model", "mistral"),
-        )
-        self.nlu = HestiaNLU(
-            model=self._ollama_cfg.get("model", "mistral"),
-            host=self._ollama_cfg.get("host", "127.0.0.1"),
-            port=self._ollama_cfg.get("port", 11434),
-            prompt_path=self.config.get("nlu", {}).get("prompt_path"),
-        )
-
-    def _init_mnemosyne(self) -> None:
-        """
-        Mnemosyne is the single mandatory memory store.
-
-        Every other module that needs memory receives a reference to this
-        instance; no other memory object is created.
-        """
-        self.mnemosyne = MnemosyneEngine(self.llm)
-        self.nlu.set_memory(self.mnemosyne)
-        logger.info("Mnemosyne engine initialised.")
-
-    def _init_optional_modules(self) -> None:
-        """
-        Initialise feature-flagged modules (Athena, Iris, Google, browser).
-
-        Each module is set to ``None`` when disabled so downstream code can
-        guard with ``if self.X``.
-        """
-        # Athena (RAG knowledge base)
-        self.athena = None
-        if self.config.get("athena", {}).get("enabled", False):
-            try:
-                from modules.athena.engine import AthenaEngine
-                self.athena = AthenaEngine(self.llm)
-                logger.info("Athena enabled.")
-            except Exception:
-                logger.exception("Athena failed to initialise; disabling.")
-
-        # Iris
-        self.iris = None
-        if self.config.get("iris", {}).get("enabled", False):
-            try:
-                from modules.iris import IrisEngine
-                self.iris = IrisEngine(self.llm)
-                logger.info("Iris enabled.")
-            except Exception:
-                logger.exception("Iris failed to initialise; disabling.")
-
-        # Google (Gmail + Calendar)
-        self.google_agent = None
-        if self._google_cfg.get("enabled", False):
-            try:
-                from core.google_agent import HestiaGoogleAgent
-                agent = HestiaGoogleAgent(
-                    credentials_path=self._google_cfg.get("credentials_path"),
-                    token_path=self._google_cfg.get("token_path"),
-                )
-                agent.authenticate()
-                self.google_agent = agent
-                logger.info("Google agent authenticated.")
-            except Exception:
-                logger.exception("Google agent failed to initialise; disabling.")
-
-        # Browser
-        self.browser_agent: Optional[HestiaBrowserAgent] = None
-        try:
-            self.browser_agent = HestiaBrowserAgent()
-        except Exception:
-            logger.exception("Browser agent failed to initialise; disabling.")
-
-    def _init_orchestrator(self) -> None:
-        """
-        Build the orchestrator and register every module in priority order.
-
-        Mandatory modules are registered unconditionally; optional ones are
-        skipped when their subsystem is ``None``.
-        """
-        self.orchestrator = HestiaOrchestrator()
-        self.orchestrator.register_hecate(HecateEngine())
-
-        # Core – always first so chat fallback is always available
-        self.orchestrator.register(
-            CoreModule(memory=self.mnemosyne, ollama_cfg=self._ollama_cfg)
-        )
-
-        # Memory
-        self.orchestrator.register(self.mnemosyne)
-
-        # Optional knowledge modules
-        for mod in (self.athena, self.iris):
-            if mod is not None:
-                self.orchestrator.register(mod)
-
-        # Time / calendar / communication
-        self.orchestrator.register(ChronosEngine(memory=self.mnemosyne))
-        self.orchestrator.register(ArtemisEngine())
-
-        if self.google_agent:
-            self.orchestrator.register(HermesEngine(self.google_agent))
-
-        self.orchestrator.register(HephaestusEngine(self.browser_agent))
-
-        # Specialist modules
-        self.orchestrator.register(ApolloEngine(ollama_cfg=self._ollama_cfg))
-        self.orchestrator.register(
-            AresEngine(memory=self.mnemosyne, ollama_cfg=self._ollama_cfg)
-        )
-        self.orchestrator.register(
-            OrpheusEngine(ollama_cfg=self._ollama_cfg, memory=self.mnemosyne)
-        )
-        self.orchestrator.register(
-            DionysusEngine(
-                ollama_cfg=self._ollama_cfg,
-                browser_agent=self.browser_agent,
-                memory=self.mnemosyne,
-            )
-        )
-        self.orchestrator.register(PlutoEngine(ollama_cfg=self._ollama_cfg))
-
-        logger.info(
-            "Orchestrator ready (%d module(s) registered).",
-            len(self.orchestrator.registered_modules),
-        )
-
-    def _init_io(self) -> None:
-        self.stt = HestiaSTT()
-        self.tts = HestiaTTS()
-        self.wake_detector = WakeWordDetector()
 
     def _init_event_bus(self) -> None:
         """
@@ -332,44 +441,20 @@ class Hestia:
         # Summarisation trigger
         bus.on("mnemosyne_summarise", lambda _: mn.trigger_summarise())
 
-        logger.info("Event bus wired.")
-
-    def _init_heartbeat(self) -> None:
-        self.heartbeat = HestiaHeartbeat(interval=1800, mnemosyne=self.mnemosyne)
-        self.heartbeat.start()
-        logger.info("Heartbeat started (interval=1800 s).")
-
-    def _init_web_ui(self) -> None:
-        try:
-            from web_ui import HestiaWebUI
-            self.web_ui = HestiaWebUI(
-                memory=self.mnemosyne,
-                process_fn=self.process_text,
+        # Unrecognised HEARTBEAT.md task — surface it instead of letting it
+        # silently vanish. This isn't an error (the task text may just be
+        # awaiting a handler in heartbeat.py's _evaluate_task), so it's
+        # logged at warning level rather than raised.
+        def _on_heartbeat_unhandled_task(data: dict) -> None:
+            logger.warning(
+                "Heartbeat: no handler for HEARTBEAT.md task %r — "
+                "add a case to HestiaHeartbeat._evaluate_task().",
+                data.get("task", ""),
             )
-            self.web_ui.start()
-            logger.info("Web UI started.")
-        except Exception:
-            logger.exception("Web UI failed to start; continuing without it.")
-            self.web_ui = None
 
-    def _init_sync_api(self) -> None:
-        if not self._sync_cfg.get("enabled", False):
-            return
-        try:
-            import uvicorn
-            from api import app as sync_app
+        bus.on("heartbeat_unhandled_task", _on_heartbeat_unhandled_task)
 
-            sync_app.state.memory = self.mnemosyne
-            host = self._sync_cfg.get("host", "127.0.0.1")
-            port = int(self._sync_cfg.get("port", 5001))
-
-            def _run() -> None:
-                uvicorn.run(sync_app, host=host, port=port, log_level="warning")
-
-            threading.Thread(target=_run, daemon=True, name="SyncAPI").start()
-            logger.info("Sync API running at http://%s:%d", host, port)
-        except Exception:
-            logger.exception("Sync API failed to start; continuing without it.")
+        logger.info("Event bus wired.")
 
     # ------------------------------------------------------------------
     # Core query entry point
@@ -500,6 +585,11 @@ class Hestia:
             self.heartbeat.stop()
         except Exception:
             logger.debug("heartbeat.stop() raised; ignoring.")
+
+        try:
+            bus.shutdown()  # graceful executor shutdown
+        except Exception:
+            logger.debug("bus.shutdown() raised; ignoring.")
 
         try:
             bus.clear()

@@ -207,9 +207,11 @@ class OrpheusEngine(BaseModule):
         ollama_cfg: Optional[dict[str, Any]] = None,
         memory: Any = None,
         db_path: Optional[Path] = None,
+        llm: Optional[Any] = None,
     ) -> None:
         self._cfg = OllamaConfig.from_dict(ollama_cfg or {})
         self._memory = memory
+        self._llm_instance = llm  # HestiaLLM | None — preferred path
         resolved = (db_path or _DB_PATH).resolve()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db = OrpheusDB(str(resolved))
@@ -279,12 +281,15 @@ class OrpheusEngine(BaseModule):
         LLMResponseError
             If the LLM returns an empty string.
         """
-        result = generate(
-            prompt,
-            model=self._cfg.model,
-            host=self._cfg.host,
-            port=self._cfg.port,
-        )
+        if self._llm_instance is not None:
+            result = self._llm_instance.generate(prompt)
+        else:
+            result = generate(
+                prompt,
+                model=self._cfg.model,
+                host=self._cfg.host,
+                port=self._cfg.port,
+            )
         if not result or not result.strip():
             raise LLMResponseError("LLM returned an empty text response.")
         return result.strip()
@@ -298,13 +303,16 @@ class OrpheusEngine(BaseModule):
         LLMResponseError
             If the LLM returns an empty string or invalid JSON.
         """
-        raw = generate(
-            prompt,
-            model=self._cfg.model,
-            host=self._cfg.host,
-            port=self._cfg.port,
-            fmt="json",
-        )
+        if self._llm_instance is not None:
+            raw = self._llm_instance.generate(prompt, fmt="json")
+        else:
+            raw = generate(
+                prompt,
+                model=self._cfg.model,
+                host=self._cfg.host,
+                port=self._cfg.port,
+                fmt="json",
+            )
         if not raw or not raw.strip():
             raise LLMResponseError("LLM returned an empty JSON response.")
         try:
@@ -349,12 +357,6 @@ class OrpheusEngine(BaseModule):
 
         missing = _collect_missing(
             ("topic", topic, "What should the poem be about?"),
-            ("style", style if style != _DEFAULT_POEM_STYLE else "",
-             f"Any style preference? ({', '.join(sorted(_VALID_POEM_STYLES))})"),
-            ("tone", tone if tone != _DEFAULT_TONE else "",
-             f"What tone? ({', '.join(sorted(_VALID_TONES))})"),
-            ("length", length if length != _DEFAULT_LENGTH else "",
-             "How long? (short / medium / long)"),
         )
         if missing:
             return _clarify(missing)
@@ -456,30 +458,18 @@ class OrpheusEngine(BaseModule):
     def _generate_lyrics(self, entities: dict) -> dict:
         """Generate song lyrics and persist them to DB and memory."""
         topic = _extract(entities, "topic", "raw_query")
-        genre = _normalise(entities.get("genre", ""), _VALID_GENRES, "")
-        tone = _normalise(entities.get("tone", ""), _VALID_TONES, "")
+        genre = _normalise(entities.get("genre", ""), _VALID_GENRES, _DEFAULT_GENRE)
+        tone = _normalise(entities.get("tone", ""), _VALID_TONES, _DEFAULT_TONE)
         rhyme = _normalise(
-            entities.get("rhyme_scheme", ""), _VALID_RHYME_SCHEMES, ""
+            entities.get("rhyme_scheme", ""), _VALID_RHYME_SCHEMES, _DEFAULT_RHYME_SCHEME
         )
-        structure = entities.get("structure", "").strip()
+        structure = entities.get("structure", "").strip() or _DEFAULT_STRUCTURE
 
         missing = _collect_missing(
             ("topic", topic, "What should the song be about?"),
-            ("genre", genre,
-             f"What genre or style? ({', '.join(sorted(_VALID_GENRES))})"),
-            ("structure", structure,
-             "What structure? (verse-chorus, verse-chorus-bridge, just a verse)"),
-            ("rhyme_scheme", rhyme,
-             f"Rhyme scheme? ({', '.join(sorted(_VALID_RHYME_SCHEMES))})"),
         )
         if missing:
             return _clarify(missing)
-
-        # Apply defaults for optional fields that passed the missing check via entities
-        genre = genre or _DEFAULT_GENRE
-        tone = tone or _DEFAULT_TONE
-        rhyme = rhyme or _DEFAULT_RHYME_SCHEME
-        structure = structure or _DEFAULT_STRUCTURE
 
         try:
             lyrics = self._llm_text(

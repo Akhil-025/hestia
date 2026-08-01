@@ -79,10 +79,11 @@ class DionysusEngine(BaseModule):
         "plan_outing",
     }
 
-    def __init__(self, ollama_cfg: dict = None, browser_agent=None, memory=None):
+    def __init__(self, ollama_cfg: dict = None, browser_agent=None, memory=None, llm=None):
         self._ollama  = ollama_cfg or {}
         self._browser = browser_agent
         self._memory  = memory
+        self._llm_instance = llm  # HestiaLLM | None — preferred path
         os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
         self.db = DionysusDB(_DB_PATH)
 
@@ -106,6 +107,8 @@ class DionysusEngine(BaseModule):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _ollama_call(self, prompt: str) -> str:
+        if self._llm_instance is not None:
+            return self._llm_instance.generate(prompt, fmt="json")
         return generate(
             prompt,
             model=self._ollama.get("model", "mistral"),
@@ -115,6 +118,8 @@ class DionysusEngine(BaseModule):
         )
 
     def _ollama_text(self, prompt: str) -> str:
+        if self._llm_instance is not None:
+            return self._llm_instance.generate(prompt)
         return generate(
             prompt,
             model=self._ollama.get("model", "mistral"),
@@ -163,14 +168,14 @@ class DionysusEngine(BaseModule):
             omdb = self._fetch_omdb(title, year)
             rating   = omdb.get("imdbRating", "N/A") if omdb else "N/A"
             runtime  = omdb.get("Runtime", "")       if omdb else ""
-            streaming= self._streaming_note(omdb)    if omdb else ""
+            rating_note = self._rating_note(omdb) if omdb else ""
 
             lines.append(f"  {title} ({year})  ★ {rating}")
             if runtime:
                 lines.append(f"    {runtime}")
             lines.append(f"    {reason}")
-            if streaming:
-                lines.append(f"    {streaming}")
+            if rating_note:
+                lines.append(f"    {rating_note}")
             lines.append("")
 
             self.db.log("movie", title, reason,
@@ -199,7 +204,7 @@ class DionysusEngine(BaseModule):
             return None
 
     @staticmethod
-    def _streaming_note(omdb: dict) -> str:
+    def _rating_note(omdb: dict) -> str:
         # OMDB free tier doesn't give streaming — note availability from ratings
         rated = omdb.get("Rated", "")
         genre = omdb.get("Genre", "")
@@ -349,8 +354,7 @@ class DionysusEngine(BaseModule):
             or entities.get("raw_query", "a day out in Mumbai")
         )
 
-        # get user location from memory, default to Mumbai coords
-        lat, lon = 19.0760, 72.8777
+        # Use the user's saved location preference, if any, to narrow the search.
         if self._memory:
             loc = self._memory.get_preference("location", "")
             if loc:

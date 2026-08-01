@@ -93,11 +93,12 @@ class FileIngestor:
         self.db = db
         self.duplicate_detector = DuplicateDetector(db)
         self.stats: Dict[str, int] = {"ingested": 0, "duplicates_skipped": 0, "errors": 0, "total_size": 0}
+        self.stats["failed_files"] = []
         self.retry_queue: List[Tuple[Path, int]] = []
 
     async def process_directory(self, directory: Path, recursive: bool = True) -> Dict:
         logger.info(f"Processing directory: {directory}")
-        self.stats = {"ingested": 0, "duplicates_skipped": 0, "errors": 0, "total_size": 0}
+        self.stats = {"ingested": 0, "duplicates_skipped": 0, "errors": 0, "total_size": 0, "failed_files": []}
         self.retry_queue = []
         file_paths = self._find_media_files(directory, recursive)
         logger.info(f"Found {len(file_paths)} files to process")
@@ -151,6 +152,7 @@ class FileIngestor:
                 logger.error(f"Error processing {file_path}: {result}")
                 self.retry_queue.append((file_path, 1))
                 self.stats["errors"] += 1
+                self.stats["failed_files"].append(str(file_path))
                 continue
             if result is not None:
                 self._update_stats(result)
@@ -169,6 +171,9 @@ class FileIngestor:
                 result = await self._process_single_file(file_path)
                 if result is not None:
                     self._update_stats(result)
+                    # Succeeded on retry — no longer a failure.
+                    if str(file_path) in self.stats["failed_files"]:
+                        self.stats["failed_files"].remove(str(file_path))
             except Exception as e:
                 logger.error(f"[RETRY] Error processing {file_path}: {e}")
                 if attempt < 3:
@@ -176,6 +181,8 @@ class FileIngestor:
                 else:
                     logger.error(f"[RETRY] Permanent failure for {file_path}")
                     self.stats["errors"] += 1
+                    if str(file_path) not in self.stats["failed_files"]:
+                        self.stats["failed_files"].append(str(file_path))
 
     async def _process_single_file(self, file_path: Path) -> Optional[FileInfo]:
         start = time.time()

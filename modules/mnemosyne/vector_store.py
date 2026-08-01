@@ -71,7 +71,7 @@ class MnemosyneVectorStore:
                 include=["documents", "metadatas", "distances"],
             )
         except Exception as e:
-            logger.debug(f"ChromaDB query failed: {e}")
+            logger.error(f"ChromaDB query failed: {e}", exc_info=True)
             return []
         docs      = raw.get("documents", [[]])[0]
         metadatas = raw.get("metadatas", [[]])[0]

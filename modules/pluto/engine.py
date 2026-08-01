@@ -163,6 +163,22 @@ class LivePriceFetchError(PlutoError):
 # Engine
 # ---------------------------------------------------------------------------
 
+# Fast-path keyword lookup, checked before falling back to an LLM call.
+# Covers the overwhelming majority of everyday expense descriptions.
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "Food":          ["groceries", "food", "restaurant", "lunch", "dinner", "breakfast",
+                       "coffee", "cafe", "eat", "swiggy", "zomato", "snack"],
+    "Transport":     ["uber", "ola", "auto", "bus", "train", "metro", "petrol", "diesel",
+                       "fuel", "cab", "taxi", "flight", "parking"],
+    "Shopping":      ["clothes", "amazon", "flipkart", "shirt", "shoes", "mall", "myntra"],
+    "Health":        ["medicine", "doctor", "gym", "pharmacy", "hospital", "medical", "clinic"],
+    "Entertainment": ["movie", "netflix", "spotify", "game", "concert", "theatre", "cinema"],
+    "Bills":         ["electricity", "rent", "wifi", "internet", "phone", "recharge",
+                       "water bill", "gas bill", "emi"],
+    "Education":     ["book", "course", "tuition", "college", "fees", "class"],
+}
+
+
 class PlutoEngine(BaseModule):
     """
     Personal finance module: expense logging, budget summaries,
@@ -194,9 +210,11 @@ class PlutoEngine(BaseModule):
         ollama_cfg: Optional[dict[str, Any]] = None,
         currency: str = _DEFAULT_CURRENCY,
         db_path: Optional[Path] = None,
+        llm: Optional[Any] = None,
     ) -> None:
         self._cfg = OllamaConfig.from_dict(ollama_cfg or {})
         self._currency = currency
+        self._llm_instance = llm  # HestiaLLM | None — preferred path
         resolved_path = (db_path or _DB_PATH).resolve()
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = PlutoDB(str(resolved_path))
@@ -258,6 +276,8 @@ class PlutoEngine(BaseModule):
 
     def _llm_json(self, prompt: str) -> str:
         """Call the LLM expecting a JSON response. Returns raw string."""
+        if self._llm_instance is not None:
+            return self._llm_instance.generate(prompt, fmt="json")
         return generate(
             prompt,
             model=self._cfg.model,
@@ -268,6 +288,8 @@ class PlutoEngine(BaseModule):
 
     def _llm_text(self, prompt: str) -> str:
         """Call the LLM expecting a plain-text response."""
+        if self._llm_instance is not None:
+            return self._llm_instance.generate(prompt)
         return generate(
             prompt,
             model=self._cfg.model,
@@ -277,11 +299,18 @@ class PlutoEngine(BaseModule):
 
     def _infer_category(self, description: str, amount: float) -> str:
         """
-        Ask the LLM to categorise an expense.
+        Categorise an expense.
 
+        Tries a fast keyword lookup first (covers most everyday expenses
+        instantly); only falls back to an LLM call when no keyword matches.
         Falls back to ``"Other"`` on any LLM or JSON parse failure so that
         expense logging is never blocked by a categorisation error.
         """
+        lower = description.lower()
+        for category, keywords in _CATEGORY_KEYWORDS.items():
+            if any(kw in lower for kw in keywords):
+                return category
+
         try:
             raw = self._llm_json(
                 _CATEGORIZE_PROMPT.format(description=description, amount=amount)
@@ -584,7 +613,14 @@ def _fetch_crypto_price(name: str) -> LivePriceResult:
 
 def _fetch_yahoo_price(name: str) -> LivePriceResult:
     """Fetch a live price from Yahoo Finance (NSE default for unqualified tickers)."""
+    import re as _re
+    # Strip common corporate suffixes (while boundaries still exist), then
+    # collapse spaces — "Reliance Industries" must become "RELIANCE.NS", not
+    # "RELIANCE INDUSTRIES.NS" (which Yahoo Finance rejects with a 404).
     ticker = name.upper()
+    ticker = _re.sub(r'\b(INDUSTRIES|LIMITED|LTD|INC|CORP)\b', '', ticker, flags=_re.I)
+    ticker = _re.sub(r'\s+', '', ticker)
+    ticker = ticker.strip('.-_')
     if not any(ch in ticker for ch in (".", "^")):
         ticker = ticker + ".NS"
 

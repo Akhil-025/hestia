@@ -261,10 +261,19 @@ class MnemosyneEngine(BaseModule):
         if not results:
             return ""
 
-        # Deduplicate by id, sorted by relevance score descending
+        # Deduplicate by id, sorted by relevance score descending.
+        #
+        # `r["id"]` is the vector store's doc_id: for facts this is the fact
+        # `key` (see `learn()` above), and for summaries it's the summary's
+        # own row id (see `mnemosyne/summariser.py`). Both are non-empty
+        # strings by construction — `learn()` rejects an empty key, and
+        # summary ids are generated from an autoincrement primary key — so
+        # `seen` correctly dedupes on a stable identifier rather than on
+        # content, which two different facts/summaries could otherwise share.
         seen: set[str] = set()
         deduped = []
         for r in sorted(results, key=lambda x: x["score"], reverse=True):
+            assert r.get("id"), f"vector_store result missing non-empty id: {r!r}"
             if r["id"] not in seen:
                 deduped.append(r)
                 seen.add(r["id"])
@@ -407,25 +416,12 @@ class MnemosyneEngine(BaseModule):
         """Return aggregate statistics using SQL COUNT queries."""
         try:
             s = self.status()
-            conn = self.db._conn
-
-            total: int = conn.execute(
-                "SELECT COUNT(*) FROM interaction_log"
-            ).fetchone()[0]
-
-            notes: int = conn.execute(
-                "SELECT COUNT(*) FROM interaction_log WHERE intent = 'take_note'"
-            ).fetchone()[0]
-
-            unique_intents: int = conn.execute(
-                "SELECT COUNT(DISTINCT intent) FROM interaction_log"
-            ).fetchone()[0]
-
+            stats = self.db.get_interaction_stats()
             return {
-                "total_interactions": total,
-                "notes": notes,
+                "total_interactions": stats["total"],
+                "notes": stats["notes"],
                 "facts_known": s.get("facts", 0),
-                "unique_intents": unique_intents,
+                "unique_intents": stats["unique_intents"],
             }
         except Exception:
             logger.exception("get_stats() failed.")
@@ -451,15 +447,12 @@ class MnemosyneEngine(BaseModule):
     def status(self) -> dict:
         """Return live counts for facts, active goals, and summaries."""
         try:
-            conn = self.db._conn
-            facts: int = conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
-            goals: int = conn.execute(
-                "SELECT COUNT(*) FROM goals WHERE status = 'active'"
-            ).fetchone()[0]
-            summaries: int = conn.execute(
-                "SELECT COUNT(*) FROM summaries"
-            ).fetchone()[0]
-            return {"facts": facts, "active_goals": goals, "summaries": summaries}
+            stats = self.db.get_memory_stats()
+            return {
+                "facts": stats["facts"],
+                "active_goals": stats["goals"],
+                "summaries": stats["summaries"],
+            }
         except Exception:
             logger.exception("status() failed.")
             return {"facts": 0, "active_goals": 0, "summaries": 0}

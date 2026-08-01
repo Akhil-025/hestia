@@ -341,7 +341,7 @@ def get_supported_files(data_dir: Optional[str] = None) -> List[Dict[str, str]]:
     return files
 
 
-get_pdf_files_recursive = get_supported_files  # backward compat
+
 
 
 def get_organization_structure(data_dir: Optional[str] = None) -> Dict[str, Dict[str, List[str]]]:

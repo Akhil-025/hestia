@@ -133,11 +133,14 @@ class HestiaOrchestrator:
     is required, wrap dispatch() with an external lock.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, ollama_cfg: Optional[dict] = None) -> None:
         self._modules: dict[str, BaseModule] = {}
         self._hecate: Optional[HecateEngine] = None
         self._ctx = OrchestratorContext()
         self._lock = threading.Lock()
+        # Used by _synthesize() so synthesis honours the configured model/host/port
+        # instead of silently falling back to core.ollama_client's hardcoded defaults.
+        self._ollama_cfg: dict = ollama_cfg or {}
 
     # ------------------------------------------------------------------
     # Registration
@@ -209,6 +212,10 @@ class HestiaOrchestrator:
         t_start = time.perf_counter()
 
         raw_intent: str = nlu_result.get("intent") or "chat"
+        # Intent convention: NLU emits prefixed intents (e.g. "ares_analyse_risk").
+        # The orchestrator strips the module prefix *here*, before dispatching, so
+        # modules register unprefixed intents in their _INTENTS sets (e.g. "analyse_risk").
+        # Do NOT put prefixed names in a module's _INTENTS — can_handle() receives stripped names.
         intent = _strip_module_prefix(raw_intent)
         entities: dict[str, Any] = dict(nlu_result.get("entities") or {})
         entities["raw_query"] = raw_query
@@ -328,7 +335,7 @@ class HestiaOrchestrator:
                 logger.exception(
                     "get_context() raised for module %r; skipping.", name
                 )
-        return context
+        return context, cache
 
  
     # ------------------------------------------------------------------
@@ -409,7 +416,13 @@ class HestiaOrchestrator:
 
         try:
             t0 = time.perf_counter()
-            result = generate(prompt, timeout=5)
+            result = generate(
+                prompt,
+                model=self._ollama_cfg.get("model", "mistral"),
+                host=self._ollama_cfg.get("host", "127.0.0.1"),
+                port=self._ollama_cfg.get("port", 11434),
+                timeout=5,
+            )
             logger.debug("Synthesis took %.2f ms", (time.perf_counter() - t0)*1000)
             if result and result.strip():
                 return result.strip()

@@ -3,10 +3,14 @@ modules/athena/engine.py
 
 AthenaEngine — the single public entry point Hestia calls.
 """
+import logging
+
 from modules.base import BaseModule   
 from modules.athena.local_rag import MergedLocalRAG
 from modules.athena.hestia_llm_adapter import HestiaLLMAdapter
 from modules.athena.services.query_service import QueryService
+
+logger = logging.getLogger(__name__)
 
 
 class AthenaEngine(BaseModule): 
@@ -41,7 +45,8 @@ class AthenaEngine(BaseModule):
                 "data":       {"sources": [s.to_dict() for s in result.sources]},
                 "confidence": 0.9,
             }
-        except Exception as e:
+        except Exception:
+            logger.exception("Athena query failed for query=%r", query[:80])
             return {"response": "I had trouble searching your documents.", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:
