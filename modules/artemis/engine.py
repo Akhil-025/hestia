@@ -31,7 +31,8 @@ class ArtemisEngine(BaseModule):
             if name:
                 self.tracker.complete_habit(name)
                 habits = self.tracker.get_habits()
-                streak = habits.get(name, {}).get("streak", 0)
+                habit = habits.get(name)
+                streak = habit.streak if habit else 0
                 response = f"Marked '{name}' complete. Current streak: {streak} days."
             else:
                 response = "Please specify a habit name."
@@ -40,7 +41,7 @@ class ArtemisEngine(BaseModule):
             if not habits:
                 response = "You have no habits tracked."
             else:
-                parts = [f"{h} ({v['streak']}🔥)" for h, v in habits.items()]
+                parts = [f"{h} ({v.streak}🔥)" for h, v in habits.items()]
                 response = f"You have {len(habits)} habits: " + ", ".join(parts)
             data = habits
         elif intent == "add_goal":
@@ -68,15 +69,15 @@ class ArtemisEngine(BaseModule):
             if not goals:
                 response = "You have no active goals."
             else:
-                parts = [f"{g} ({int(v['progress']*100)}%)" for g, v in goals.items() if v.get("status") == "active"]
+                parts = [f"{g} ({int(v.progress*100)}%)" for g, v in goals.items() if v.status == "active"]
                 response = "Active goals: " + ", ".join(parts)
             data = goals
         elif intent == "productivity_summary":
             habits = self.tracker.get_habits()
             goals = self.tracker.get_goals()
             total_habits = len(habits)
-            avg_streak = round(sum(h["streak"] for h in habits.values()) / total_habits, 1) if total_habits else 0.0
-            goals_progress = {g: v["progress"] for g, v in goals.items()}
+            avg_streak = round(sum(h.streak for h in habits.values()) / total_habits, 1) if total_habits else 0.0
+            goals_progress = {g: v.progress for g, v in goals.items()}
             insights = self.analyze()
 
             response = (
@@ -100,7 +101,7 @@ class ArtemisEngine(BaseModule):
             goals  = self.tracker.get_goals()
             return {
                 "habit_count":    len(habits),
-                "active_goals":   [k for k, v in goals.items() if v.get("status") == "active"],
+                "active_goals":   [k for k, v in goals.items() if v.status == "active"],
                 "avg_streak":     self.analyze().get("avg_streak", 0),
             }
         except Exception:
@@ -117,14 +118,19 @@ class ArtemisEngine(BaseModule):
         }
 
         if habits:
-            avg = sum(h["streak"] for h in habits.values()) / len(habits)
+            avg = sum(h.streak for h in habits.values()) / len(habits)
             insights["avg_streak"] = round(avg, 1)
 
             for name, h in habits.items():
-                if h["streak"] < avg:
+                if h.streak < avg:
                     insights["weak_habits"].append(name)
                 else:
                     insights["strong_habits"].append(name)
+
+        insights["stalled_goals"] = [
+            name for name, g in goals.items()
+            if g.status == "active" and g.progress == 0
+        ]
 
         return insights
     

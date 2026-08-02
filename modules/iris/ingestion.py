@@ -95,11 +95,17 @@ class FileIngestor:
         self.stats: Dict[str, int] = {"ingested": 0, "duplicates_skipped": 0, "errors": 0, "total_size": 0}
         self.stats["failed_files"] = []
         self.retry_queue: List[Tuple[Path, int]] = []
+        # Paths currently sitting in the retry queue. Their initial failure
+        # is not yet counted in stats["errors"] — that only happens once
+        # the retry path resolves (success = no error counted at all;
+        # permanent failure = counted exactly once).
+        self._pending_retry: set = set()
 
     async def process_directory(self, directory: Path, recursive: bool = True) -> Dict:
         logger.info(f"Processing directory: {directory}")
         self.stats = {"ingested": 0, "duplicates_skipped": 0, "errors": 0, "total_size": 0, "failed_files": []}
         self.retry_queue = []
+        self._pending_retry = set()
         file_paths = self._find_media_files(directory, recursive)
         logger.info(f"Found {len(file_paths)} files to process")
         batch_size = self.config.batch_size
@@ -151,7 +157,7 @@ class FileIngestor:
             if isinstance(result, Exception):
                 logger.error(f"Error processing {file_path}: {result}")
                 self.retry_queue.append((file_path, 1))
-                self.stats["errors"] += 1
+                self._pending_retry.add(str(file_path))
                 self.stats["failed_files"].append(str(file_path))
                 continue
             if result is not None:
@@ -171,7 +177,9 @@ class FileIngestor:
                 result = await self._process_single_file(file_path)
                 if result is not None:
                     self._update_stats(result)
-                    # Succeeded on retry — no longer a failure.
+                    # Succeeded on retry — no longer a failure, and it was
+                    # never counted as an error in the first place.
+                    self._pending_retry.discard(str(file_path))
                     if str(file_path) in self.stats["failed_files"]:
                         self.stats["failed_files"].remove(str(file_path))
             except Exception as e:
@@ -180,6 +188,7 @@ class FileIngestor:
                     self.retry_queue.append((file_path, attempt + 1))
                 else:
                     logger.error(f"[RETRY] Permanent failure for {file_path}")
+                    self._pending_retry.discard(str(file_path))
                     self.stats["errors"] += 1
                     if str(file_path) not in self.stats["failed_files"]:
                         self.stats["failed_files"].append(str(file_path))

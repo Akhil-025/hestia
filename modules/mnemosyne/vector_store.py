@@ -5,8 +5,7 @@ ChromaDB vector store for Mnemosyne, using SentenceTransformers for embeddings.
 """
 import logging
 import threading
-from typing import Optional, List, Dict, Any
-from pathlib import Path
+from typing import Optional, List
 
 import chromadb
 from sentence_transformers import SentenceTransformer

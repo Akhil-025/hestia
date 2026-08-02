@@ -20,6 +20,11 @@ class AthenaEngine(BaseModule):
         "athena_search",
         "query_documents",
         "search_documents",
+        # HestiaOrchestrator._strip_module_prefix() strips "athena_" off
+        # "athena_search" before dispatch, turning it into "search" — add
+        # the stripped form too or can_handle() rejects it and the query
+        # silently falls back to chat.
+        "search",
     }
 
     def __init__(self, hestia_llm) -> None:

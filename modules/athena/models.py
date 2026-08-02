@@ -1,4 +1,4 @@
-"""
+r"""
 modules/athena/models.py
 
 Data classes shared across the Athena pipeline.

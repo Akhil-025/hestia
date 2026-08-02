@@ -19,8 +19,6 @@ Design notes
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from math import isfinite

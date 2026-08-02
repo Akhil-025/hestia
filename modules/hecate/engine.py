@@ -31,7 +31,7 @@ class HecateEngine(BaseModule):
     _ARTEMIS_KEYWORDS = {"habit", "goal", "productivity", "streak"}
 
     _CHRONOS_INTENTS  = {"get_time", "get_date", "get_weather", "set_reminder"}
-    _HERMES_INTENTS   = {"read_email", "send_email", "list_events", "create_event"}
+    _HERMES_INTENTS   = {"hermes_read_email", "hermes_send_email", "hermes_list_events", "hermes_create_event"}
     _HEPHAESTUS_INTENTS = {"search_web", "browser_action", "check_flight"}
 
     def can_handle(self, intent: str) -> bool:

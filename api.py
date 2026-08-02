@@ -170,9 +170,7 @@ async def sync_pull(
 
     try:
         if since:
-            rows = memory.db.get_recent_interactions(limit=1000)
-            rows = [r for r in rows if r.get("pushed_at", "") > since]
-            rows = rows[:limit]
+            rows = memory.db.get_interactions_since(since, limit=limit)
         else:
             rows = memory.db.get_recent_interactions(limit=limit)
 

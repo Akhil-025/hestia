@@ -15,10 +15,11 @@ class Summariser:
         self._skip_until = 0   # interaction count at which to retry
 
     def should_summarise(self) -> bool:
-        cur = self.engine.db._conn.execute(
-            "SELECT COUNT(*) FROM interaction_log WHERE summarised=0"
-        )
-        unsummarised = cur.fetchone()[0]
+        with self.engine.db._lock:
+            cur = self.engine.db._conn.execute(
+                "SELECT COUNT(*) FROM interaction_log WHERE summarised=0"
+            )
+            unsummarised = cur.fetchone()[0]
 
         if self._skip_until > 0:
             self._skip_until -= 1
@@ -69,12 +70,12 @@ class Summariser:
                 self._failure_count, backoff
             )
             # Mark interactions with a placeholder so they don't pile up
-            self.engine.db._conn.execute(
-                "UPDATE interaction_log SET summarised=1 WHERE id IN (%s)"
-                % ",".join("?" * len(ids)),
-                ids
-            )
-            self.engine.db._conn.commit()
+            with self.engine.db._lock, self.engine.db._conn:
+                self.engine.db._conn.execute(
+                    "UPDATE interaction_log SET summarised=1 WHERE id IN (%s)"
+                    % ",".join("?" * len(ids)),
+                    ids
+                )
             return False
 
         self._failure_count = 0  # reset on success

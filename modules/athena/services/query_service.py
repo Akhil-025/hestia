@@ -11,7 +11,6 @@ from enum import Enum
 
 from modules.athena.models import QueryResult, SearchResults, SourceDocument
 from modules.athena.services.prompt_builder import PromptBuilder
-from modules.athena.services.context_assembler import ContextAssembler
 from modules.athena.utils.llm_cache import question_hash, load_cached_answer, save_cached_answer
 from modules.athena.exceptions import QueryError, LLMError, RAGError
 from modules.athena.config import get_config

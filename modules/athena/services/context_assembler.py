@@ -3,7 +3,7 @@ modules/athena/services/context_assembler.py
 
 Context assembly — fixed for Hestia (relative imports).
 """
-from typing import List, Optional, Protocol
+from typing import List, Optional
 from dataclasses import dataclass
 from enum import Enum
 import logging

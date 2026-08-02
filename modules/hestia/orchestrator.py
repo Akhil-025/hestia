@@ -36,6 +36,13 @@ _MODULE_PREFIXES: tuple[str, ...] = (
     "orpheus_",
     "dionysus_",
     "pluto_",
+    "hermes_",
+    "chronos_",
+    "athena_",
+    "iris_",
+    "artemis_",
+    "hephaestus_",
+    "mnemosyne_",
 )
 
 _FALLBACK_DECISION: dict[str, Any] = {
@@ -367,12 +374,32 @@ class HestiaOrchestrator:
             return self._chat_fallback(nlu_result)
 
         if not mod.can_handle(intent):
-            logger.warning(
-                "Module %r cannot handle intent %r; falling back to chat.",
-                primary_name,
-                raw_intent,
-            )
-            return self._chat_fallback(nlu_result)
+            # Hecate's routing guess doesn't match what the named module
+            # actually declares — most commonly because the NLU model
+            # emitted a plausible-looking but wrong module prefix (e.g.
+            # "pluto_get_calendar_event" for a calendar query, which
+            # Hecate's Tier-X prefix match routes straight to pluto without
+            # ever checking whether pluto declares "get_calendar_event").
+            # Before giving up and falling back to chat — which silently
+            # discards the user's actual request — check whether any OTHER
+            # registered module declares this (stripped) intent and
+            # dispatch there instead.
+            alternate = self._find_alternate_module(intent, exclude=primary_name)
+            if alternate is not None:
+                alt_name, alt_mod = alternate
+                logger.warning(
+                    "Hecate routed intent %r to module %r, which doesn't "
+                    "declare it; module %r does — dispatching there instead.",
+                    raw_intent, primary_name, alt_name,
+                )
+                primary_name, mod = alt_name, alt_mod
+            else:
+                logger.warning(
+                    "Module %r cannot handle intent %r; falling back to chat.",
+                    primary_name,
+                    raw_intent,
+                )
+                return self._chat_fallback(nlu_result)
 
         try:
             raw_result = mod.handle(intent, entities, context)
@@ -392,6 +419,33 @@ class HestiaOrchestrator:
             return _GENERIC_ERROR
 
         return _to_dispatch_result(raw_result)
+
+    def _find_alternate_module(
+        self, intent: str, exclude: str
+    ) -> Optional[tuple[str, BaseModule]]:
+        """
+        Look for a registered module (other than *exclude*) whose
+        ``can_handle(intent)`` returns True.
+
+        Used only as a recovery path when Hecate's routing decision names
+        a module that doesn't actually support the (prefix-stripped)
+        intent — see ``_dispatch_primary``. Every module's ``can_handle``
+        is exact-set membership (never a wildcard), so this can't
+        accidentally hijack an unrelated query; it only catches genuinely
+        misrouted-but-validly-named intents.
+        """
+        for name, candidate in self._modules.items():
+            if name == exclude:
+                continue
+            try:
+                if candidate.can_handle(intent):
+                    return name, candidate
+            except Exception:
+                logger.exception(
+                    "can_handle() raised for module %r while searching "
+                    "for an alternate handler of intent %r.", name, intent,
+                )
+        return None
 
     # ------------------------------------------------------------------
     # Private – synthesis

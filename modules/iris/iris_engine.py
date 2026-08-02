@@ -38,7 +38,15 @@ class IrisEngine(BaseModule):
 
 
     def can_handle(self, intent: str) -> bool:   
-        return intent in {"iris_search", "iris_ingest", "iris_analyse", "iris_status", "iris_query"}
+        # Accepts both the full prefixed intent name (as emitted by the NLU
+        # / used by Hecate's Tier-1.5 direct routing) and the stripped form
+        # produced by HestiaOrchestrator._strip_module_prefix() before
+        # dispatch — without this, "iris_search" gets stripped to "search"
+        # and can_handle() would reject it, silently falling back to chat.
+        return intent in {
+            "iris_search", "iris_ingest", "iris_analyse", "iris_status", "iris_query",
+            "search", "ingest", "analyse", "status", "query",
+        }
 
     def handle(self, intent: str, entities: dict, context: dict) -> dict:
         raw = entities.get("raw_query", context.get("raw_query", "")).lower()
@@ -122,7 +130,6 @@ class IrisEngine(BaseModule):
             results_caption = self.db.search_files_by_caption(query, limit)
             results_tags = self.db.search_files_by_tags(query, limit)
             # Deduplicate by file_path
-            seen = set()
             combined = []
             unique_map = {}
 

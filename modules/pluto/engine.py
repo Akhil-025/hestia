@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -530,19 +530,33 @@ class PlutoEngine(BaseModule):
         """
         Fetch a live market price.
 
+        Retried once with a short exponential back-off before giving up,
+        since live-price providers occasionally fail transiently.
+
         Returns a ``LivePriceResult`` with ``price=None`` on failure; never
         raises so that investment tracking is not blocked by network errors.
         """
-        try:
-            if asset_type == "crypto":
-                return _fetch_crypto_price(name)
-            return _fetch_yahoo_price(name)
-        except LivePriceFetchError as exc:
-            logger.warning("Live price unavailable for %r: %s", name, exc)
-            return LivePriceResult(price=None, error=str(exc))
-        except Exception:
-            logger.exception("Unexpected error fetching live price for %r.", name)
-            return LivePriceResult(price=None, error="unexpected error")
+        fetch_fn = _fetch_crypto_price if asset_type == "crypto" else _fetch_yahoo_price
+        last_error = "unexpected error"
+
+        for attempt in range(2):  # initial attempt + 1 retry
+            try:
+                return fetch_fn(name)
+            except LivePriceFetchError as exc:
+                last_error = str(exc)
+                if attempt == 0:
+                    logger.warning(
+                        "Live price fetch failed for %r (attempt 1): %s; retrying.",
+                        name, exc,
+                    )
+                    time.sleep(1)
+                else:
+                    logger.warning("Live price unavailable for %r after retry: %s", name, exc)
+            except Exception:
+                logger.exception("Unexpected error fetching live price for %r.", name)
+                return LivePriceResult(price=None, error="unexpected error")
+
+        return LivePriceResult(price=None, error=last_error)
 
 
 # ---------------------------------------------------------------------------

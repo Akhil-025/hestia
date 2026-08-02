@@ -188,6 +188,30 @@ class MnemosyneDB:
         result.reverse()
         return result
 
+    def get_interactions_since(self, since: str, limit: int = 1000) -> list[dict]:
+        """
+        Return up to `limit` interactions with pushed_at > since, oldest
+        first. Unlike filtering a fixed-size `get_recent_interactions()`
+        fetch client-side, this queries the backlog directly so a caller
+        can page through it (by repeatedly calling with the last-seen
+        pushed_at) without silently skipping rows when the backlog is
+        larger than any single fetch.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT user_text, hestia_response, intent, pushed_at
+            FROM interaction_log
+            WHERE pushed_at > ?
+            ORDER BY id ASC LIMIT ?
+            """,
+            (since, limit)
+        )
+        rows = cur.fetchall()
+        return [
+            {"query": r["user_text"], "response": r["hestia_response"], "intent": r["intent"], "pushed_at": r["pushed_at"]}
+            for r in rows
+        ]
+
 
     def get_recent_interactions_excluding(self, limit: int, exclude_intents: list[str]) -> list[dict]:
         if not exclude_intents:

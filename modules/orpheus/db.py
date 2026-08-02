@@ -2,7 +2,6 @@
 
 import sqlite3
 import threading
-from pathlib import Path
 
 
 class OrpheusDB:

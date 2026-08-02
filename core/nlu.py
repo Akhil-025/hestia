@@ -199,6 +199,73 @@ class HestiaNLU:
             print(f"[NLU ERROR] ollama_client failed: {e}", file=sys.stderr)
             return None
 
+    def _call_anthropic_provider(self, provider: dict, prompt: str) -> Optional[str]:
+        api_key = provider.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("[NLU ERROR] anthropic provider missing api_key (set provider.api_key "
+                  "or ANTHROPIC_API_KEY env var)", file=sys.stderr)
+            return None
+        model = provider.get("model", "claude-sonnet-4-6")
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=provider.get("timeout", 20),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+            text = "".join(parts).strip()
+            return text if text else None
+        except Exception as e:
+            print(f"[NLU ERROR] anthropic provider failed: {e}", file=sys.stderr)
+            return None
+
+    def _call_gemini_provider(self, provider: dict, prompt: str) -> Optional[str]:
+        api_key = provider.get("api_key") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            print("[NLU ERROR] gemini provider missing api_key (set provider.api_key "
+                  "or GEMINI_API_KEY env var)", file=sys.stderr)
+            return None
+        model = provider.get("model", "gemini-1.5-flash")
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={api_key}"
+        )
+        try:
+            resp = requests.post(
+                url,
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": self.temperature,
+                        "maxOutputTokens": self.max_tokens,
+                    },
+                },
+                timeout=provider.get("timeout", 20),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text = "".join(p.get("text", "") for p in parts).strip()
+            return text if text else None
+        except Exception as e:
+            print(f"[NLU ERROR] gemini provider failed: {e}", file=sys.stderr)
+            return None
+
     def _parse_response(self, response: str) -> Tuple[Dict[str, Any], bool]:
         """
         Extract and validate JSON from LLM response.

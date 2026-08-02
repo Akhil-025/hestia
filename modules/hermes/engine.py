@@ -79,6 +79,28 @@ class HermesEngine(BaseModule):
         }
     )
 
+    # NLU models don't always emit these exact canonical names — "check my
+    # email" or "what's on my calendar" can plausibly come back as
+    # "get_email" or "get_calendar_event" instead of "read_email" /
+    # "list_events". can_handle()/handle() accept both the canonical and
+    # alias spellings so a reasonably-named intent still reaches Hermes
+    # rather than being rejected and falling back to chat (see also
+    # HestiaOrchestrator._find_alternate_module, which relies on
+    # can_handle() covering every name it might plausibly be asked about).
+    _INTENT_ALIASES: dict[str, str] = {
+        "get_email": "read_email",
+        "check_email": "read_email",
+        "fetch_email": "read_email",
+        "get_calendar_event": "list_events",
+        "get_calendar_events": "list_events",
+        "get_events": "list_events",
+        "check_calendar": "list_events",
+        "get_calendar": "list_events",
+        "schedule_event": "create_event",
+        "add_event": "create_event",
+        "add_calendar_event": "create_event",
+    }
+
     def __init__(self, google_agent: Any = None) -> None:
         self._google = google_agent
         logger.info(
@@ -91,7 +113,7 @@ class HermesEngine(BaseModule):
     # ------------------------------------------------------------------
 
     def can_handle(self, intent: str) -> bool:
-        return intent in self._INTENTS
+        return intent in self._INTENTS or intent in self._INTENT_ALIASES
 
     def handle(self, intent: str, entities: dict, context: dict) -> dict:
         """
@@ -132,6 +154,7 @@ class HermesEngine(BaseModule):
     # ------------------------------------------------------------------
 
     def _dispatch(self, intent: str, entities: dict) -> dict:
+        intent = self._INTENT_ALIASES.get(intent, intent)
         if intent == "read_email":
             return self._read_email(entities)
         if intent == "send_email":

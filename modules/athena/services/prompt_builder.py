@@ -117,6 +117,8 @@ class PromptBuilder:
         self.context_config   = context_config or ContextConfig()
         self.context_assembler = ContextAssembler(self.context_config)
 
+    MAX_PROMPT_CHARS = 4000
+
     def build(self, question: str, sources: List[SourceDocument], **template_vars: Any) -> str:
         if not sources:
             logger.warning("Building prompt with no sources")
@@ -124,17 +126,25 @@ class PromptBuilder:
         else:
             context = self.context_assembler.assemble(sources)
 
-        prompt = self.template.render(
-            question=question,
-            context=context,
-            **template_vars
-        )
+        # Reserve room for everything except the context (system prompt,
+        # question, prefixes/suffixes) so truncation never eats the
+        # question — only ever shortens the context, which sits ahead of
+        # the question in every template.
+        fixed_prompt = self.template.render(question=question, context="", **template_vars)
+        budget = self.MAX_PROMPT_CHARS - len(fixed_prompt)
 
-        MAX_CHARS = 4000
-        if len(prompt) > MAX_CHARS:
-            prompt = prompt[:MAX_CHARS]
+        if budget > 0 and len(context) > budget:
+            context = context[:budget].rstrip() + "..."
+            logger.warning("Context truncated to fit prompt budget (%d chars).", budget)
+        elif budget <= 0:
+            logger.warning(
+                "Fixed prompt content alone (%d chars) exceeds MAX_PROMPT_CHARS "
+                "(%d); dropping context entirely to preserve the question.",
+                len(fixed_prompt), self.MAX_PROMPT_CHARS,
+            )
+            context = ""
 
-        return prompt
+        return self.template.render(question=question, context=context, **template_vars)
 
     @classmethod
     def for_local_llm(cls, chat_mode: bool = False) -> "PromptBuilder":

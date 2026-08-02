@@ -1,3 +1,5 @@
+# modules/iris/analyser.py
+
 import base64
 import json
 import logging
@@ -71,7 +73,6 @@ class IrisAnalyser:
                 mood = mood or "neutral"
 
                 # Convert tags to JSON string
-                import json
                 tags_json = json.dumps([t.strip() for t in tags.split(",") if t.strip()])
 
                 # Write to DB
@@ -149,7 +150,6 @@ class IrisAnalyser:
         return {"analysed": analysed, "errors": errors}
 
     def _parse_response(self, response: str):
-        import re
         caption = tags = mood = None
 
         # Try structured parse first

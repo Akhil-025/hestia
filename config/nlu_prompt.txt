@@ -23,7 +23,8 @@ ares_analyse_risk, ares_swot_analysis, ares_strategic_plan, ares_decision_suppor
 apollo_log_workout, apollo_track_sleep, apollo_log_mood, apollo_log_health, apollo_get_health_summary,
 orpheus_write_poem, orpheus_brainstorm, orpheus_creative_prompt, orpheus_generate_lyrics,
 dionysus_recommend_movie, dionysus_find_restaurant, dionysus_recommend_music, dionysus_plan_outing,
-pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report
+pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report,
+read_email, send_email, list_events, create_event
 
 ---
 
@@ -197,6 +198,28 @@ User: how are you
 
 ---
 
+# ---- HERMES (GMAIL / CALENDAR) ----
+
+User: check my mail
+{"intent": "read_email", "entities": {}, "response": "Checking your inbox.", "confidence": 0.95}
+
+User: do I have any new emails
+{"intent": "read_email", "entities": {}, "response": "Checking your inbox.", "confidence": 0.95}
+
+User: send an email to John saying I'll be late
+{"intent": "send_email", "entities": {"to": "John", "body": "I'll be late"}, "response": "Sending your email.", "confidence": 0.93}
+
+User: what's on my calendar today
+{"intent": "list_events", "entities": {"date": "today"}, "response": "Checking your calendar.", "confidence": 0.95}
+
+User: what meetings do I have tomorrow
+{"intent": "list_events", "entities": {"date": "tomorrow"}, "response": "Checking your calendar.", "confidence": 0.95}
+
+User: schedule a meeting with Sarah at 3pm tomorrow
+{"intent": "create_event", "entities": {"title": "meeting with Sarah", "time": "3pm", "date": "tomorrow"}, "response": "Creating your calendar event.", "confidence": 0.93}
+
+---
+
 IMPORTANT:
 
 - Always return valid JSON only
@@ -210,6 +233,8 @@ STRICT RULES:
 - iris_ingest → adding/importing media
 - NEVER use iris_search for notes or documents
 - NEVER use athena_search for images
+- read_email / send_email / list_events / create_event → Gmail or Calendar ONLY (mail, inbox, email, meetings, calendar, schedule)
+- NEVER use iris_search or athena_search for email or calendar requests
 
 - chat → only general conversation or explanations
 - "add goal ..." MUST map to add_goal

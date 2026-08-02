@@ -184,7 +184,7 @@ class PDFProcessor:
                 combined = cleaned + "\n\n[VISUAL]\n" + vision_text
                 pages.append(self._make_page(combined, i, file_path, total))
 
-                print(f"[OCR DEBUG] Page {i}:", cleaned[:200])
+                logger.debug("[OCR] Page %d: %s", i, cleaned[:200])
 
         return pages
 
@@ -216,7 +216,7 @@ class PDFProcessor:
     def _vision_describe(self, image):
         try:
             return self.vision_model.describe(image)
-        except:
+        except Exception:
             return ""
 
     # ------------------------------------------------------------------

@@ -56,7 +56,6 @@ def get_config(path: str = "config/laptop_config.yaml") -> IrisConfig:
         cfg = {}
 
     iris_cfg = cfg.get("iris", {})
-    db_cfg = cfg.get("database", {})
 
     # ── Defaults ────────────────────────────────────────
     default_base = _HESTIA_ROOT / "data" / "iris"

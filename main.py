@@ -294,11 +294,28 @@ class HestiaBuilder:
     # -- I/O --------------------------------------------------------------
 
     def build_io(self) -> tuple[HestiaSTT, HestiaTTS, WakeWordDetector]:
+        stt_cfg = self.config.get("stt", {})
+        tts_cfg = self.config.get("tts", {})
+        wake_cfg = self.config.get("wake_word", {})
+
         stt = HestiaSTT(
-            silence_frames=self.config.get("stt", {}).get("silence_frames", 33)
+            model_size=stt_cfg.get("model_size", "base.en"),
+            device=stt_cfg.get("device", "cuda"),
+            compute_type=stt_cfg.get("compute_type", "int8"),
+            samplerate=stt_cfg.get("samplerate", 16000),
+            noise_filter=stt_cfg.get("noise_filter", True),
+            silence_frames=stt_cfg.get("silence_frames", 33),
         )
-        tts = HestiaTTS()
-        wake_detector = WakeWordDetector()
+        tts = HestiaTTS(
+            engine=tts_cfg.get("engine", "pyttsx3"),
+            rate=tts_cfg.get("rate", 175),
+            volume=tts_cfg.get("volume", 1.0),
+            piper_model_path=tts_cfg.get("piper_model_path"),
+        )
+        wake_detector = WakeWordDetector(
+            model_path=wake_cfg.get("model_path", "models/vosk-model-small-en-us-0.15"),
+            wake_words=wake_cfg.get("wake_words"),
+        )
         return stt, tts, wake_detector
 
     # -- Heartbeat / web UI / sync API ------------------------------------
@@ -321,6 +338,51 @@ class HestiaBuilder:
             return web_ui
         except Exception:
             logger.exception("Web UI failed to start; continuing without it.")
+            return None
+
+    def build_telegram_bot(self, process_fn, stt: Optional[HestiaSTT]) -> Optional[Any]:
+        """
+        Start the Telegram bot in-process, using the already-initialised
+        Hestia stack.
+
+        Previously this was only reachable via ``python -m core.telegram_bot``,
+        but that module has no ``__main__`` entry point — running it standalone
+        does nothing (imports the class, then exits). Wiring it here, the same
+        way web UI and the sync API are wired, is what actually starts it, and
+        gives it access to a fully-initialised ``process_fn`` (STT, memory,
+        orchestrator, etc.) instead of requiring a second, separate init path.
+
+        Note: ``config/laptop_config.yaml`` writes the token as
+        ``${TELEGRAM_BOT_TOKEN}`` but ``_load_config`` uses plain
+        ``yaml.safe_load`` with no env-var interpolation, so that placeholder
+        is never resolved from the YAML. The token is read directly from the
+        environment instead, same as Dionysus reads its API keys.
+        """
+        telegram_cfg = self.config.get("telegram", {})
+        if not telegram_cfg.get("enabled", False):
+            return None
+
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            logger.warning(
+                "Telegram enabled in config but TELEGRAM_BOT_TOKEN is not set "
+                "in the environment; skipping Telegram bot startup."
+            )
+            return None
+
+        try:
+            from core.telegram_bot import HestiaTelegramBot
+            bot = HestiaTelegramBot(
+                token=token,
+                process_fn=process_fn,
+                allowed_chat_ids=telegram_cfg.get("allowed_chat_ids"),
+                stt=stt,
+            )
+            bot.start()
+            logger.info("Telegram bot started.")
+            return bot
+        except Exception:
+            logger.exception("Telegram bot failed to start; continuing without it.")
             return None
 
     def start_sync_api(self, mnemosyne: MnemosyneEngine) -> None:
@@ -396,6 +458,8 @@ class Hestia:
         logger.info("Heartbeat started (interval=1800 s).")
 
         self.web_ui = builder.build_web_ui(self.mnemosyne, self.process_text, self.apollo)
+
+        self.telegram_bot = builder.build_telegram_bot(self.process_text, self.stt)
 
         builder.start_sync_api(self.mnemosyne)
 

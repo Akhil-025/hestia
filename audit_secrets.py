@@ -3,11 +3,8 @@
 import os
 import re
 import json
-import base64
-import yaml
-import hashlib
 from collections import namedtuple
-from typing import List, Dict, Any
+from typing import List
 import math
 
 # --- CONFIGURATION ---
@@ -87,7 +84,7 @@ def scan_file(filepath: str) -> List[Secret]:
                     if len(word) > 20 and shannon_entropy(word) > 4.0 and not is_allowlisted('', word):
                         preview = line.strip()[:50]
                         secrets.append(Secret(filepath, i, 'High-Entropy String', 'low', preview))
-    except Exception as e:
+    except Exception:
         pass  # Ignore unreadable files
     return secrets
 
@@ -121,10 +118,10 @@ def main():
     for fname in SCAN_FILES:
         if os.path.isfile(fname) and is_allowed_file(fname):
             all_secrets.extend(scan_file(fname))
-    # Scan config/ and data/ at root if present
-    for special in ['config', DATA_FOLDER]:
-        if os.path.isdir(special):
-            all_secrets.extend(scan_directory(special))
+    # Scan data/ at root if present (config/ is already covered by
+    # SCAN_FOLDERS above — scanning it again here would duplicate results).
+    if os.path.isdir(DATA_FOLDER):
+        all_secrets.extend(scan_directory(DATA_FOLDER))
     # Output to console (table)
     if all_secrets:
         print(f"{'File':60} {'Line':>5} {'Type':25} {'Conf':>6} {'Preview'}")

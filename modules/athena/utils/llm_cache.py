@@ -5,9 +5,8 @@ LLM response caching — fixed for Hestia (relative config import).
 """
 import json
 import hashlib
-from pathlib import Path
 
-from modules.athena.config import get_config, paths
+from modules.athena.config import paths
 
 
 def question_hash(question: str, context_ids: list) -> str:
