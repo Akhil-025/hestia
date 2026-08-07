@@ -26,6 +26,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import dateparser
+from dateparser.search import search_dates
 import requests
 
 from modules.base import BaseModule
@@ -93,8 +94,24 @@ _TASK_NOISE = re.compile(
     flags=re.IGNORECASE,
 )
 _TIME_SUFFIX = re.compile(
-    r"\b(at|in|on|tomorrow|today|tonight|morning|afternoon|evening|night"
-    r"|midnight|noon|\d{1,2}[:\s]\d{2}|\d{1,2}\s?(?:am|pm))\b.*",
+    r"\b(at|in|on|next|this coming|tomorrow|today|tonight|morning|afternoon"
+    r"|evening|night|midnight|noon|monday|tuesday|wednesday|thursday|friday"
+    r"|saturday|sunday|\d{1,2}[:\s]\d{2}|\d{1,2}\s?(?:am|pm))\b.*",
+    flags=re.IGNORECASE,
+)
+
+# A fragment returned by dateparser's `search_dates()` is only trusted as an
+# actual date/time reference if it contains a digit or one of these
+# unambiguous temporal keywords. Without this filter, `search_dates()`
+# regularly misfires on ordinary words inside a reminder task — e.g. a task
+# like "email May about the report" or "text August" gets a chunk of the
+# task's own text ("May", "August", ...) parsed as a date, silently
+# producing a *wrong* reminder time instead of no match at all.
+_TEMPORAL_KEYWORD_RE = re.compile(
+    r"\d|\b(today|tomorrow|tonight|yesterday|noon|midnight|morning|afternoon"
+    r"|evening|night|next|this coming|monday|tuesday|wednesday|thursday"
+    r"|friday|saturday|sunday|week|weekend|month|year|hour|hours|minute"
+    r"|minutes|sec|second|seconds|am|pm|o'clock)\b",
     flags=re.IGNORECASE,
 )
 
@@ -199,6 +216,16 @@ class ChronosEngine(BaseModule):
 
     def _dispatch(self, intent: str, entities: dict, context: dict) -> dict:
         if intent == "get_time":
+            # The NLU has been observed to return "get_time" (high confidence)
+            # for phrasings like "what is todays date" that are clearly
+            # asking for the date, not the clock time — e.g. it fires on
+            # "what is" / "todays" and never notices "date" is the actual
+            # subject. A raw_query containing "date" but not "time"/"clock"
+            # is unambiguous enough to safely redirect rather than answer
+            # the wrong question with high confidence.
+            raw = (entities.get("raw_query") or "").lower()
+            if "date" in raw and "time" not in raw and "clock" not in raw:
+                return self._get_date()
             return self._get_time()
         if intent == "get_date":
             return self._get_date()
@@ -240,28 +267,11 @@ class ChronosEngine(BaseModule):
         )
         location = location.strip()
         coords = self._coords.get(location.lower())
-        if coords is None:
+
+        using_fallback_location = coords is None
+        if using_fallback_location:
             logger.info("Weather: location %r not recognized, using default.", location)
             coords = (_DEFAULT_LAT, _DEFAULT_LON)
-            lat, lon = coords
-
-            try:
-                weather = _fetch_weather(lat, lon)
-            except WeatherFetchError:
-                logger.exception("Weather fetch failed for location=%r.", location)
-                return _err("I couldn't fetch the weather right now.")
-
-            condition = _WMO_CODES.get(weather.get("weathercode", -1), "")
-            condition_str = f", {condition}" if condition else ""
-            temp = weather.get("temperature", "?")
-            wind = weather.get("windspeed", "?")
-
-            return _ok(
-                f"I don't have coordinates for {location!r}, so here's the weather "
-                f"for {_DEFAULT_LOCATION} instead: {temp}°C{condition_str}, wind {wind} km/h.",
-                data={"location": _DEFAULT_LOCATION, "weather": weather, "requested_location": location},
-                confidence=0.5,
-            )
         lat, lon = coords
 
         try:
@@ -274,6 +284,14 @@ class ChronosEngine(BaseModule):
         condition_str = f", {condition}" if condition else ""
         temp = weather.get("temperature", "?")
         wind = weather.get("windspeed", "?")
+
+        if using_fallback_location:
+            return _ok(
+                f"I don't have coordinates for {location!r}, so here's the weather "
+                f"for {_DEFAULT_LOCATION} instead: {temp}°C{condition_str}, wind {wind} km/h.",
+                data={"location": _DEFAULT_LOCATION, "weather": weather, "requested_location": location},
+                confidence=0.5,
+            )
 
         return _ok(
             f"Currently in {location}: {temp}°C{condition_str}, "
@@ -381,6 +399,44 @@ def _fetch_weather(lat: float, lon: float) -> dict[str, Any]:
     return weather
 
 
+def _search_raw_datetime(
+    raw: str, naive_base: datetime, settings: dict[str, Any]
+) -> Optional[datetime]:
+    """
+    Find a date/time fragment anywhere inside *raw* and return the
+    datetime it parses to, or ``None`` if nothing trustworthy is found.
+
+    ``search_dates()`` is used only to *locate* candidate fragments; each
+    candidate is re-parsed on its own with ``dateparser.parse()`` since
+    the datetimes ``search_dates()`` attaches to embedded matches are
+    unreliable (e.g. it can silently drop an explicit time like "9am"
+    and substitute the current time). Candidates are also required to
+    contain a digit or an unambiguous temporal keyword
+    (``_TEMPORAL_KEYWORD_RE``) — without that filter, ordinary words in
+    the reminder's task text (a name like "May" or "August") are
+    regularly mistaken for dates.
+
+    Among valid candidates, the first one that re-parses to a moment
+    strictly after *naive_base* is returned, so a stray false-positive
+    fragment earlier in the sentence doesn't shadow a real, later one.
+    """
+    try:
+        found = search_dates(raw, languages=["en"], settings=settings)
+    except Exception:
+        logger.exception("search_dates() failed for raw=%r.", raw)
+        return None
+    if not found:
+        return None
+
+    for fragment, _ in found:
+        if not _TEMPORAL_KEYWORD_RE.search(fragment):
+            continue
+        candidate = dateparser.parse(fragment, languages=["en"], settings=settings)
+        if candidate is not None and candidate > naive_base:
+            return candidate
+    return None
+
+
 def _extract_task(raw: str, task_hint: Optional[str]) -> str:
     """
     Derive a human-readable task label from the raw query or NLU entity.
@@ -425,7 +481,11 @@ def _parse_reminder_time(
 
     Resolution order
     ----------------
-    1. ``dateparser`` on the full *raw* query (most context).
+    1. Locate a date/time-bearing fragment anywhere inside the full *raw*
+       query and parse that fragment on its own (handles sentences like
+       "remind me to call John at 3pm tomorrow", where the surrounding
+       task text stops ``dateparser.parse()`` from matching the string
+       as a whole).
     2. ``dateparser`` on the combination of *date_hint* and *time_hint*.
     3. Named time-of-day matching against *time_hint* (morning, evening …).
 
@@ -436,14 +496,23 @@ def _parse_reminder_time(
     ReminderParseError
         When no strategy can produce a valid future datetime.
     """
+    naive_base = base.replace(tzinfo=None)  # dateparser wants naïve
     settings = {
         "PREFER_DATES_FROM": "future",
-        "RELATIVE_BASE": base.replace(tzinfo=None),  # dateparser wants naïve
+        "RELATIVE_BASE": naive_base,
         "RETURN_AS_TIMEZONE_AWARE": False,
     }
 
-    # Strategy 1: full raw string
-    parsed = dateparser.parse(raw, settings=settings)
+    # Strategy 1: find the date/time fragment inside the full sentence.
+    # ``dateparser.parse()`` on the whole sentence almost never matches
+    # once there's surrounding task text (names, verbs, etc.), so we
+    # first use ``search_dates()`` to locate the temporal fragment(s),
+    # then re-parse each fragment on its own. ``search_dates()``'s own
+    # returned datetimes are unreliable when the match is embedded in a
+    # longer string (it can drop an explicit time and substitute the
+    # current time instead), so the fragment text is always re-parsed
+    # rather than trusted directly.
+    parsed = _search_raw_datetime(raw, naive_base, settings)
 
     # Strategy 2: explicit date + time entities
     if parsed is None and (date_hint or time_hint):

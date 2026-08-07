@@ -55,11 +55,12 @@ CREATE INDEX IF NOT EXISTS idx_recs_seen      ON recommendations(seen);
             )
 
     def dismissed_titles(self, type_: str) -> list[str]:
-        cur = self._conn.execute(
-            "SELECT title FROM recommendations WHERE type=? AND dismissed=1",
-            (type_,)
-        )
-        return [r["title"] for r in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT title FROM recommendations WHERE type=? AND dismissed=1",
+                (type_,)
+            )
+            return [r["title"] for r in cur.fetchall()]
 
     def mark_seen(self, title: str, type_: str = "movie") -> bool:
         """
@@ -84,19 +85,21 @@ CREATE INDEX IF NOT EXISTS idx_recs_seen      ON recommendations(seen);
             return cur.rowcount > 0
 
     def seen_titles(self, type_: str) -> list[str]:
-        cur = self._conn.execute(
-            "SELECT title FROM recommendations WHERE type=? AND seen=1",
-            (type_,)
-        )
-        return [r["title"] for r in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT title FROM recommendations WHERE type=? AND seen=1",
+                (type_,)
+            )
+            return [r["title"] for r in cur.fetchall()]
 
     def get_history(self, type_: str, limit: int = 20) -> list[dict]:
-        cur = self._conn.execute(
-            """
-            SELECT * FROM recommendations
-            WHERE type=? AND dismissed=0
-            ORDER BY logged_at DESC LIMIT ?
-            """,
-            (type_, limit)
-        )
-        return [dict(r) for r in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM recommendations
+                WHERE type=? AND dismissed=0
+                ORDER BY logged_at DESC LIMIT ?
+                """,
+                (type_, limit)
+            )
+            return [dict(r) for r in cur.fetchall()]

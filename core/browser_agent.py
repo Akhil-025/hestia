@@ -83,9 +83,23 @@ class HestiaBrowserAgent:
         Open DuckDuckGo, search for query, return top 3 result titles and snippets.
         Does NOT require confirmation — read-only action.
         """
+        results = self.search_web_results(query, max_results=3)
+        if results:
+            return " | ".join(r["title"] for r in results if r.get("title"))
+        return f"No results found for '{query}'."
+
+    def search_web_results(self, query: str, max_results: int = 3) -> list[dict[str, str]]:
+        """
+        Open DuckDuckGo, search for query, return up to *max_results*
+        ``{"title": ..., "url": ...}`` dicts. Unlike search_web(), this keeps
+        the result URLs so callers (e.g. Hephaestus.search_and_summarize)
+        can scrape each result page instead of just showing its title.
+        Does NOT require confirmation — read-only action.
+        """
         page = self._new_page()
         if not page:
-            return "Browser is not available right now."
+            print("[BrowserAgent] search_web_results: browser not available.", file=sys.stderr)
+            return []
 
         try:
             from urllib.parse import quote_plus
@@ -97,28 +111,25 @@ class HestiaBrowserAgent:
             # wait for basic content instead of fragile selectors
             page.wait_for_load_state("domcontentloaded", timeout=10000)
 
-            results = page.query_selector_all("a.result__a")[:3]
+            links = page.query_selector_all("a.result__a")[:max_results]
 
-            summaries = []
-            for r in results:
-                title = r.inner_text()
+            out: list[dict[str, str]] = []
+            for link in links:
+                title = (link.inner_text() or "").strip()
+                href = (link.get_attribute("href") or "").strip()
                 if title:
-                    summaries.append(title)
+                    out.append({"title": title, "url": href})
 
             page.close()
-
-            if summaries:
-                return " | ".join(summaries)
-
-            return f"No results found for '{query}'."
+            return out
 
         except Exception as e:
-            print(f"[BrowserAgent] search_web error: {e}", file=sys.stderr)
+            print(f"[BrowserAgent] search_web_results error: {e}", file=sys.stderr)
             try:
                 page.close()
-            except:
+            except Exception:
                 pass
-            return "Search failed — browser couldn't extract results."
+            return []
 
     def open_url(self, url: str, confirm: bool = True) -> str:
         """

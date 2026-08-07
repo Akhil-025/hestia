@@ -1265,10 +1265,36 @@
       .replace(/"/g, '&quot;');
   }
 
+  // ── Device location ──────────────────────────────────
+  // Best-effort: ask the browser for GPS coordinates and report them so
+  // any god (Chronos weather, Dionysus restaurants, Hephaestus local
+  // search) can use MnemosyneEngine.get_context()["device_location"].
+  // Silently does nothing if geolocation is unsupported/denied — this is
+  // a convenience, not a requirement, and the CLI/backend has its own IP
+  // based fallback for that case (see main.py).
+  function reportLocation() {
+    if (!('geolocation' in navigator)) return;
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        fetch('/api/location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude
+          })
+        }).catch(() => { /* best-effort; ignore failures */ });
+      },
+      () => { /* permission denied or unavailable; ignore */ },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 15 * 60 * 1000 }
+    );
+  }
+
   // ── Boot ─────────────────────────────────────────────
   fetchJSON('/api/stats').then(updateStats).catch(() => {});
   loadSection('overview');
   loaded['overview'] = true;
+  reportLocation();
 </script>
 </body>
 </html>

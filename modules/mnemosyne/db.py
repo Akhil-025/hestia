@@ -256,6 +256,15 @@ class MnemosyneDB:
         ]
         return result
     
+    def delete_by_intent(self, intent: str) -> int:
+        """Delete all interaction_log rows with the given intent. Returns rows deleted."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM interaction_log WHERE intent = ?",
+                (intent,)
+            )
+            return cur.rowcount
+
     def get_top_facts(self, limit: int = 5):
         with self._lock:
             cursor = self._conn.execute(

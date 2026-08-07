@@ -89,6 +89,7 @@ from modules.hestia.core_module import CoreModule
 from modules.hestia.orchestrator import HestiaOrchestrator
 from modules.mnemosyne.engine import MnemosyneEngine
 from modules.orpheus import OrpheusEngine
+from modules.metis import MetisEngine
 from modules.pluto import PlutoEngine
 
 # ---------------------------------------------------------------------------
@@ -210,6 +211,13 @@ class HestiaBuilder:
                 agent = HestiaGoogleAgent(
                     credentials_path=self.google_cfg.get("credentials_path"),
                     token_path=self.google_cfg.get("token_path"),
+                    # Previously omitted, so HestiaGoogleAgent silently
+                    # defaulted to "UTC" regardless of the chronos.timezone
+                    # config value — see HermesEngine registration below.
+                    timezone=self.google_cfg.get(
+                        "timezone",
+                        self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
+                    ),
                 )
                 agent.authenticate()
                 modules["google_agent"] = agent
@@ -245,9 +253,18 @@ class HestiaBuilder:
         orchestrator = HestiaOrchestrator(ollama_cfg=self.ollama_cfg)
         orchestrator.register_hecate(HecateEngine())
 
-        # Core – always first so chat fallback is always available
+        # Core – always first so chat fallback is always available.
+        # Same config key ChronosEngine/HermesEngine use below — without
+        # this, CoreModule's get_user_info()/get_system_info() fall back to
+        # server-local time instead of the user's configured timezone,
+        # disagreeing with Chronos for the exact date/time questions the
+        # NLU sometimes misroutes to Core (see core_module.py).
         orchestrator.register(
-            CoreModule(memory=mnemosyne, ollama_cfg=self.ollama_cfg)
+            CoreModule(
+                memory=mnemosyne,
+                ollama_cfg=self.ollama_cfg,
+                timezone_name=self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
+            )
         )
 
         # Memory
@@ -259,13 +276,28 @@ class HestiaBuilder:
                 orchestrator.register(mod)
 
         # Time / calendar / communication
-        orchestrator.register(ChronosEngine(memory=mnemosyne))
-        orchestrator.register(ArtemisEngine())
+        orchestrator.register(
+            ChronosEngine(
+                memory=mnemosyne,
+                local_tz=self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
+            )
+        )
+        orchestrator.register(ArtemisEngine(ollama_cfg=self.ollama_cfg))
 
         if google_agent:
-            orchestrator.register(HermesEngine(google_agent))
+            # Same config key ChronosEngine uses above — without this,
+            # HermesEngine defaults to UTC and every created event lands
+            # offset by the difference between UTC and the user's real
+            # timezone (e.g. "3pm" becomes "8:30pm" for Asia/Kolkata).
+            hermes_tz = self.config.get("chronos", {}).get("timezone", "Asia/Kolkata")
+            orchestrator.register(HermesEngine(google_agent, timezone_name=hermes_tz))
 
-        orchestrator.register(HephaestusEngine(browser_agent))
+        orchestrator.register(
+            HephaestusEngine(
+                browser_agent,
+                app_map=self.config.get("hephaestus", {}).get("app_map"),
+            )
+        )
 
         # Specialist modules
         apollo = ApolloEngine(ollama_cfg=self.ollama_cfg)
@@ -275,6 +307,9 @@ class HestiaBuilder:
         )
         orchestrator.register(
             OrpheusEngine(ollama_cfg=self.ollama_cfg, memory=mnemosyne)
+        )
+        orchestrator.register(
+            MetisEngine(ollama_cfg=self.ollama_cfg, memory=mnemosyne)
         )
         orchestrator.register(
             DionysusEngine(
@@ -340,7 +375,9 @@ class HestiaBuilder:
             logger.exception("Web UI failed to start; continuing without it.")
             return None
 
-    def build_telegram_bot(self, process_fn, stt: Optional[HestiaSTT]) -> Optional[Any]:
+    def build_telegram_bot(
+        self, process_fn, stt: Optional[HestiaSTT], memory: Optional[Any] = None
+    ) -> Optional[Any]:
         """
         Start the Telegram bot in-process, using the already-initialised
         Hestia stack.
@@ -377,6 +414,7 @@ class HestiaBuilder:
                 process_fn=process_fn,
                 allowed_chat_ids=telegram_cfg.get("allowed_chat_ids"),
                 stt=stt,
+                memory=memory,
             )
             bot.start()
             logger.info("Telegram bot started.")
@@ -438,6 +476,17 @@ class Hestia:
         self.mnemosyne = builder.build_mnemosyne(self.llm)
         self.nlu.set_memory(self.mnemosyne)
 
+        # Lowest-priority location source (see MnemosyneEngine.
+        # ensure_device_location_via_ip docstring for the full priority
+        # order). Backgrounded so a slow/unreachable IP-geolocation API
+        # never delays CLI startup; it's a no-op once GPS/Telegram has
+        # already provided a location.
+        threading.Thread(
+            target=self.mnemosyne.ensure_device_location_via_ip,
+            daemon=True,
+            name="IPLocationFallback",
+        ).start()
+
         optional_modules = builder.build_optional_modules(self.llm)
         self.athena        = optional_modules["athena"]
         self.iris           = optional_modules["iris"]
@@ -459,7 +508,7 @@ class Hestia:
 
         self.web_ui = builder.build_web_ui(self.mnemosyne, self.process_text, self.apollo)
 
-        self.telegram_bot = builder.build_telegram_bot(self.process_text, self.stt)
+        self.telegram_bot = builder.build_telegram_bot(self.process_text, self.stt, self.mnemosyne)
 
         builder.start_sync_api(self.mnemosyne)
 

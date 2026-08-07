@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from modules.base import BaseModule
 from core.ollama_client import generate
 
@@ -79,6 +79,79 @@ Respond with ONLY valid JSON in this exact structure:
 
 Score each option out of 10. Be specific. JSON only."""
 
+_PREMORTEM_PROMPT = """You are Ares, running a premortem exercise.
+Imagine it is some time in the future and the following has already failed, badly: {topic}
+
+Respond with ONLY valid JSON in this exact structure:
+{{
+  "scenario": "one sentence describing how the failure played out",
+  "failure_causes": [
+    {{
+      "cause": "a specific, plausible reason this failed",
+      "warning_sign": "an early signal that would have shown this cause emerging",
+      "prevention": "a concrete action to take now to prevent it"
+    }}
+  ],
+  "single_point_of_failure": "the one factor most likely to sink this if nothing else does",
+  "confidence_in_success": "Low | Medium | High"
+}}
+
+Identify 4-6 distinct, non-overlapping failure causes. Be specific to the topic. No preamble. JSON only."""
+
+_COMPETITIVE_PROMPT = """You are Ares, a competitive strategy assistant.
+Analyse the competitive landscape for: {topic}
+{competitors_line}
+
+Respond with ONLY valid JSON in this exact structure:
+{{
+  "position_summary": "one sentence on where the user currently stands relative to the field",
+  "competitors": [
+    {{
+      "name": "competitor name",
+      "strengths": ["strength 1", "strength 2"],
+      "vulnerabilities": ["vulnerability 1", "vulnerability 2"],
+      "counter_move": "the single best move to gain ground against this competitor"
+    }}
+  ],
+  "differentiation": "what should set the user apart from all of them",
+  "biggest_threat": "which competitor or force poses the greatest risk right now"
+}}
+
+If no competitors are named, infer 3-4 plausible rivals typical for the topic. Analyse 3-5 competitors total. Be specific. JSON only."""
+
+_CONTINGENCY_PROMPT = """You are Ares, a contingency planning assistant.
+Build a fallback plan for: {topic}
+{trigger_line}
+
+Respond with ONLY valid JSON in this exact structure:
+{{
+  "primary_assumption": "the assumption the main plan depends on holding true",
+  "trigger_conditions": ["condition 1 that would mean the fallback is needed", "condition 2"],
+  "fallback_steps": ["step 1", "step 2", "step 3"],
+  "resources_to_preposition": ["resource or preparation to line up now, 1", "resource or preparation 2"],
+  "decision_point": "the latest moment by which the switch to the fallback must be made"
+}}
+
+Be specific to the topic. JSON only."""
+
+_WAR_ROOM_PROMPT = """You are Ares, delivering a consolidated strategic briefing.
+Topic: {topic}
+
+Prior analysis Hestia has on record for this topic (may be empty):
+{prior_context}
+
+Synthesise the prior analysis above (if any) with your own judgement into ONE consolidated briefing.
+Respond with ONLY valid JSON in this exact structure:
+{{
+  "situation": "2-3 sentence summary of where things stand right now",
+  "priorities": ["top priority 1", "top priority 2", "top priority 3"],
+  "open_risks": ["risk still unresolved 1", "risk still unresolved 2"],
+  "recommended_next_move": "the single highest-leverage action to take next",
+  "confidence": "Low | Medium | High"
+}}
+
+If prior analysis is empty, work from the topic alone rather than inventing history. Be specific. JSON only."""
+
 
 class AresEngine(BaseModule):
     name = "ares"
@@ -87,6 +160,10 @@ class AresEngine(BaseModule):
         "strategic_plan",
         "swot_analysis",
         "decision_support",
+        "premortem_analysis",
+        "competitive_analysis",
+        "contingency_plan",
+        "war_room_briefing",
     }
 
     def __init__(self, memory=None, ollama_cfg: dict = None, llm=None):
@@ -106,6 +183,14 @@ class AresEngine(BaseModule):
             return self._swot_analysis(entities, context)
         if intent == "decision_support":
             return self._decision_support(entities, context)
+        if intent == "premortem_analysis":
+            return self._premortem_analysis(entities, context)
+        if intent == "competitive_analysis":
+            return self._competitive_analysis(entities, context)
+        if intent == "contingency_plan":
+            return self._contingency_plan(entities, context)
+        if intent == "war_room_briefing":
+            return self._war_room_briefing(entities, context)
         return {
             "response": f"{intent.replace('_', ' ').title()} is coming soon.",
             "data": {},
@@ -130,10 +215,22 @@ class AresEngine(BaseModule):
 
     def _parse(self, raw: str, intent: str) -> dict | None:
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except Exception:
             log.warning("Ares: failed to parse JSON for %s", intent)
             return None
+        if not isinstance(parsed, dict):
+            # The prompts always ask for a JSON *object*; an occasional
+            # model slip (a bare list/string/number) would otherwise pass
+            # json.loads() only to blow up with AttributeError the moment
+            # a caller does plan.get(...), which escapes as the generic
+            # orchestrator error instead of the friendly "I had trouble..."
+            # message every _*() handler below is designed to give.
+            log.warning(
+                "Ares: expected a JSON object for %s, got %s", intent, type(parsed).__name__
+            )
+            return None
+        return parsed
 
     def _persist(self, key: str, value: str) -> None:
         if self._memory:
@@ -164,7 +261,7 @@ class AresEngine(BaseModule):
         milestone = plan.get("first_milestone", {})
         if milestone.get("description") and self._memory:
             due_days = int(milestone.get("due_days", 3))
-            due_dt   = (datetime.utcnow() + timedelta(days=due_days)).isoformat()
+            due_dt   = (datetime.now(timezone.utc) + timedelta(days=due_days)).isoformat()
             self._memory.add_reminder(milestone["description"], due_dt)
 
         return {"response": response, "data": plan, "confidence": 0.9}
@@ -251,10 +348,14 @@ class AresEngine(BaseModule):
         def col(items: list, width: int = 36) -> list:
             return [f"  • {i}"[:width].ljust(width) for i in items]
 
-        s = result.get("strengths",    [])
-        w = result.get("weaknesses",   [])
-        o = result.get("opportunities",[])
-        t = result.get("threats",      [])
+        # Work on copies — result's lists are the same objects returned to
+        # the caller as `data`, so padding them in place (to equalise
+        # column heights below) would leak spurious "" entries into the
+        # structured payload every time the four quadrants differ in size.
+        s = list(result.get("strengths",     []))
+        w = list(result.get("weaknesses",    []))
+        o = list(result.get("opportunities", []))
+        t = list(result.get("threats",       []))
 
         rows  = max(len(s), len(w), len(o), len(t))
         s    += [""] * (rows - len(s))
@@ -317,7 +418,7 @@ class AresEngine(BaseModule):
         self._persist(f"decision_{topic}", response)
 
         if result.get("next_step") and self._memory:
-            due_dt = (datetime.utcnow() + timedelta(days=1)).isoformat()
+            due_dt = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
             self._memory.add_reminder(result["next_step"], due_dt)
 
         return {"response": response, "data": result, "confidence": 0.9}
@@ -350,5 +451,213 @@ class AresEngine(BaseModule):
 
         if result.get("next_step"):
             lines += ["NEXT STEP", f"  {result['next_step']}"]
+
+        return "\n".join(lines).strip()
+
+    # ── premortem_analysis ───────────────────────────────────────────────────
+
+    def _premortem_analysis(self, entities: dict, context: dict) -> dict:
+        topic  = self._topic(entities)
+        raw    = self._ollama_call(_PREMORTEM_PROMPT.format(topic=topic))
+        result = self._parse(raw, "premortem_analysis")
+
+        if not result:
+            return {"response": raw or "I had trouble running that premortem.",
+                    "data": {}, "confidence": 0.3}
+
+        response = self._format_premortem(topic, result)
+        self._persist(f"premortem_{topic}", response)
+
+        return {"response": response, "data": result, "confidence": 0.9}
+
+    @staticmethod
+    def _format_premortem(topic: str, result: dict) -> str:
+        lines = [f"Premortem: {topic.title()}", ""]
+
+        if result.get("scenario"):
+            lines += ["SCENARIO", f"  {result['scenario']}", ""]
+
+        if result.get("failure_causes"):
+            lines.append("FAILURE CAUSES")
+            for c in result["failure_causes"]:
+                lines.append(f"  • {c.get('cause', '')}")
+                if c.get("warning_sign"):
+                    lines.append(f"      Warning sign : {c['warning_sign']}")
+                if c.get("prevention"):
+                    lines.append(f"      Prevention   : {c['prevention']}")
+            lines.append("")
+
+        if result.get("single_point_of_failure"):
+            lines += ["SINGLE POINT OF FAILURE", f"  {result['single_point_of_failure']}", ""]
+
+        if result.get("confidence_in_success"):
+            lines += [f"CONFIDENCE IN SUCCESS (as planned): {result['confidence_in_success']}"]
+
+        return "\n".join(lines).strip()
+
+    # ── competitive_analysis ─────────────────────────────────────────────────
+
+    def _competitive_analysis(self, entities: dict, context: dict) -> dict:
+        topic       = self._topic(entities)
+        competitors = entities.get("competitors", "")
+        competitors_line = (
+            f"Known competitors/rivals: {competitors}" if competitors else ""
+        )
+
+        raw    = self._ollama_call(
+            _COMPETITIVE_PROMPT.format(topic=topic, competitors_line=competitors_line)
+        )
+        result = self._parse(raw, "competitive_analysis")
+
+        if not result:
+            return {"response": raw or "I had trouble analysing the competitive landscape.",
+                    "data": {}, "confidence": 0.3}
+
+        response = self._format_competitive(topic, result)
+        self._persist(f"competitive_{topic}", response)
+
+        return {"response": response, "data": result, "confidence": 0.9}
+
+    @staticmethod
+    def _format_competitive(topic: str, result: dict) -> str:
+        lines = [f"Competitive Analysis: {topic.title()}", ""]
+
+        if result.get("position_summary"):
+            lines += ["POSITION", f"  {result['position_summary']}", ""]
+
+        for c in result.get("competitors", []):
+            lines.append(f"COMPETITOR: {c.get('name', '')}")
+            if c.get("strengths"):
+                lines.append("  Strengths:")
+                for s in c["strengths"]:
+                    lines.append(f"    + {s}")
+            if c.get("vulnerabilities"):
+                lines.append("  Vulnerabilities:")
+                for v in c["vulnerabilities"]:
+                    lines.append(f"    - {v}")
+            if c.get("counter_move"):
+                lines.append(f"  Counter-move: {c['counter_move']}")
+            lines.append("")
+
+        if result.get("differentiation"):
+            lines += ["DIFFERENTIATION", f"  {result['differentiation']}", ""]
+
+        if result.get("biggest_threat"):
+            lines += ["BIGGEST THREAT", f"  {result['biggest_threat']}"]
+
+        return "\n".join(lines).strip()
+
+    # ── contingency_plan ─────────────────────────────────────────────────────
+
+    def _contingency_plan(self, entities: dict, context: dict) -> dict:
+        topic   = self._topic(entities)
+        trigger = entities.get("trigger", "")
+        trigger_line = (
+            f"The specific risk to plan against: {trigger}" if trigger else ""
+        )
+
+        raw    = self._ollama_call(
+            _CONTINGENCY_PROMPT.format(topic=topic, trigger_line=trigger_line)
+        )
+        result = self._parse(raw, "contingency_plan")
+
+        if not result:
+            return {"response": raw or "I had trouble building a fallback plan.",
+                    "data": {}, "confidence": 0.3}
+
+        response = self._format_contingency(topic, result)
+        self._persist(f"contingency_{topic}", response)
+
+        return {"response": response, "data": result, "confidence": 0.9}
+
+    @staticmethod
+    def _format_contingency(topic: str, result: dict) -> str:
+        lines = [f"Contingency Plan: {topic.title()}", ""]
+
+        if result.get("primary_assumption"):
+            lines += ["PRIMARY ASSUMPTION", f"  {result['primary_assumption']}", ""]
+
+        if result.get("trigger_conditions"):
+            lines.append("SWITCH TO PLAN B IF")
+            for t in result["trigger_conditions"]:
+                lines.append(f"  • {t}")
+            lines.append("")
+
+        if result.get("fallback_steps"):
+            lines.append("FALLBACK STEPS")
+            for i, step in enumerate(result["fallback_steps"], 1):
+                lines.append(f"  {i}. {step}")
+            lines.append("")
+
+        if result.get("resources_to_preposition"):
+            lines.append("PRE-POSITION NOW")
+            for r in result["resources_to_preposition"]:
+                lines.append(f"  • {r}")
+            lines.append("")
+
+        if result.get("decision_point"):
+            lines += ["DECISION POINT", f"  {result['decision_point']}"]
+
+        return "\n".join(lines).strip()
+
+    # ── war_room_briefing ────────────────────────────────────────────────────
+    # Pulls whatever Mnemosyne remembers about this topic (including Ares'
+    # own past plans/risks/SWOTs/decisions, since _persist() writes them
+    # into memory under "ares_*" keys) and asks the model to synthesise it
+    # into one consolidated briefing, rather than starting from a blank
+    # page every time the topic comes up again.
+
+    def _war_room_briefing(self, entities: dict, context: dict) -> dict:
+        topic = self._topic(entities)
+
+        prior_context = ""
+        if self._memory:
+            try:
+                prior_context = self._memory.remember(topic, n=6)
+            except Exception:
+                log.warning("Ares: memory recall failed for war_room_briefing on %r", topic)
+
+        raw    = self._ollama_call(
+            _WAR_ROOM_PROMPT.format(
+                topic=topic,
+                prior_context=prior_context or "(nothing on record)",
+            )
+        )
+        result = self._parse(raw, "war_room_briefing")
+
+        if not result:
+            return {"response": raw or "I had trouble putting that briefing together.",
+                    "data": {}, "confidence": 0.3}
+
+        response = self._format_war_room(topic, result, bool(prior_context))
+        self._persist(f"briefing_{topic}", response)
+
+        return {"response": response, "data": result, "confidence": 0.9}
+
+    @staticmethod
+    def _format_war_room(topic: str, result: dict, had_prior_context: bool) -> str:
+        source_note = "drawing on prior analysis" if had_prior_context else "no prior analysis on record"
+        lines = [f"War Room Briefing: {topic.title()} ({source_note})", ""]
+
+        if result.get("situation"):
+            lines += ["SITUATION", f"  {result['situation']}", ""]
+
+        if result.get("priorities"):
+            lines.append("PRIORITIES")
+            for i, p in enumerate(result["priorities"], 1):
+                lines.append(f"  {i}. {p}")
+            lines.append("")
+
+        if result.get("open_risks"):
+            lines.append("OPEN RISKS")
+            for r in result["open_risks"]:
+                lines.append(f"  • {r}")
+            lines.append("")
+
+        if result.get("recommended_next_move"):
+            lines += ["RECOMMENDED NEXT MOVE", f"  {result['recommended_next_move']}", ""]
+
+        if result.get("confidence"):
+            lines += [f"CONFIDENCE: {result['confidence']}"]
 
         return "\n".join(lines).strip()

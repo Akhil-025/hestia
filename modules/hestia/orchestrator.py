@@ -43,6 +43,7 @@ _MODULE_PREFIXES: tuple[str, ...] = (
     "artemis_",
     "hephaestus_",
     "mnemosyne_",
+    "metis_",
 )
 
 _FALLBACK_DECISION: dict[str, Any] = {
@@ -229,6 +230,17 @@ class HestiaOrchestrator:
 
         decision = self._route(raw_query, nlu_result)
         primary_name: str = decision.get("primary") or "core"
+
+        # Hecate's text-trigger tiers (e.g. "mnemosyne trigger") match on the
+        # raw query, not on nlu_result["intent"] — which is frequently just
+        # "chat" for those phrasings. When Hecate supplies an explicit
+        # `intent` override, use it instead of the NLU-derived one so the
+        # primary module's can_handle()/handle() actually see an intent they
+        # declare, rather than silently losing the routing decision to the
+        # can_handle()-mismatch recovery path (which lands on "core" chat).
+        override_intent = decision.get("intent")
+        if isinstance(override_intent, str) and override_intent:
+            intent = override_intent
         secondary_names: list[str] = [
             n for n in (decision.get("secondary") or []) if n != primary_name
         ]

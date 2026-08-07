@@ -41,9 +41,31 @@ CREATE TABLE IF NOT EXISTS mood_logs (
     logged_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS weight_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    weight_kg   REAL    NOT NULL,
+    notes       TEXT,
+    logged_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS water_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    amount_ml   INTEGER NOT NULL,
+    logged_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS health_goals (
+    goal_type    TEXT PRIMARY KEY,
+    target_value REAL NOT NULL,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_workouts_logged_at  ON workouts(logged_at);
 CREATE INDEX IF NOT EXISTS idx_sleep_logged_at     ON sleep_logs(logged_at);
 CREATE INDEX IF NOT EXISTS idx_mood_logged_at      ON mood_logs(logged_at);
+CREATE INDEX IF NOT EXISTS idx_weight_logged_at    ON weight_logs(logged_at);
+CREATE INDEX IF NOT EXISTS idx_water_logged_at     ON water_logs(logged_at);
 """)
 
     # ── workouts ─────────────────────────────────────────
@@ -136,3 +158,110 @@ CREATE INDEX IF NOT EXISTS idx_mood_logged_at      ON mood_logs(logged_at);
             (limit,)
         )
         return [r["mood"] for r in cur.fetchall()]
+
+    # ── weight ────────────────────────────────────────────
+
+    def log_weight(self, weight_kg: float, notes: str) -> int:
+        """Weight is always persisted in kg; unit conversion happens in the engine."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO weight_logs (weight_kg, notes) VALUES (?, ?)",
+                (weight_kg, notes)
+            )
+            return cur.lastrowid
+
+    def get_weight(self, days: int = 30) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM weight_logs
+            WHERE logged_at >= datetime('now', ? || ' days')
+            ORDER BY logged_at DESC
+            """,
+            (f"-{days}",)
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def latest_weight(self) -> Optional[dict]:
+        cur = self._conn.execute(
+            "SELECT * FROM weight_logs ORDER BY logged_at DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def previous_weight(self) -> Optional[dict]:
+        """The second-most-recent entry, used to compute a log-to-log delta."""
+        cur = self._conn.execute(
+            "SELECT * FROM weight_logs ORDER BY logged_at DESC LIMIT 1 OFFSET 1"
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    # ── water ─────────────────────────────────────────────
+
+    def log_water(self, amount_ml: int) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO water_logs (amount_ml) VALUES (?)",
+                (amount_ml,)
+            )
+            return cur.lastrowid
+
+    def water_today(self) -> int:
+        cur = self._conn.execute(
+            """
+            SELECT COALESCE(SUM(amount_ml), 0) FROM water_logs
+            WHERE date(logged_at) = date('now')
+            """
+        )
+        return int(cur.fetchone()[0])
+
+    def get_water(self, days: int = 7) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM water_logs
+            WHERE logged_at >= datetime('now', ? || ' days')
+            ORDER BY logged_at DESC
+            """,
+            (f"-{days}",)
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    # ── health goals ──────────────────────────────────────
+
+    def set_goal(self, goal_type: str, target_value: float) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO health_goals (goal_type, target_value)
+                VALUES (?, ?)
+                ON CONFLICT(goal_type) DO UPDATE SET
+                    target_value = excluded.target_value,
+                    updated_at   = CURRENT_TIMESTAMP
+                """,
+                (goal_type, target_value)
+            )
+
+    def get_goal(self, goal_type: str) -> Optional[dict]:
+        cur = self._conn.execute(
+            "SELECT * FROM health_goals WHERE goal_type = ?", (goal_type,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def get_all_goals(self) -> list[dict]:
+        cur = self._conn.execute("SELECT * FROM health_goals ORDER BY goal_type")
+        return [dict(r) for r in cur.fetchall()]
+
+    # ── streaks ───────────────────────────────────────────
+
+    def workout_dates(self, days: int = 60) -> list[str]:
+        """Distinct calendar dates (YYYY-MM-DD, newest first) with >=1 workout."""
+        cur = self._conn.execute(
+            """
+            SELECT DISTINCT date(logged_at) AS d FROM workouts
+            WHERE logged_at >= datetime('now', ? || ' days')
+            ORDER BY d DESC
+            """,
+            (f"-{days}",)
+        )
+        return [r["d"] for r in cur.fetchall()]

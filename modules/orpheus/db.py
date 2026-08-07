@@ -61,3 +61,26 @@ CREATE INDEX IF NOT EXISTS idx_creations_logged_at ON creations(logged_at);
             (limit,)
         )
         return [dict(r) for r in cur.fetchall()]
+
+    def search(self, type_: str | None = None, keyword: str | None = None,
+               limit: int = 10) -> list[dict]:
+        """
+        Return past creations, optionally filtered by exact `type_` and/or a
+        `keyword` matched against title/content (case-insensitive substring).
+
+        Both filters are optional and combine with AND. `limit` bounds the
+        result set; callers are expected to have already clamped it.
+        """
+        query = "SELECT * FROM creations WHERE 1=1"
+        params: list = []
+        if type_:
+            query += " AND type=?"
+            params.append(type_)
+        if keyword:
+            query += " AND (title LIKE ? OR content LIKE ?)"
+            like = f"%{keyword}%"
+            params += [like, like]
+        query += " ORDER BY logged_at DESC LIMIT ?"
+        params.append(limit)
+        cur = self._conn.execute(query, params)
+        return [dict(r) for r in cur.fetchall()]

@@ -5,6 +5,7 @@ MnemosyneEngine: unified entry point for memory, goals, and summarisation.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -173,7 +174,12 @@ class MnemosyneEngine(BaseModule):
         return _ok(response, confidence=0.85)
 
     def _handle_get_user_info(self, entities: dict, query: str) -> dict:
-        key: str = entities.get("key", "").strip()
+        # `or ""` (not just a `.get(..., "")` default) because the NLU can
+        # emit the key explicitly as None (present but empty) rather than
+        # omitting it — a plain default only covers the missing-key case
+        # and `.strip()` on None would raise, turning this into a generic
+        # "something went wrong" instead of falling through to recall.
+        key: str = (entities.get("key") or "").strip()
 
         if key:
             value = self.db.get_fact(key)
@@ -187,8 +193,8 @@ class MnemosyneEngine(BaseModule):
         return _ok(response or "I don't have anything on that.", confidence=0.85)
 
     def _handle_learn_fact(self, entities: dict) -> dict:
-        key: str = entities.get("key", "").strip()
-        value: str = entities.get("value", "").strip()
+        key: str = (entities.get("key") or "").strip()
+        value: str = (entities.get("value") or "").strip()
 
         if not key or not value:
             return _ok("What should I remember?", confidence=0.0)
@@ -197,7 +203,7 @@ class MnemosyneEngine(BaseModule):
         return _ok(f"Got it — I'll remember your {_readable(key)}.", confidence=0.95)
 
     def _handle_forget_fact(self, entities: dict) -> dict:
-        key: str = entities.get("key", "").strip()
+        key: str = (entities.get("key") or "").strip()
         if not key:
             return _ok("Which fact should I forget?", confidence=0.0)
 
@@ -407,10 +413,95 @@ class MnemosyneEngine(BaseModule):
                 "mnemosyne_summaries": s.get("summaries", 0),
                 "mnemosyne_recent": recent_summary,
                 "mnemosyne_top_facts": top_facts,
+                # Not guaranteed to appear in top_facts above (only the 5
+                # most-recently-updated facts make that cut), but every god
+                # that wants "near me" queries — Chronos for weather,
+                # Dionysus for restaurants, Hephaestus for local search —
+                # needs this reliably present, not just when it happens to
+                # be the most recently touched fact.
+                "device_location": self.get_device_location(),
             }
         except Exception:
             logger.exception("get_context() failed.")
             return {}
+
+    # ------------------------------------------------------------------
+    # Device location (public)
+    # ------------------------------------------------------------------
+    #
+    # Stored as a fact under a fixed key so it reuses existing
+    # set_fact/get_fact plumbing rather than needing a new table. Priority
+    # for *source* of the value (browser GPS > Telegram location > IP
+    # lookup) is decided by the caller — see web_ui.py / telegram_bot.py /
+    # main.py's CLI fallback — this method just persists/retrieves whatever
+    # it's given.
+
+    _DEVICE_LOCATION_KEY = "device_location"
+
+    def set_device_location(
+        self, lat: float, lon: float, source: str = "unknown", label: Optional[str] = None
+    ) -> None:
+        """Persist the device's current coordinates."""
+        payload = {
+            "lat": lat,
+            "lon": lon,
+            "source": source,
+            "label": label,
+            "updated_at": _utc_now(),
+        }
+        self.db.set_fact(self._DEVICE_LOCATION_KEY, json.dumps(payload), source=source)
+
+    def get_device_location(self) -> Optional[dict]:
+        """Return the last known {"lat", "lon", "source", "label", "updated_at"}
+        dict, or None if no location has ever been recorded. Never raises —
+        a malformed stored value is treated as "no location" rather than
+        breaking every caller of get_context()."""
+        raw = self.db.get_fact(self._DEVICE_LOCATION_KEY)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("get_device_location: stored value is not valid JSON; ignoring.")
+            return None
+
+    def ensure_device_location_via_ip(self, timeout: float = 3.0) -> Optional[dict]:
+        """
+        Lowest-priority location source: IP-based geolocation, used only
+        when nothing more precise has been recorded yet.
+
+        Priority, per the device-location design, is:
+          1. Browser GPS   (web_ui.py POST /api/location)
+          2. Telegram location share (core/telegram_bot.py)
+          3. IP lookup     (this method — CLI-only sessions have no sensor)
+
+        A no-op if a location is already stored (whatever its source — this
+        deliberately never overwrites a more precise GPS/Telegram fix with a
+        coarser IP-based one). Best-effort: network failures are logged and
+        swallowed rather than raised, since this is a convenience fallback,
+        not a required startup step.
+        """
+        if self.get_device_location() is not None:
+            return None
+
+        try:
+            import requests
+            resp = requests.get("http://ip-api.com/json/", timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "success":
+                logger.info("ensure_device_location_via_ip: lookup unsuccessful (%s).", data.get("message"))
+                return None
+            lat, lon = data.get("lat"), data.get("lon")
+            if lat is None or lon is None:
+                return None
+            label = ", ".join(p for p in (data.get("city"), data.get("country")) if p) or None
+            self.set_device_location(float(lat), float(lon), source="ip_geolocation", label=label)
+            logger.info("ensure_device_location_via_ip: set fallback location from IP (%s).", label)
+            return self.get_device_location()
+        except Exception:
+            logger.info("ensure_device_location_via_ip: lookup failed; continuing without a location.", exc_info=True)
+            return None
 
     def get_stats(self) -> dict:
         """Return aggregate statistics using SQL COUNT queries."""

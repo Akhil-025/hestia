@@ -51,7 +51,19 @@ class IrisEngine(BaseModule):
     def handle(self, intent: str, entities: dict, context: dict) -> dict:
         raw = entities.get("raw_query", context.get("raw_query", "")).lower()
 
-        if intent == "iris_ingest":
+        # Normalise: accept both the "iris_"-prefixed intent (as emitted by
+        # the NLU / used by Hecate's Tier-1.5 direct routing) and the
+        # stripped form HestiaOrchestrator._strip_module_prefix() actually
+        # passes to handle() for every non-trigger-tier dispatch ("iris_"
+        # is in the orchestrator's known prefix list). Branching on the
+        # prefixed form only, as this used to, meant the normal dispatch
+        # path — intent="search"/"ingest"/"analyse"/"status" — never
+        # matched anything here and silently fell through to the blank,
+        # 0.0-confidence response below, even though can_handle() had
+        # already reported True for that exact intent.
+        canonical = intent[len("iris_"):] if intent.startswith("iris_") else intent
+
+        if canonical == "ingest":
             stats = self.ingest()
             return {
                 "response": (
@@ -63,11 +75,17 @@ class IrisEngine(BaseModule):
                 "confidence": 1.0,
             }
 
-        elif intent == "iris_analyse":
+        elif canonical == "analyse":
             response = self.analyse(limit=20)
             return {"response": response, "data": {}, "confidence": 0.9}
 
-        elif intent in {"iris_search", "iris_query"}:
+        elif canonical == "status":
+            # Previously had no branch at all — can_handle() accepted
+            # "status"/"iris_status" but handle() silently dropped it into
+            # the blank fallback below.
+            return {"response": self.status(), "data": {}, "confidence": 0.9}
+
+        elif canonical in {"search", "query"}:
             result = self.search(raw or entities.get("query", ""))
             return {
                 "response": result or "No matching media found.",
@@ -75,7 +93,7 @@ class IrisEngine(BaseModule):
                 "confidence": 0.85 if result else 0.3,
             }
 
-        return {"response": "", "data": {}, "confidence": 0.0}
+        return {"response": "I'm not sure how to handle that media request.", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:
         try:
@@ -125,7 +143,7 @@ class IrisEngine(BaseModule):
                 "total_size": 0,
             }
 
-    def search(self, query: str, limit: int = 10) -> str:
+    def search(self, query: str, limit: int = 10) -> "str | None":
         try:
             results_caption = self.db.search_files_by_caption(query, limit)
             results_tags = self.db.search_files_by_tags(query, limit)
@@ -146,7 +164,15 @@ class IrisEngine(BaseModule):
 
             combined = list(unique_map.values())
             if not combined:
-                return "No photos found matching that."
+                # Falsy on purpose: handle()'s `result or "No matching
+                # media found."` / `0.85 if result else 0.3` logic relies
+                # on search() returning something falsy when nothing
+                # matched. Returning a non-empty "not found" sentinel
+                # string here (as this used to) made that check always
+                # truthy, so every zero-result search was reported back
+                # to the orchestrator at 0.85 confidence — indistinguishable
+                # from a real match.
+                return None
             lines = [f"Found {len(combined)} photos:"]
             for i, r in enumerate(combined, 1):
                 path = r.get("file_path", "?")
@@ -161,7 +187,7 @@ class IrisEngine(BaseModule):
             return "\n".join(lines)
         except Exception as e:
             logger.error(f"[Iris] Search error: {e}")
-            return "No photos found matching that."
+            return None
 
     def analyse(self, limit: int = 10) -> str:
         if not self.analyser:

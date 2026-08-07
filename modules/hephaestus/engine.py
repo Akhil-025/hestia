@@ -19,6 +19,10 @@ Design notes
 from __future__ import annotations
 
 import logging
+import os
+import platform
+import re
+import subprocess
 from typing import Any, Optional
 
 from modules.base import BaseModule
@@ -38,6 +42,21 @@ _NOT_AVAILABLE = (
     "Ask me to enable it or check that the browser agent is configured."
 )
 _UNHANDLED = "I'm not sure what browser action to take."
+_APP_UNAVAILABLE = "Desktop application launching is not available on this platform."
+
+# Default desktop-app name → executable/path map. Overridable per-deployment
+# via HephaestusEngine(app_map=...) (wired from config in main.py), since
+# paths like the Spotify example are per-user and can't be hardcoded safely.
+_DEFAULT_APP_MAP: dict[str, str] = {
+    "chrome": "chrome.exe",
+    "google chrome": "chrome.exe",
+    "edge": "msedge.exe",
+    "microsoft edge": "msedge.exe",
+    "firefox": "firefox.exe",
+    "notepad": "notepad.exe",
+    "calculator": "calc.exe",
+    "spotify": "spotify.exe",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -68,12 +87,22 @@ class HephaestusEngine(BaseModule):
         Perform a web search and return a summarised result.
     ``check_flight``
         Look up real-time flight status by flight number.
+    ``scrape_page``
+        Fetch and extract readable text from a URL, or search for a topic
+        and scrape the top result.
+    ``open_app``
+        Launch a native desktop application (not browser automation).
 
     Parameters
     ----------
     browser_agent:
         A ``HestiaBrowserAgent`` instance (or compatible duck-typed object).
         Injected by the orchestrator at startup.
+    app_map:
+        Optional override/extension of the built-in desktop-app name →
+        executable map used by ``open_app``. Merged over the defaults so a
+        deployment only needs to specify the apps it wants to add or change
+        (e.g. a user-specific Spotify install path).
     """
 
     name = "hephaestus"
@@ -83,14 +112,28 @@ class HephaestusEngine(BaseModule):
             "browser_action",
             "search_web",
             "check_flight",
+            "scrape_page",
+            "open_app",
         }
     )
 
-    def __init__(self, browser_agent: Any = None) -> None:
+    def __init__(self, browser_agent: Any = None, app_map: Optional[dict[str, str]] = None) -> None:
         self._browser = browser_agent
+        # Normalise all keys to lowercase at merge time. Lookups in
+        # _open_app() always match on app_name.strip().lower(), so a
+        # deployment-supplied override keyed with natural capitalisation
+        # (e.g. {"Spotify": "D:/Spotify/Spotify.exe"} in config) would
+        # otherwise silently fail to override the default "spotify" entry
+        # — it'd just sit in the map as an unreachable extra key while
+        # "open spotify" kept resolving to the built-in "spotify.exe".
+        self._app_map: dict[str, str] = {
+            **_DEFAULT_APP_MAP,
+            **{k.strip().lower(): v for k, v in (app_map or {}).items()},
+        }
         logger.info(
-            "HephaestusEngine ready (browser_agent=%s).",
+            "HephaestusEngine ready (browser_agent=%s, %d app(s) mapped).",
             type(browser_agent).__name__ if browser_agent else "None",
+            len(self._app_map),
         )
 
     # ------------------------------------------------------------------
@@ -104,10 +147,11 @@ class HephaestusEngine(BaseModule):
         """
         Dispatch an intent to the appropriate handler.
 
-        Returns a "not available" response when the browser agent is absent.
-        Never raises.
+        Returns a "not available" response when the browser agent is absent
+        — except for ``open_app``, which launches a native process and has
+        no dependency on browser automation being configured. Never raises.
         """
-        if not self._is_ready():
+        if intent != "open_app" and not self._is_ready():
             logger.warning("handle(%r): browser agent not ready.", intent)
             return _err(_NOT_AVAILABLE)
 
@@ -142,6 +186,10 @@ class HephaestusEngine(BaseModule):
             return self._search_web(entities)
         if intent == "browser_action":
             return self._browser_action(entities)
+        if intent == "scrape_page":
+            return self._scrape_page(entities)
+        if intent == "open_app":
+            return self._open_app(entities)
         return _err(_UNHANDLED)
 
     # ------------------------------------------------------------------
@@ -246,10 +294,180 @@ class HephaestusEngine(BaseModule):
         logger.info("open_url: navigated to %r.", url)
         return _ok(result.strip(), confidence=0.9)
 
+    def _scrape_page(self, entities: dict) -> dict:
+        """
+        Fetch and extract readable text.
+
+        Resolution order
+        -----------------
+        1. If a ``url`` entity is present, scrape that URL directly.
+        2. Otherwise, if a ``query``/``topic`` is present, search for it and
+           scrape the top result (e.g. "scrape wikipedia for Alan Turing").
+        3. Otherwise ask for clarification.
+        """
+        url = (entities.get("url") or "").strip()
+        query = _extract(entities, "query", "topic", "raw_query")
+
+        if url:
+            try:
+                text = self.scrape_url(url)
+            except Exception:
+                logger.exception("scrape_url() raised for url=%r.", url)
+                return _err(f"I couldn't read {url!r}.")
+            if not text:
+                return _err(f"I couldn't extract any readable content from {url!r}.")
+            return _ok(text, data={"url": url}, confidence=0.85)
+
+        if query:
+            try:
+                results = self.search_and_summarize(query)
+            except Exception:
+                logger.exception("search_and_summarize() raised for query=%r.", query[:80])
+                return _err("I couldn't complete that search.")
+            if not results:
+                return _clarify(f"I couldn't find anything to scrape for {query!r}.")
+            top = results[0]
+            return _ok(
+                top.get("summary") or top.get("title") or "",
+                data={"results": results, "query": query},
+                confidence=0.8,
+            )
+
+        return _clarify(
+            "What should I scrape? Give me a URL, or a topic to search and read."
+        )
+
+    def _open_app(self, entities: dict) -> dict:
+        """Launch a native desktop application by name (not browser automation)."""
+        app_name = _extract(entities, "app", "app_name", "application", "name")
+        if not app_name:
+            # Last-resort fallback: NLU sometimes omits the app entity
+            # entirely. Strip a leading "open"/"launch"/"start" so at least
+            # "open chrome" (with no entities at all) resolves to "chrome"
+            # instead of failing an app-map lookup on the whole sentence.
+            raw = (entities.get("raw_query") or "").strip().lower()
+            app_name = re.sub(r'^(open|launch|start)\s+', '', raw).strip()
+        if not app_name:
+            return _clarify("Which application should I open?")
+
+        target = self._app_map.get(app_name.strip().lower())
+        if not target:
+            logger.warning("_open_app: unknown application %r.", app_name)
+            return _err(
+                f"Unknown application: {app_name}. "
+                f"I can open: {', '.join(sorted(set(self._app_map)))}."
+            )
+
+        try:
+            _launch_app(target)
+        except FileNotFoundError:
+            logger.warning("_open_app: executable not found for %r (%r).", app_name, target)
+            return _err(
+                f"I couldn't find {app_name} on this system "
+                f"(looked for {target!r}). Is it installed?"
+            )
+        except Exception:
+            logger.exception("_open_app: launch failed for %r (%r).", app_name, target)
+            return _err(f"I couldn't open {app_name}.")
+
+        logger.info("_open_app: launched %r (%r).", app_name, target)
+        return _ok(f"Opening {app_name}.", data={"app": app_name}, confidence=0.9)
+
+    # ------------------------------------------------------------------
+    # Reusable helpers for OTHER modules to call directly
+    # ------------------------------------------------------------------
+    #
+    # These are plain methods a god can call on an injected HephaestusEngine
+    # instance to get web content without going through Hecate/NLU/intent
+    # routing — e.g. Dionysus wanting "cheap restaurants nearby" doesn't
+    # need a full NLU round-trip just to fetch a web page.
+
+    def scrape_url(self, url: str) -> str:
+        """Fetch *url* and return its readable text content."""
+        if not self._is_ready():
+            raise HephaestusError("Browser automation is not available.")
+        try:
+            text: str = self._browser.get_page_text(url)
+        except Exception as exc:
+            # This method (and search_and_summarize below) is documented as
+            # a direct-call helper for OTHER modules that bypass handle()'s
+            # own try/except — so a raw browser-agent crash must not escape
+            # here uncaught, same guarantee every intent handler above gets.
+            raise BrowserAgentError(f"get_page_text failed for {url!r}: {exc}") from exc
+        return (text or "").strip()
+
+    def search_and_summarize(self, query: str, max_results: int = 3) -> list[dict[str, str]]:
+        """
+        Search the web for *query* and return up to *max_results* results,
+        each scraped for a short text summary.
+
+        Returns a list of ``{"title": ..., "url": ..., "summary": ...}``
+        dicts (``url``/``summary`` may be empty if unavailable — the browser
+        agent's search only guarantees titles; scraping each result page is
+        best-effort and failures are skipped rather than raised).
+        """
+        if not self._is_ready():
+            raise HephaestusError("Browser automation is not available.")
+
+        try:
+            raw_results = self._browser.search_web_results(query, max_results=max_results) \
+                if hasattr(self._browser, "search_web_results") \
+                else [{"title": t, "url": ""} for t in _split_titles(self._browser.search_web(query))]
+        except Exception as exc:
+            raise BrowserAgentError(f"web search failed for {query!r}: {exc}") from exc
+
+        out: list[dict[str, str]] = []
+        for r in raw_results[:max_results]:
+            title = (r.get("title") or "").strip()
+            url = (r.get("url") or "").strip()
+            summary = ""
+            if url:
+                try:
+                    summary = self.scrape_url(url)
+                except Exception:
+                    logger.debug("search_and_summarize: scrape failed for %r; skipping summary.", url)
+            out.append({"title": title, "url": url, "summary": summary})
+        return out
+
 
 # ---------------------------------------------------------------------------
 # Module-level pure helpers
 # ---------------------------------------------------------------------------
+
+def _launch_app(target: str) -> None:
+    """
+    Launch a native application by executable name or path.
+
+    Windows: relies on PATH resolution (``os.startfile`` / bare exe name
+    via Popen) so a name like ``"chrome.exe"`` works without a hardcoded
+    absolute path as long as it's on PATH; a full path works too.
+    macOS/Linux: falls back to ``open``/``xdg-open`` respectively, since
+    the default app map is Windows-oriented (this repo runs on Windows —
+    see main.py — but the fallback keeps this module importable/testable
+    elsewhere).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the executable cannot be found.
+    """
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(target)  # noqa: S606 - intentional, user-directed launch
+        return
+    if system == "Darwin":
+        subprocess.Popen(["open", target])
+        return
+    subprocess.Popen(["xdg-open", target])
+
+
+def _split_titles(joined: str) -> list[str]:
+    """Fallback for browser agents without search_web_results(): split the
+    legacy ``" | "``-joined title string search_web() returns."""
+    if not joined or joined.startswith("No results") or joined.startswith("Search failed"):
+        return []
+    return [t.strip() for t in joined.split(" | ") if t.strip()]
+
 
 def _extract(entities: dict, *keys: str) -> str:
     """Return the first non-empty string value found under any of *keys*."""

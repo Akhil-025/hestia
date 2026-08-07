@@ -77,6 +77,8 @@ class DionysusEngine(BaseModule):
         "find_restaurant",
         "recommend_music",
         "plan_outing",
+        "dismiss_recommendation",
+        "mark_seen",
     }
 
     def __init__(self, ollama_cfg: dict = None, browser_agent=None, memory=None, llm=None):
@@ -99,10 +101,58 @@ class DionysusEngine(BaseModule):
             return self._recommend_music(entities)
         if intent == "plan_outing":
             return self._plan_outing(entities)
+        if intent == "dismiss_recommendation":
+            return self._dismiss_recommendation(entities)
+        if intent == "mark_seen":
+            return self._mark_seen(entities)
         return {"response": "Unknown Dionysus intent.", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:
         return {}
+
+    # ── dismiss_recommendation / mark_seen ──────────────────────────────────────
+    #
+    # DionysusDB has always supported dismiss()/mark_seen()/seen_titles() —
+    # used to keep repeat recommendations out of _recommend_movie's and
+    # _recommend_music's prompts — but nothing ever called them, so users
+    # had no way to say "not that one" or "already watched it".
+
+    def _dismiss_recommendation(self, entities: dict) -> dict:
+        title = (entities.get("title") or entities.get("raw_query", "")).strip()
+        if not title:
+            return {
+                "response": "Which recommendation should I dismiss?",
+                "data": {},
+                "confidence": 0.5,
+            }
+        self.db.dismiss(title)
+        return {
+            "response": f"Got it, I won't suggest '{title}' again.",
+            "data": {"title": title},
+            "confidence": 0.9,
+        }
+
+    def _mark_seen(self, entities: dict) -> dict:
+        title = (entities.get("title") or entities.get("raw_query", "")).strip()
+        if not title:
+            return {
+                "response": "Which movie should I mark as watched?",
+                "data": {},
+                "confidence": 0.5,
+            }
+        type_ = entities.get("type", "movie")
+        updated = self.db.mark_seen(title, type_=type_)
+        if not updated:
+            return {
+                "response": f"I don't have '{title}' in your recommendation history.",
+                "data": {"title": title},
+                "confidence": 0.4,
+            }
+        return {
+            "response": f"Marked '{title}' as watched — I won't recommend it again.",
+            "data": {"title": title},
+            "confidence": 0.9,
+        }
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -142,12 +192,18 @@ class DionysusEngine(BaseModule):
             or entities.get("genre")
             or entities.get("raw_query", "something good")
         )
+        # Exclude both explicitly dismissed titles and ones the user has
+        # already marked as watched — previously only `dismissed_titles`
+        # was consulted here, so a movie logged via mark_seen() could still
+        # be recommended again.
         dismissed = self.db.dismissed_titles("movie")
+        seen = self.db.seen_titles("movie")
+        exclude = sorted(set(dismissed) | set(seen))
 
         raw    = self._ollama_call(
             _MOVIE_PROMPT.format(
                 mood_genre=mood_genre,
-                dismissed=", ".join(dismissed) or "none",
+                dismissed=", ".join(exclude) or "none",
             )
         )
         result = self._parse(raw, "recommend_movie")

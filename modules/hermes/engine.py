@@ -19,8 +19,10 @@ Design notes
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timedelta, timezone
+import re
+from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from modules.base import BaseModule
 
@@ -36,6 +38,7 @@ _DEFAULT_SUBJECT = "Message from Hestia"
 _DEFAULT_EVENT_TIME = "09:00"
 _MAX_EMAIL_COUNT = 50
 _MAX_DAYS_AHEAD = 90
+_MAX_EVENT_DELETE = 50
 
 _NOT_CONNECTED = "Communication services are not connected. Ask me to reconnect Google."
 _UNHANDLED = "I can't handle that communication request."
@@ -76,6 +79,7 @@ class HermesEngine(BaseModule):
             "send_email",
             "list_events",
             "create_event",
+            "delete_events",
         }
     )
 
@@ -91,6 +95,10 @@ class HermesEngine(BaseModule):
         "get_email": "read_email",
         "check_email": "read_email",
         "fetch_email": "read_email",
+        "check_mail": "read_email",
+        "get_mail": "read_email",
+        "check_inbox": "read_email",
+        "gmail": "read_email",
         "get_calendar_event": "list_events",
         "get_calendar_events": "list_events",
         "get_events": "list_events",
@@ -99,13 +107,31 @@ class HermesEngine(BaseModule):
         "schedule_event": "create_event",
         "add_event": "create_event",
         "add_calendar_event": "create_event",
+        "clear_events": "delete_events",
+        "clear_schedule": "delete_events",
+        "clear_calendar": "delete_events",
+        "cancel_events": "delete_events",
+        "cancel_event": "delete_events",
+        "remove_events": "delete_events",
     }
 
-    def __init__(self, google_agent: Any = None) -> None:
+    def __init__(self, google_agent: Any = None, timezone_name: str = "UTC") -> None:
         self._google = google_agent
+        # The user's local IANA timezone (e.g. "Asia/Kolkata"). Used to
+        # resolve "today"/"tomorrow" against local wall-clock time and to
+        # build naive local datetimes for create_event — see _parse_datetime
+        # for why these must NOT carry a UTC tzinfo.
+        try:
+            self._tz = ZoneInfo(timezone_name)
+        except Exception:
+            logger.warning(
+                "Unrecognised timezone %r; falling back to UTC.", timezone_name
+            )
+            self._tz = ZoneInfo("UTC")
         logger.info(
-            "HermesEngine ready (google_agent=%s).",
+            "HermesEngine ready (google_agent=%s, timezone=%s).",
             type(google_agent).__name__ if google_agent else "None",
+            timezone_name,
         )
 
     # ------------------------------------------------------------------
@@ -163,6 +189,8 @@ class HermesEngine(BaseModule):
             return self._list_events(entities)
         if intent == "create_event":
             return self._create_event(entities)
+        if intent == "delete_events":
+            return self._delete_events(entities)
         return _err(_UNHANDLED)
 
     # ------------------------------------------------------------------
@@ -239,7 +267,7 @@ class HermesEngine(BaseModule):
         time_str: str = (entities.get("time") or _DEFAULT_EVENT_TIME).strip()
 
         try:
-            start_dt = _parse_datetime(date_str, time_str)
+            start_dt = _parse_datetime(date_str, time_str, self._tz)
         except DateTimeParseError as exc:
             logger.warning("_create_event: datetime parse failed: %s", exc)
             return _clarify(
@@ -254,7 +282,11 @@ class HermesEngine(BaseModule):
             return _err("I couldn't create that event due to an unexpected error.")
 
         if success:
-            readable = start_dt.strftime("%A %-d %B at %H:%M")
+            # %-d is glibc/macOS-only and raises ValueError on Windows
+            # (Python's Windows strftime doesn't support the "-" no-pad
+            # flag). Build the "day month" part manually so this works on
+            # every platform.
+            readable = f"{start_dt:%A} {start_dt.day} {start_dt:%B} at {start_dt:%H:%M}"
             logger.info("create_event: %r created at %s.", title, start_dt.isoformat())
             return _ok(
                 f"Done. {title!r} added to your calendar for {readable}.",
@@ -264,57 +296,225 @@ class HermesEngine(BaseModule):
         logger.warning("create_event: create_event() returned False for title=%r.", title)
         return _err("I couldn't create that event.")
 
+    def _delete_events(self, entities: dict) -> dict:
+        """
+        Clear events for a date window and report how many were removed.
+
+        Google Calendar's list endpoint (as wrapped by list_events) only
+        supports "the next N days starting now", not an arbitrary specific
+        date. A naive implementation of "today"/"tomorrow"/an explicit date
+        would have to pick a days-ahead window and trust that everything in
+        it belongs to the target day — which is only true for "today". Any
+        other target ("tomorrow", "2026-12-25", ...) needs a wider window to
+        reach that far, and without filtering, that wider window's *entire*
+        contents get deleted: "clear tomorrow's schedule" would wipe out a
+        full week, not just tomorrow.
+
+        To avoid that, a recognised single-day target (today / tomorrow /
+        an explicit date literal) is resolved to a concrete date, events are
+        fetched over a window wide enough to include it, and the result is
+        filtered down to just that day before anything is deleted. Only a
+        bare `days` entity (e.g. "clear the next 3 days") skips the
+        single-day filter and clears the whole window, since that's an
+        explicit multi-day request rather than a single ambiguous date.
+        """
+        target_date: Optional[date] = None
+
+        if "days" in entities:
+            # Explicit multi-day window ("clear the next 3 days") — no
+            # single target date to filter to.
+            days = _clamp_int(entities["days"], 1, _MAX_DAYS_AHEAD)
+        else:
+            date_str = (entities.get("date") or "today").strip()
+            try:
+                target_date = _resolve_date(date_str, self._tz)
+            except DateTimeParseError as exc:
+                logger.warning("_delete_events: date parse failed: %s", exc)
+                return _clarify(
+                    "I couldn't understand that date. Could you say it "
+                    "differently? (e.g. 'today', 'tomorrow', or '2024-12-25')"
+                )
+            today = datetime.now(self._tz).date()
+            days = _clamp_int((target_date - today).days + 1, 1, _MAX_DAYS_AHEAD)
+
+        try:
+            events = self._google.list_events(max_results=_MAX_EVENT_DELETE, days_ahead=days)
+        except Exception:
+            logger.exception("_delete_events: list_events() failed.")
+            return _err("I couldn't fetch your calendar right now.")
+
+        if target_date is not None:
+            events = [e for e in events if _event_falls_on(e, target_date, self._tz)]
+
+        if not events:
+            return _ok("You don't have any events to clear.", confidence=0.9)
+
+        deleted = 0
+        for event in events:
+            try:
+                if self._google.delete_event(event.event_id):
+                    deleted += 1
+            except Exception:
+                logger.exception(
+                    "_delete_events: delete_event() failed for event_id=%r.",
+                    event.event_id,
+                )
+
+        logger.info("_delete_events: cleared %d/%d event(s).", deleted, len(events))
+        if deleted == 0:
+            return _err("I couldn't clear your calendar.")
+
+        return _ok(
+            f"Cleared {deleted} event(s) from your calendar.",
+            data={"deleted": deleted, "found": len(events)},
+            confidence=0.9,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Module-level pure helpers
 # ---------------------------------------------------------------------------
 
-def _parse_datetime(date_str: str, time_str: str) -> datetime:
+def _parse_datetime(date_str: str, time_str: str, tz: "ZoneInfo") -> datetime:
     """
-    Combine a date string and a time string into a timezone-aware datetime.
+    Combine a date string and a time string into a naive local datetime.
 
     Supported date formats
     ----------------------
-    - ``"today"`` / ``""``     → today's date
-    - ``"tomorrow"``           → tomorrow's date
+    - ``"today"`` / ``""``     → today's date (in *tz*)
+    - ``"tomorrow"``           → tomorrow's date (in *tz*)
     - ``"YYYY-MM-DD"``         → ISO date literal
+    - ``"DD/MM/YYYY"`` or ``"DD-MM-YYYY"`` → day-first literal (the format
+      users type unprompted; the NLU doesn't always normalise this to ISO)
 
     Supported time format
     ---------------------
-    - ``"HH:MM"`` (24-hour)
+    - ``"HH:MM"`` (24-hour) or ``"3pm"``/``"3:30pm"`` (12-hour)
+
+    Returns
+    -------
+    datetime
+        A **naive** datetime representing the wall-clock time the user
+        meant, e.g. "3pm tomorrow" → 15:00 on tomorrow's date, with no
+        tzinfo attached. This is intentional: HestiaGoogleAgent.create_event
+        sends this via isoformat() alongside an explicit "timeZone" field,
+        and the Google Calendar API interprets an offset-less dateTime as
+        local time *in that timeZone*. If we attached tzinfo=UTC here (as
+        previously), isoformat() would embed a "+00:00" offset that the API
+        treats as authoritative, silently shifting every event by the
+        difference between UTC and the user's actual timezone — e.g. "3pm"
+        in Asia/Kolkata (UTC+5:30) would be created as 3pm UTC = 8:30pm IST.
 
     Raises
     ------
     DateTimeParseError
         If either string cannot be interpreted.
     """
-    today = datetime.now(timezone.utc).date()
+    base_date = _resolve_date(date_str, tz)
+    event_time = _parse_time(time_str)
+    if event_time is None:
+        raise DateTimeParseError(
+            f"Unrecognised time format: {time_str!r}. Use HH:MM or e.g. '3pm'."
+        )
+
+    return datetime.combine(base_date, event_time)
+
+
+def _resolve_date(date_str: str, tz: "ZoneInfo") -> date:
+    """
+    Resolve ``"today"`` / ``"tomorrow"`` / an explicit date literal to a
+    concrete ``date`` in *tz*.
+
+    Shared by ``_parse_datetime`` (event creation) and ``HermesEngine.
+    _delete_events`` (so "clear tomorrow's schedule" can filter to exactly
+    that day instead of trusting a blind days-ahead window — see
+    ``_delete_events`` for why that distinction matters).
+
+    Raises
+    ------
+    DateTimeParseError
+        If *date_str* cannot be interpreted.
+    """
+    today = datetime.now(tz).date()
     lower = date_str.lower().strip()
 
     if lower in ("today", ""):
-        base_date = today
-    elif lower == "tomorrow":
-        base_date = today + timedelta(days=1)
-    else:
-        try:
-            base_date = date.fromisoformat(date_str)
-        except ValueError as exc:
-            raise DateTimeParseError(
-                f"Unrecognised date format: {date_str!r}. Use YYYY-MM-DD."
-            ) from exc
+        return today
+    if lower == "tomorrow":
+        return today + timedelta(days=1)
 
-    try:
-        parts = time_str.replace(":", " ").split()
-        hour, minute = int(parts[0]), int(parts[1])
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError("Hour or minute out of range.")
-        event_time = time(hour, minute)
-    except (IndexError, ValueError) as exc:
+    literal = _parse_date_literal(date_str)
+    if literal is None:
         raise DateTimeParseError(
-            f"Unrecognised time format: {time_str!r}. Use HH:MM."
-        ) from exc
+            f"Unrecognised date format: {date_str!r}. "
+            "Use YYYY-MM-DD or DD/MM/YYYY."
+        )
+    return literal
 
-    return datetime.combine(base_date, event_time, tzinfo=timezone.utc)
+
+# Matches "3pm", "3 pm", "3:30pm", "3:30 p.m.", "11am" etc.
+_TIME_12H_RE = re.compile(
+    r'^\s*(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>[ap]\.?m\.?)\s*$',
+    re.IGNORECASE,
+)
+# Matches "HH:MM" / "H:MM" 24-hour, e.g. "09:00", "9:00", "15:00".
+_TIME_24H_RE = re.compile(r'^\s*(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*$')
+
+
+# Matches "25/11/2026" or "25-11-2026" (day-first, as typed by users —
+# not necessarily normalised to ISO by the NLU).
+_DATE_DMY_RE = re.compile(r'^\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s*$')
+
+
+def _parse_date_literal(date_str: str) -> Optional[date]:
+    """Parse a YYYY-MM-DD or DD/MM/YYYY (also DD-MM-YYYY) date literal.
+    Returns None — never raises — if neither format matches, so callers can
+    produce one consistent DateTimeParseError."""
+    try:
+        return date.fromisoformat(date_str.strip())
+    except ValueError:
+        pass
+
+    m = _DATE_DMY_RE.match(date_str)
+    if m:
+        day, month, year = (int(g) for g in m.groups())
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    return None
+
+
+def _parse_time(time_str: str) -> Optional[time]:
+    """
+    Parse a time string in either 24-hour ("HH:MM") or 12-hour
+    ("3pm", "3:30 pm") format. Returns None if the string can't be
+    interpreted, rather than raising, so callers can decide how to react.
+    """
+    s = time_str.strip()
+
+    m = _TIME_12H_RE.match(s)
+    if m:
+        hour = int(m.group("hour"))
+        minute = int(m.group("minute") or 0)
+        meridiem = m.group("meridiem").lower().replace(".", "")
+        if not (1 <= hour <= 12 and 0 <= minute <= 59):
+            return None
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        return time(hour, minute)
+
+    m = _TIME_24H_RE.match(s)
+    if m:
+        hour, minute = int(m.group("hour")), int(m.group("minute"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        return time(hour, minute)
+
+    return None
 
 
 def _clamp_int(value: Any, lo: int, hi: int) -> int:
@@ -337,6 +537,36 @@ def _event_to_dict(event: Any) -> dict[str, str]:
     if hasattr(event, "to_dict"):
         return event.to_dict()
     return dict(event) if isinstance(event, dict) else {}
+
+
+def _event_falls_on(event: Any, target: date, tz: "ZoneInfo") -> bool:
+    """
+    Return True if *event*'s start falls on *target* (in *tz*).
+
+    Used by ``HermesEngine._delete_events`` to narrow a days-ahead fetch
+    down to a single requested day. ``start`` is either an all-day date
+    literal ("2026-08-07") or a full RFC 3339 datetime, per
+    ``CalendarEvent.from_api`` / the Google Calendar API. Malformed or
+    missing start values are treated as a non-match (excluded, not
+    deleted) rather than raising, so one bad event can't abort the whole
+    clear operation.
+    """
+    start = getattr(event, "start", None)
+    if start is None and isinstance(event, dict):
+        start = event.get("start")
+    if not start:
+        return False
+
+    try:
+        if len(start) <= 10:
+            return date.fromisoformat(start) == target
+        dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(tz)
+        return dt.date() == target
+    except ValueError:
+        logger.warning("_event_falls_on: could not parse event start %r.", start)
+        return False
 
 
 def _ok(

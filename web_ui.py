@@ -180,6 +180,37 @@ class HestiaWebUI:
                 logger.exception("[WebUI] facts error")
                 return jsonify([])
 
+        @app.route("/api/location", methods=["POST"])
+        def api_location():
+            """
+            Accept {"lat": ..., "lon": ...} from the browser's
+            navigator.geolocation (see templates/index.html) and persist it
+            via Mnemosyne so every god can read it back through
+            MnemosyneEngine.get_context()["device_location"].
+            """
+            try:
+                payload = request.get_json(silent=True) or {}
+                lat = payload.get("lat")
+                lon = payload.get("lon")
+
+                if lat is None or lon is None:
+                    return jsonify({"ok": False, "error": "lat and lon are required"}), 400
+
+                try:
+                    lat = float(lat)
+                    lon = float(lon)
+                except (TypeError, ValueError):
+                    return jsonify({"ok": False, "error": "lat/lon must be numbers"}), 400
+
+                if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+                    return jsonify({"ok": False, "error": "lat/lon out of range"}), 400
+
+                self.memory.set_device_location(lat, lon, source="browser_gps")
+                return jsonify({"ok": True})
+            except Exception:
+                logger.exception("[WebUI] location error")
+                return jsonify({"ok": False, "error": "internal error"}), 500
+
         @app.route("/api/preferences")
         def api_preferences():
             try:

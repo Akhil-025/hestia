@@ -1,8 +1,12 @@
 """
 modules/orpheus/engine.py
 
-OrpheusEngine: creative writing module for poems, lyrics, brainstorming,
-and creative prompt generation.
+OrpheusEngine: creative writing module for poems, lyrics, short stories,
+brainstorming, creative prompt generation, name generation, and working
+with text the user already wrote — continuing it in-voice, critiquing it,
+or rewriting it in a different style. Also surfaces the module's own
+history so past creations can be recalled, not just written once and
+forgotten.
 
 Design notes
 ------------
@@ -62,6 +66,18 @@ _VALID_GENRES: frozenset[str] = frozenset(
 _VALID_RHYME_SCHEMES: frozenset[str] = frozenset(
     {"ABAB", "AABB", "ABBA", "ABCABC", "free", "none"}
 )
+_VALID_STORY_GENRES: frozenset[str] = frozenset(
+    {"fantasy", "sci-fi", "mystery", "romance", "horror", "adventure",
+     "literary", "comedy", "thriller", "fable"}
+)
+_VALID_NAME_CATEGORIES: frozenset[str] = frozenset(
+    {"character", "band", "story title", "pet", "fantasy place",
+     "pen name", "business"}
+)
+_VALID_CREATION_TYPES: frozenset[str] = frozenset(
+    {"poem", "lyrics", "brainstorm", "prompt", "story",
+     "continuation", "critique", "rewrite", "names"}
+)
 
 _DEFAULT_POEM_STYLE = "free verse"
 _DEFAULT_TONE = "reflective"
@@ -73,8 +89,40 @@ _DEFAULT_RHYME_SCHEME = "ABAB"
 _DEFAULT_STRUCTURE = "verse-chorus-verse-chorus-bridge-chorus"
 _DEFAULT_PROMPT_COUNT = 5
 _MAX_PROMPT_COUNT = 20
+_DEFAULT_STORY_GENRE = "literary"
+_DEFAULT_POV = "third person limited"
+_DEFAULT_CONTINUE_LENGTH = "short"
+_DEFAULT_NAME_CATEGORY = "character"
+_DEFAULT_NAME_COUNT = 8
+_MAX_NAME_COUNT = 20
+_DEFAULT_CREATIONS_LIMIT = 5
+_MAX_CREATIONS_LIMIT = 20
+_MAX_INPUT_TEXT_LEN = 4000
 _MEMORY_KEY_MAX_LEN = 40
 _MEMORY_VALUE_MAX_LEN = 500
+
+# Point-of-view aliases are handled separately from `_normalise()`'s generic
+# prefix matching: "third person" is a genuine prefix of BOTH "third person
+# limited" and "third person omniscient", so frozenset iteration order could
+# make that match non-deterministic. An explicit, ordered alias table avoids
+# the ambiguity entirely.
+_POV_ALIASES: dict[str, str] = {
+    "first": "first person",
+    "first person": "first person",
+    "1st person": "first person",
+    "second": "second person",
+    "second person": "second person",
+    "2nd person": "second person",
+    "omniscient": "third person omniscient",
+    "third person omniscient": "third person omniscient",
+    "3rd person omniscient": "third person omniscient",
+    "limited": "third person limited",
+    "third person limited": "third person limited",
+    "3rd person limited": "third person limited",
+    "third": "third person limited",
+    "third person": "third person limited",
+    "3rd person": "third person limited",
+}
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -140,6 +188,82 @@ Write the full lyrics with clear section labels (VERSE 1, CHORUS, etc.).
 Maintain the rhyme scheme consistently.
 Write only the lyrics. No explanation."""
 
+_STORY_PROMPT = """\
+You are Orpheus, a master storyteller.
+Write a short story about: {topic}
+Genre  : {genre}
+POV    : {pov}
+Tone   : {tone}
+Length : {length}
+
+Write only the story itself. No title prefix, no explanation.
+Start directly with the first line."""
+
+_CONTINUE_PROMPT = """\
+You are Orpheus, a creative writing collaborator with a sharp ear for voice \
+and style.
+Continue the piece of writing below in the SAME voice, tense, tone, and \
+style as the original.
+Do not repeat, summarize, or restate the original text — write only the \
+new continuation.
+Extension length: {length}
+{direction_line}
+
+--- ORIGINAL TEXT ---
+{text}
+--- END ORIGINAL TEXT ---
+
+Write only the continuation."""
+
+_CRITIQUE_PROMPT = """\
+You are Orpheus, a master poet and a generous but honest writing mentor.
+Give constructive creative feedback on the piece of writing below.
+{focus_line}
+
+--- TEXT ---
+{text}
+--- END TEXT ---
+
+Respond with ONLY valid JSON in this structure:
+{{
+  "overall_impression": "one or two sentence honest reaction",
+  "strengths": ["specific strength 1", "specific strength 2"],
+  "areas_to_improve": ["specific, actionable suggestion 1", "specific, actionable suggestion 2"],
+  "line_to_revisit": "one specific line or phrase from the text worth revising",
+  "revision_example": "a rewritten version of that one line, as an example"
+}}
+JSON only."""
+
+_REWRITE_PROMPT = """\
+You are Orpheus, a master of voice and style.
+Rewrite the text below to shift its style, PRESERVING its core meaning \
+and content.
+Target tone : {tone}
+{style_line}
+
+--- ORIGINAL TEXT ---
+{text}
+--- END ORIGINAL TEXT ---
+
+Write only the rewritten text. No explanation, no commentary."""
+
+_NAMES_PROMPT = """\
+You are Orpheus, a creative naming consultant.
+Generate {count} creative name options.
+Category       : {category}
+Theme/keywords : {theme}
+
+Respond with ONLY valid JSON:
+{{
+  "names": [
+    {{
+      "name": "the name itself",
+      "vibe": "one short phrase on the feeling or connotation of this name"
+    }}
+  ]
+}}
+JSON only."""
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -199,6 +323,12 @@ class OrpheusEngine(BaseModule):
             "brainstorm",
             "creative_prompt",
             "generate_lyrics",
+            "write_story",
+            "continue_writing",
+            "critique_writing",
+            "rewrite_style",
+            "generate_names",
+            "get_creations",
         }
     )
 
@@ -266,6 +396,18 @@ class OrpheusEngine(BaseModule):
             return self._creative_prompt(entities)
         if intent == "generate_lyrics":
             return self._generate_lyrics(entities)
+        if intent == "write_story":
+            return self._write_story(entities)
+        if intent == "continue_writing":
+            return self._continue_writing(entities)
+        if intent == "critique_writing":
+            return self._critique_writing(entities)
+        if intent == "rewrite_style":
+            return self._rewrite_style(entities)
+        if intent == "generate_names":
+            return self._generate_names(entities)
+        if intent == "get_creations":
+            return self._get_creations(entities)
         return _err(f"Unknown intent: {intent!r}")
 
     # ------------------------------------------------------------------
@@ -439,9 +581,14 @@ class OrpheusEngine(BaseModule):
             logger.exception("_creative_prompt: LLM call failed.")
             return _err("I had trouble generating prompts. Please try again.")
 
-        prompts: list[dict] = result.get("prompts") or []
+        raw_prompts = result.get("prompts") if isinstance(result, dict) else None
+        # Drop any non-dict entries defensively — same failure mode as
+        # brainstorm's branches: a local LLM occasionally returns a plain
+        # string instead of the requested {"prompt": ..., ...} object, which
+        # would otherwise crash _format_creative_prompts() on `.get()`.
+        prompts: list[dict] = [p for p in (raw_prompts or []) if isinstance(p, dict)]
         if not prompts:
-            logger.warning("_creative_prompt: LLM returned no prompts.")
+            logger.warning("_creative_prompt: LLM returned no usable prompts.")
             return _err("The prompt response was empty. Please try again.")
 
         response = _format_creative_prompts(medium, theme, prompts)
@@ -504,6 +651,227 @@ class OrpheusEngine(BaseModule):
             confidence=0.95,
         )
 
+    def _write_story(self, entities: dict) -> dict:
+        """Generate a short story and persist it to DB and memory."""
+        topic = _extract(entities, "topic", "raw_query")
+        genre = _normalise(entities.get("genre", ""), _VALID_STORY_GENRES, _DEFAULT_STORY_GENRE)
+        pov = _normalise_pov(entities.get("pov", "") or entities.get("point_of_view", ""))
+        tone = _normalise(entities.get("tone", ""), _VALID_TONES, _DEFAULT_TONE)
+        length = _normalise(entities.get("length", ""), _VALID_LENGTHS, _DEFAULT_LENGTH)
+
+        missing = _collect_missing(
+            ("topic", topic, "What should the story be about?"),
+        )
+        if missing:
+            return _clarify(missing)
+
+        try:
+            story = self._llm_text(
+                _STORY_PROMPT.format(
+                    topic=topic, genre=genre, pov=pov, tone=tone, length=length,
+                )
+            )
+        except LLMResponseError:
+            logger.exception("_write_story: LLM call failed.")
+            return _err("I had trouble writing that story. Please try again.")
+
+        title = f"{genre.title()} Story — {topic.title()}"
+
+        _safe_db(
+            self.db.save,
+            "story", story,
+            title=title,
+            metadata=json.dumps({"genre": genre, "pov": pov, "tone": tone, "topic": topic}),
+        )
+        self._persist(f"story_{topic}", story)
+
+        return _ok(
+            f"{title}\n\n{story}",
+            data={"title": title, "story": story, "genre": genre, "pov": pov, "tone": tone},
+            confidence=0.95,
+        )
+
+    def _continue_writing(self, entities: dict) -> dict:
+        """Continue an existing piece of text in its own voice and style."""
+        text = _extract(entities, "text", "content", "raw_query")[:_MAX_INPUT_TEXT_LEN]
+        direction = _extract(entities, "direction", "instruction")
+        length = _normalise(entities.get("length", ""), _VALID_LENGTHS, _DEFAULT_CONTINUE_LENGTH)
+
+        missing = _collect_missing(
+            ("text", text, "What's the text you'd like me to continue?"),
+        )
+        if missing:
+            return _clarify(missing)
+
+        direction_line = f"Direction: {direction}" if direction else ""
+
+        try:
+            continuation = self._llm_text(
+                _CONTINUE_PROMPT.format(text=text, length=length, direction_line=direction_line)
+            )
+        except LLMResponseError:
+            logger.exception("_continue_writing: LLM call failed.")
+            return _err("I had trouble continuing that piece. Please try again.")
+
+        _safe_db(
+            self.db.save,
+            "continuation", continuation,
+            title="Continuation",
+            metadata=json.dumps(
+                {"length": length, "direction": direction, "original_excerpt": text[:200]}
+            ),
+        )
+
+        return _ok(
+            continuation,
+            data={"continuation": continuation, "length": length},
+            confidence=0.9,
+        )
+
+    def _critique_writing(self, entities: dict) -> dict:
+        """Give structured creative feedback on a piece of text."""
+        text = _extract(entities, "text", "content", "raw_query")[:_MAX_INPUT_TEXT_LEN]
+        focus = _extract(entities, "focus", "aspect")
+
+        missing = _collect_missing(
+            ("text", text, "What would you like me to give feedback on?"),
+        )
+        if missing:
+            return _clarify(missing)
+
+        focus_line = f"Focus especially on: {focus}" if focus else ""
+
+        try:
+            result = self._llm_json(_CRITIQUE_PROMPT.format(text=text, focus_line=focus_line))
+        except LLMResponseError:
+            logger.exception("_critique_writing: LLM call failed.")
+            return _err("I had trouble reviewing that. Please try again.")
+
+        if not _validate_critique(result):
+            logger.warning("_critique_writing: LLM response failed schema validation.")
+            return _err("The feedback response was malformed. Please try again.")
+
+        response = _format_critique(result)
+
+        _safe_db(
+            self.db.save,
+            "critique", response,
+            title="Critique",
+            metadata=json.dumps({"focus": focus, "text_excerpt": text[:200]}),
+        )
+
+        return _ok(response, data=result, confidence=0.9)
+
+    def _rewrite_style(self, entities: dict) -> dict:
+        """Rewrite existing text in a different tone/style, same meaning."""
+        text = _extract(entities, "text", "content", "raw_query")[:_MAX_INPUT_TEXT_LEN]
+        tone = _normalise(entities.get("tone", ""), _VALID_TONES, _DEFAULT_TONE)
+        style = _extract(entities, "style")
+
+        missing = _collect_missing(
+            ("text", text, "What text would you like me to rewrite?"),
+        )
+        if missing:
+            return _clarify(missing)
+
+        style_line = (
+            f"Style       : {style}" if style
+            else "Style       : (use your judgement to match the requested tone)"
+        )
+
+        try:
+            rewritten = self._llm_text(
+                _REWRITE_PROMPT.format(text=text, tone=tone, style_line=style_line)
+            )
+        except LLMResponseError:
+            logger.exception("_rewrite_style: LLM call failed.")
+            return _err("I had trouble rewriting that. Please try again.")
+
+        _safe_db(
+            self.db.save,
+            "rewrite", rewritten,
+            title=f"Rewrite ({tone})",
+            metadata=json.dumps({"tone": tone, "style": style, "original_excerpt": text[:200]}),
+        )
+
+        return _ok(
+            rewritten,
+            data={"rewritten": rewritten, "tone": tone, "style": style},
+            confidence=0.9,
+        )
+
+    def _generate_names(self, entities: dict) -> dict:
+        """Generate a set of creative name options and persist them."""
+        category = _normalise(
+            entities.get("category") or entities.get("type", ""),
+            _VALID_NAME_CATEGORIES, _DEFAULT_NAME_CATEGORY,
+        )
+        theme = _extract(entities, "theme", "topic", "keywords") or "anything"
+
+        try:
+            count = int(entities.get("count", _DEFAULT_NAME_COUNT))
+            count = max(1, min(count, _MAX_NAME_COUNT))
+        except (ValueError, TypeError):
+            count = _DEFAULT_NAME_COUNT
+
+        try:
+            result = self._llm_json(
+                _NAMES_PROMPT.format(count=count, category=category, theme=theme)
+            )
+        except LLMResponseError:
+            logger.exception("_generate_names: LLM call failed.")
+            return _err("I had trouble generating names. Please try again.")
+
+        raw_names = result.get("names") if isinstance(result, dict) else None
+        # Same defensive filter as brainstorm/creative_prompt: a local LLM
+        # occasionally returns bare strings instead of {"name": ..., ...}.
+        names: list[dict] = [
+            n for n in (raw_names or []) if isinstance(n, dict) and n.get("name")
+        ]
+        if not names:
+            logger.warning("_generate_names: LLM returned no usable names.")
+            return _err("The name list came back empty. Please try again.")
+
+        response = _format_names(category, theme, names)
+
+        _safe_db(
+            self.db.save,
+            "names", response,
+            title=f"Names — {category} / {theme}",
+            metadata=json.dumps({"category": category, "theme": theme, "count": count}),
+        )
+
+        return _ok(response, data={"names": names}, confidence=0.92)
+
+    def _get_creations(self, entities: dict) -> dict:
+        """Recall past creations from Orpheus's own DB, optionally filtered."""
+        raw_type = (entities.get("type") or entities.get("creation_type") or "").strip().lower()
+        type_ = raw_type if raw_type in _VALID_CREATION_TYPES else None
+        if raw_type and type_ is None:
+            logger.debug("_get_creations: unrecognised type %r; ignoring filter.", raw_type)
+
+        keyword = _extract(entities, "keyword", "query", "search")
+
+        try:
+            limit = int(entities.get("limit", _DEFAULT_CREATIONS_LIMIT))
+            limit = max(1, min(limit, _MAX_CREATIONS_LIMIT))
+        except (ValueError, TypeError):
+            limit = _DEFAULT_CREATIONS_LIMIT
+
+        try:
+            rows = self.db.search(type_=type_, keyword=keyword or None, limit=limit)
+        except Exception:
+            logger.exception("_get_creations: DB read failed.")
+            return _err("I couldn't pull up your past creations right now.")
+
+        if not rows:
+            return _ok(
+                "I don't have any matching creations saved yet.",
+                data={"creations": []}, confidence=0.7,
+            )
+
+        return _ok(_format_creations(rows), data={"creations": rows}, confidence=0.9)
+
 
 # ---------------------------------------------------------------------------
 # Module-level pure helpers
@@ -538,6 +906,27 @@ def _normalise(value: str, valid: frozenset[str], default: str) -> str:
     return default
 
 
+def _normalise_pov(value: str) -> str:
+    """
+    Resolve a free-form point-of-view entity to a canonical value via
+    `_POV_ALIASES`, defaulting to `_DEFAULT_POV` when unrecognised.
+
+    Kept separate from `_normalise()` because "third person" is a genuine
+    prefix of two distinct valid values (limited/omniscient); an ordered
+    alias table resolves that deterministically where generic frozenset
+    prefix-matching could not.
+    """
+    stripped = value.strip().lower()
+    if not stripped:
+        return _DEFAULT_POV
+    if stripped in _POV_ALIASES:
+        return _POV_ALIASES[stripped]
+    for alias, canonical in _POV_ALIASES.items():
+        if stripped.startswith(alias):
+            return canonical
+    return _DEFAULT_POV
+
+
 def _collect_missing(*checks: tuple[str, str, str]) -> list[str]:
     """
     Return clarification questions for any field whose value is empty.
@@ -556,12 +945,22 @@ def _clarify(questions: list[str]) -> dict:
 
 
 def _validate_brainstorm(data: Any) -> bool:
-    """Return True if *data* has the minimum expected brainstorm structure."""
+    """Return True if *data* has the minimum expected brainstorm structure.
+
+    Checks each branch is itself a dict, not just that ``branches`` is a
+    list — local LLMs occasionally return a list of plain strings instead
+    of the requested objects, which used to slip past this check and crash
+    inside ``_format_brainstorm`` instead (caught only by the outer
+    ``handle()`` try/except, which then discards a perfectly usable
+    ``central_idea``/``first_action`` and reports a generic error instead
+    of the specific "malformed" message).
+    """
     if not isinstance(data, dict):
         return False
-    if not isinstance(data.get("branches"), list):
+    branches = data.get("branches")
+    if not isinstance(branches, list) or not branches:
         return False
-    return True
+    return all(isinstance(b, dict) for b in branches)
 
 
 def _format_brainstorm(topic: str, result: dict) -> str:
@@ -573,6 +972,11 @@ def _format_brainstorm(topic: str, result: dict) -> str:
         lines += [f"  ◈ {central}", ""]
 
     for branch in result.get("branches") or []:
+        if not isinstance(branch, dict):
+            # Defensive: _validate_brainstorm() should have already rejected
+            # this, but formatting stays crash-proof even if a caller skips
+            # validation or the schema is loosened later.
+            continue
         theme = branch.get("theme") or ""
         lines.append(f"  ┌─ {theme.upper()}")
         for idea in branch.get("ideas") or []:
@@ -607,6 +1011,75 @@ def _format_creative_prompts(
         lines.append(f"  {i}. [{med.upper()} · {diff}]")
         lines.append(f"     {p.get('prompt', '')}")
         lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _validate_critique(data: Any) -> bool:
+    """
+    Return True if *data* has the minimum expected critique structure:
+    a dict with at least one non-empty feedback list (strengths and/or
+    areas_to_improve). Mirrors `_validate_brainstorm`'s defensive stance
+    against a local LLM returning the wrong shape.
+    """
+    if not isinstance(data, dict):
+        return False
+    strengths = data.get("strengths")
+    improve = data.get("areas_to_improve")
+    if not isinstance(strengths, list) or not isinstance(improve, list):
+        return False
+    return bool(strengths) or bool(improve)
+
+
+def _format_critique(result: dict) -> str:
+    """Render a critique result dict as readable feedback."""
+    lines: list[str] = ["Feedback", ""]
+
+    overall = result.get("overall_impression", "")
+    if overall:
+        lines += [f"  {overall}", ""]
+
+    strengths: list[str] = result.get("strengths") or []
+    if strengths:
+        lines.append("  STRENGTHS")
+        for s in strengths:
+            lines.append(f"  + {s}")
+        lines.append("")
+
+    improve: list[str] = result.get("areas_to_improve") or []
+    if improve:
+        lines.append("  TO IMPROVE")
+        for i in improve:
+            lines.append(f"  - {i}")
+        lines.append("")
+
+    line_to_revisit = result.get("line_to_revisit", "")
+    revision = result.get("revision_example", "")
+    if line_to_revisit and revision:
+        lines += ["  TRY REVISING", f'  "{line_to_revisit}"', f"  → {revision}"]
+
+    return "\n".join(lines).strip()
+
+
+def _format_names(category: str, theme: str, names: list[dict]) -> str:
+    """Render a list of name-option dicts as a numbered display."""
+    lines: list[str] = [f"Name Ideas — {category.title()} ({theme})", ""]
+    for i, n in enumerate(names, start=1):
+        vibe = n.get("vibe", "")
+        entry = f"  {i}. {n.get('name', '')}"
+        if vibe:
+            entry += f" — {vibe}"
+        lines.append(entry)
+    return "\n".join(lines).strip()
+
+
+def _format_creations(rows: list[dict]) -> str:
+    """Render a list of DB creation rows as a readable, dated index."""
+    lines: list[str] = ["Past Creations", ""]
+    for r in rows:
+        creation_type = r.get("type", "")
+        title = r.get("title") or creation_type.title()
+        logged_at = r.get("logged_at", "")
+        lines.append(f"  • [{creation_type}] {title}  ({logged_at})")
     return "\n".join(lines).strip()
 
 

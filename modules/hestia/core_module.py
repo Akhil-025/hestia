@@ -4,23 +4,50 @@ import logging
 from modules.base import BaseModule
 from core.ollama_client import generate
 import platform, datetime, re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_int(value, default: int) -> int:
+    """Coerce *value* to int, falling back to *default* if that fails."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class CoreModule(BaseModule):
     name = "core"
 
     _INTENTS = {
-        "save_name", "take_note", "get_notes",
+        "save_name", "take_note", "get_notes", "delete_notes",
         "get_history", "set_preference",
         "get_system_info", "get_user_info", "chat"
     }
 
-    def __init__(self, memory, ollama_cfg: dict, llm=None):
+    def __init__(self, memory, ollama_cfg: dict, llm=None, timezone_name: str = "UTC"):
         self._memory = memory
         self._ollama = ollama_cfg
         self._llm_instance = llm  # HestiaLLM | None — preferred path
+        # ChronosEngine and HermesEngine both resolve the user's configured
+        # IANA timezone (main.py passes chronos.timezone to both) so "what
+        # time is it" / calendar events land on local wall-clock time
+        # instead of the server's own clock. CoreModule.get_user_info()
+        # and get_system_info() need the same thing: they're the recovery
+        # path the NLU falls into when it misclassifies date/time questions
+        # (see _get_user_info below), so answering with server-local time
+        # instead of the user's local time would silently disagree with
+        # what Chronos would have said for the exact same question.
+        try:
+            self._tz = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, KeyError):
+            logger.warning(
+                "Unrecognised timezone %r; falling back to UTC.", timezone_name
+            )
+            self._tz = ZoneInfo("UTC")
 
     def can_handle(self, intent: str) -> bool:
         return intent in self._INTENTS
@@ -43,11 +70,14 @@ class CoreModule(BaseModule):
         if intent == "get_notes":
             return self._get_notes()
 
+        if intent == "delete_notes":
+            return self._delete_notes()
+
         if intent == "get_history":
             return self._get_history(entities)
 
         if intent == "get_user_info":
-            return self._get_user_info()
+            return self._get_user_info(entities)
 
         if intent == "set_preference":
             return self._set_preference(entities)
@@ -81,14 +111,18 @@ class CoreModule(BaseModule):
             "response": (
                 f"Running on {platform.system()} {platform.release()}, "
                 f"Python {platform.python_version()}, "
-                f"time {datetime.datetime.now().strftime('%I:%M %p')}."
+                f"time {datetime.datetime.now(self._tz).strftime('%I:%M %p')}."
             ),
             "data": {},
             "confidence": 1.0,
         }
 
     def _save_name(self, entities: dict) -> dict:
-        name = entities.get("name", "").strip().title()
+        # `entities.get("name", "")` only covers a *missing* key; the NLU
+        # can also emit the key with an explicit null (entities={"name": None}),
+        # and "".strip() on None raises AttributeError. `or ""` covers both,
+        # matching the defensive pattern used throughout modules/hermes.
+        name = (entities.get("name") or "").strip().title()
         if not name:
             return {"response": "I didn't catch your name.", "data": {}, "confidence": 0.0}
 
@@ -117,12 +151,22 @@ class CoreModule(BaseModule):
         # Do NOT call self._memory.learn() here.
         # The orchestrator's interaction_logged bus event persists this naturally
         # to interaction_log, which is where _get_notes reads from.
+        #
+        # The response text below (not just entities["data"]) is what actually
+        # ends up in interaction_log.hestia_response, so it has to carry the
+        # parsed note content — otherwise _get_notes has nothing but the raw
+        # user_text (e.g. "take a note: buy toy", "> take note buy milk") to
+        # show, which is why the notes list used to echo back raw commands
+        # instead of clean note text.
         return {
-            "response": "Note saved.",
+            "response": f"Note saved: {note}",
             "data": {"note": note},
             "confidence": 0.95
         }
-    
+
+    # Matches the "Note saved: " prefix _take_note stores in hestia_response.
+    _NOTE_PREFIX_RE = re.compile(r'^Note saved:\s*', re.IGNORECASE)
+
     def _get_notes(self) -> dict:
         rows = self._memory.db.get_by_intent("take_note", 10)
         notes = [{"query": r["query"], "response": r["response"], "intent": r["intent"]} for r in rows]
@@ -130,12 +174,40 @@ class CoreModule(BaseModule):
         if not notes:
             return {"response": "No notes saved yet.", "data": {}, "confidence": 0.9}
 
-        body = "Your notes:\n" + "\n".join(f"- {n['query']}" for n in notes)
+        def _content(n: dict) -> str:
+            resp = n.get("response") or ""
+            if self._NOTE_PREFIX_RE.match(resp):
+                return self._NOTE_PREFIX_RE.sub('', resp).strip()
+            # Older rows saved before this fix only have the raw query;
+            # fall back to that rather than showing nothing.
+            return n.get("query", "").strip()
+
+        body = "Your notes:\n" + "\n".join(f"- {_content(n)}" for n in notes)
 
         return {"response": body, "data": {"notes": notes}, "confidence": 0.9}
 
+    def _delete_notes(self) -> dict:
+        try:
+            deleted = self._memory.db.delete_by_intent("take_note")
+        except Exception:
+            logger.exception("_delete_notes: DB delete failed.")
+            return {"response": "I couldn't delete your notes right now.", "data": {}, "confidence": 0.0}
+
+        if not deleted:
+            return {"response": "You don't have any notes to delete.", "data": {}, "confidence": 0.9}
+
+        return {
+            "response": f"Deleted {deleted} note(s).",
+            "data": {"deleted": deleted},
+            "confidence": 0.95,
+        }
+
     def _get_history(self, entities: dict) -> dict:
-        limit = int(entities.get("limit", 5))
+        # int() raises on a non-numeric NLU extraction (e.g. "a few"); that
+        # would otherwise surface to the user as the orchestrator's generic
+        # "something went wrong" instead of just falling back to a sane
+        # default, so coerce defensively rather than trusting the entity.
+        limit = _safe_int(entities.get("limit"), default=5)
 
         recent = self._memory.db.get_recent_interactions_excluding(
             limit, ["take_note", "set_reminder"]
@@ -150,6 +222,41 @@ class CoreModule(BaseModule):
 
         return {"response": body, "data": {"history": recent}, "confidence": 0.9}
 
+
+    # Keys the NLU has been observed to send for date/time questions it
+    # misclassifies as get_user_info instead of Chronos's get_time/get_date
+    # (e.g. "what is todays date" → {"key": "current_date"}). Answered
+    # directly here rather than claiming ignorance, since Hestia obviously
+    # knows the date/time regardless of which intent name the NLU picked.
+    _DATE_KEYS = frozenset({"current_date", "date", "today", "todays_date"})
+    _TIME_KEYS = frozenset({"current_time", "time"})
+
+    def _get_user_info(self, entities: dict) -> dict:
+        key = (entities.get("key") or "").strip().lower()
+
+        if key in self._DATE_KEYS:
+            return {
+                "response": f"Today's date is {datetime.datetime.now(self._tz).strftime('%A, %B %d, %Y')}.",
+                "data": {"key": key},
+                "confidence": 0.95,
+            }
+        if key in self._TIME_KEYS:
+            return {
+                "response": f"It's {datetime.datetime.now(self._tz).strftime('%I:%M %p')}.",
+                "data": {"key": key},
+                "confidence": 0.95,
+            }
+
+        if key:
+            try:
+                value = self._memory.db.get_fact(key)
+            except Exception:
+                logger.exception("_get_user_info: get_fact(%r) failed.", key)
+                value = None
+            if value:
+                return {"response": value, "data": {"key": key}, "confidence": 0.85}
+
+        return {"response": "I don't have that information yet.", "data": {}, "confidence": 0.3}
 
     def _set_preference(self, entities: dict) -> dict:
         key = entities.get("key", "")

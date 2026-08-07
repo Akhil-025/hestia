@@ -10,23 +10,36 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 class HestiaTelegramBot:
-    def __init__(self, token: str, process_fn: Callable[[str], str], allowed_chat_ids: list[int] = None, stt=None):
+    def __init__(
+        self,
+        token: str,
+        process_fn: Callable[[str], str],
+        allowed_chat_ids: list[int] = None,
+        stt=None,
+        memory=None,
+    ):
         """
         Args:
           token: Telegram bot token from BotFather.
           process_fn: Function to call with user text — returns response string (this is Hestia.process_text).
           allowed_chat_ids: Whitelist of chat IDs. If None or empty, allow all (not recommended for production).
           stt: Optional HestiaSTT instance for transcribing voice notes.
+          memory: Optional MnemosyneEngine instance. When provided, native
+            Telegram location shares (the paperclip → Location attachment,
+            not typed text) are persisted via set_device_location() so
+            every god can read them back through get_context().
         """
         self.token = token
         self.process_fn = process_fn
         self.allowed_chat_ids = allowed_chat_ids
         self.stt = stt
+        self.memory = memory
         self._thread: Optional[threading.Thread] = None
         self._app = ApplicationBuilder().token(token).build()
         self._app.add_handler(CommandHandler("start", self._handle_start))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         self._app.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
+        self._app.add_handler(MessageHandler(filters.LOCATION, self._handle_location))
 
     def start(self) -> None:
         """Start the bot in a background daemon thread using run_polling."""
@@ -72,6 +85,40 @@ class HestiaTelegramBot:
         response = self.process_fn(user_text)
         if response:
             await update.message.reply_text(response)
+
+    async def _handle_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle a Telegram location share (paperclip → Location), including
+        live-location pings.
+
+        filters.LOCATION matches against update.effective_message, which
+        resolves to update.edited_message (not update.message) for live
+        location updates after the first ping — update.message is None in
+        that case, so reading it directly crashes every single ping. Use
+        effective_message, which covers both.
+        """
+        chat_id = update.effective_chat.id
+        if not self._is_allowed(chat_id):
+            return
+
+        msg = update.effective_message
+        if msg is None or msg.location is None:
+            return
+
+        if self.memory is None:
+            await msg.reply_text("Got your location, but I'm not able to save it right now.")
+            return
+
+        loc = msg.location
+        try:
+            self.memory.set_device_location(loc.latitude, loc.longitude, source="telegram")
+            # Live-location pings arrive every ~15-30s; a reply per ping
+            # would spam the chat, so only confirm the initial share.
+            if update.message is not None:
+                await msg.reply_text("Got it — location saved.")
+        except Exception:
+            logging.error("[TelegramBot] Failed to save location.", exc_info=True)
+            if update.message is not None:
+                await msg.reply_text("I couldn't save that location.")
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle voice note — download OGG, transcribe via STT if available, process as text."""

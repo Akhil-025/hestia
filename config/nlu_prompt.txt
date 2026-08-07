@@ -13,18 +13,32 @@ The JSON must contain:
 
 Valid intents:
 get_time, get_date, get_weather, set_reminder,
-take_note, get_notes, get_history,
-save_name, get_user_info, set_preference,
+take_note, get_notes, delete_notes, get_history,
+save_name, get_user_info, set_preference, get_system_info,
+learn_fact, forget_fact,
 chat,
-iris_search, iris_ingest,
+iris_search, iris_ingest, iris_status,
 athena_search,
-add_goal, get_goals, update_goal,
+add_goal, get_goals, update_goal, remove_goal, abandon_goal,
+add_habit, complete_habit, list_habits, remove_habit,
+productivity_summary, get_at_risk_goals, get_motivation,
 ares_analyse_risk, ares_swot_analysis, ares_strategic_plan, ares_decision_support,
+ares_premortem_analysis, ares_competitive_analysis, ares_contingency_plan, ares_war_room_briefing,
 apollo_log_workout, apollo_track_sleep, apollo_log_mood, apollo_log_health, apollo_get_health_summary,
+apollo_log_weight, apollo_log_water, apollo_set_health_goal, apollo_get_goal_progress,
 orpheus_write_poem, orpheus_brainstorm, orpheus_creative_prompt, orpheus_generate_lyrics,
+orpheus_write_story, orpheus_continue_writing, orpheus_critique_writing, orpheus_rewrite_style,
+orpheus_generate_names, orpheus_get_creations,
+metis_correct_text, metis_improve_clarity, metis_suggest_style, metis_detect_tone,
+metis_rewrite_text, metis_draft_content, metis_summarize_text, metis_expand_text,
+metis_shorten_text, metis_generate_outline, metis_check_plagiarism, metis_generate_citation,
+metis_check_consistency, metis_readability_report, metis_writing_stats,
 dionysus_recommend_movie, dionysus_find_restaurant, dionysus_recommend_music, dionysus_plan_outing,
+dionysus_dismiss_recommendation, dionysus_mark_seen,
 pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report,
-read_email, send_email, list_events, create_event
+hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
+hephaestus_scrape_page, hephaestus_open_app,
+read_email, send_email, list_events, create_event, delete_events
 
 ---
 
@@ -47,6 +61,37 @@ User: find my notes on thermodynamics
 
 ---
 
+# ---- MNEMOSYNE (LONG-TERM FACTS ABOUT THE USER) ----
+
+# learn_fact is for durable facts ABOUT THE USER (their name, family,
+# relationships, preferences, background) that should be recalled later.
+# NEVER use take_note for this -- take_note is for arbitrary reminders /
+# to-do items, not facts about the user. If the user says "remember..."
+# or "learn this fact..." and states something true about themselves,
+# it is learn_fact, not take_note.
+
+User: learn this fact: my sister's name is Priya
+{"intent": "learn_fact", "entities": {"key": "sister_name", "value": "Priya"}, "response": "Got it.", "confidence": 0.95}
+
+User: remember that I'm allergic to peanuts
+{"intent": "learn_fact", "entities": {"key": "allergy", "value": "peanuts"}, "response": "Got it.", "confidence": 0.95}
+
+User: forget that I'm allergic to peanuts
+{"intent": "forget_fact", "entities": {"key": "allergy"}, "response": "Forgotten.", "confidence": 0.93}
+
+# "What do you know about me" / "tell me about myself" has no specific
+# key to look up -- omit the "key" entity entirely (do NOT invent one)
+# so Mnemosyne falls through to a semantic recall over everything it
+# knows, instead of a single-fact lookup.
+
+User: what do you know about me
+{"intent": "get_user_info", "entities": {}, "response": "Let me think about what I know.", "confidence": 0.9}
+
+User: tell me about myself
+{"intent": "get_user_info", "entities": {}, "response": "Let me think about what I know.", "confidence": 0.9}
+
+---
+
 # ---- IRIS (MEDIA / FILES) ----
 
 User: find my photos of beach
@@ -64,6 +109,12 @@ User: ingest my gallery
 User: add these photos
 {"intent": "iris_ingest", "entities": {}, "response": "Importing your media.", "confidence": 0.95}
 
+User: what's the status of image indexing
+{"intent": "iris_status", "entities": {}, "response": "Checking indexing status.", "confidence": 0.95}
+
+User: how many photos have you indexed
+{"intent": "iris_status", "entities": {}, "response": "Checking indexing status.", "confidence": 0.93}
+
 ---
 
 # ---- ARTEMIS (GOALS) ----
@@ -79,6 +130,76 @@ User: what are my goals
 
 User: update goal publish research paper to 50 percent
 {"intent": "update_goal", "entities": {"name": "publish research paper", "progress": 50}, "response": "Updating goal.", "confidence": 0.95}
+
+User: add habit meditate
+{"intent": "add_habit", "entities": {"name": "meditate"}, "response": "Adding your habit.", "confidence": 0.98}
+
+User: track a new habit called drink water
+{"intent": "add_habit", "entities": {"name": "drink water"}, "response": "Adding your habit.", "confidence": 0.98}
+
+User: mark meditate as done
+{"intent": "complete_habit", "entities": {"name": "meditate"}, "response": "Marking that habit complete.", "confidence": 0.95}
+
+User: I finished my run today
+{"intent": "complete_habit", "entities": {"name": "run"}, "response": "Marking that habit complete.", "confidence": 0.9}
+
+User: what habits do I have
+{"intent": "list_habits", "entities": {}, "response": "Fetching your habits.", "confidence": 0.98}
+
+User: list my habits
+{"intent": "list_habits", "entities": {}, "response": "Fetching your habits.", "confidence": 0.98}
+
+# HABITS and GOALS are different things -- do not conflate them. A habit
+# is a recurring behaviour ("drink water", "meditate"); a goal is a
+# project/outcome with progress ("finish CFD project"). "list my habits"
+# is list_habits, NEVER get_goals, even though both are Artemis intents.
+
+User: show me my habit streaks
+{"intent": "list_habits", "entities": {}, "response": "Fetching your habits.", "confidence": 0.95}
+
+User: give me a productivity summary
+{"intent": "productivity_summary", "entities": {}, "response": "Pulling together your productivity summary.", "confidence": 0.98}
+
+User: how am I doing with my habits and goals
+{"intent": "productivity_summary", "entities": {}, "response": "Pulling together your productivity summary.", "confidence": 0.9}
+
+User: delete the meditate habit
+{"intent": "remove_habit", "entities": {"name": "meditate"}, "response": "Removing that habit.", "confidence": 0.95}
+
+User: stop tracking my running habit
+{"intent": "remove_habit", "entities": {"name": "running"}, "response": "Removing that habit.", "confidence": 0.92}
+
+User: delete my goal to finish CFD project
+{"intent": "remove_goal", "entities": {"name": "finish CFD project"}, "response": "Removing that goal.", "confidence": 0.95}
+
+User: give up on the goal publish research paper
+{"intent": "abandon_goal", "entities": {"name": "publish research paper"}, "response": "Marking that goal as abandoned.", "confidence": 0.93}
+
+User: I'm abandoning my goal to learn guitar
+{"intent": "abandon_goal", "entities": {"name": "learn guitar"}, "response": "Marking that goal as abandoned.", "confidence": 0.93}
+
+# ABANDON vs REMOVE: abandon_goal keeps the goal on record with a status of
+# "abandoned" (the user gave up on it but it's still visible in history);
+# remove_goal deletes it entirely. "give up on" / "abandon" -> abandon_goal.
+# "delete" / "remove" -> remove_goal. Do not conflate them.
+
+User: add goal launch website due August 20th, high priority
+{"intent": "add_goal", "entities": {"name": "launch website", "due_date": "2026-08-20", "priority": "high"}, "response": "Adding your goal.", "confidence": 0.9}
+
+User: set finish CFD project as high priority, due next Friday
+{"intent": "update_goal", "entities": {"name": "finish CFD project", "priority": "high", "due_date": "2026-08-14"}, "response": "Updating that goal.", "confidence": 0.85}
+
+User: which of my goals are at risk of missing their deadline
+{"intent": "get_at_risk_goals", "entities": {}, "response": "Checking which goals are at risk.", "confidence": 0.95}
+
+User: am I going to miss any goal deadlines
+{"intent": "get_at_risk_goals", "entities": {}, "response": "Checking which goals are at risk.", "confidence": 0.9}
+
+User: give me some motivation
+{"intent": "get_motivation", "entities": {}, "response": "Let me put together a pep talk.", "confidence": 0.95}
+
+User: I need a pep talk about my habits
+{"intent": "get_motivation", "entities": {}, "response": "Let me put together a pep talk.", "confidence": 0.92}
 
 ---
 
@@ -99,6 +220,66 @@ User: help me make a strategic plan for the semester
 User: I need help making a decision about switching jobs
 {"intent": "ares_decision_support", "entities": {"topic": "switching jobs"}, "response": "Let me help you think this through.", "confidence": 0.90}
 
+User: should I learn React or Vue for frontend development
+{"intent": "ares_decision_support", "entities": {"topic": "frontend framework to learn", "options": "React, Vue"}, "response": "Let me help you think this through.", "confidence": 0.90}
+
+# ares_premortem_analysis: assume the thing has ALREADY failed and work
+# backwards to the causes. Different from ares_analyse_risk, which looks
+# forward at risks that might occur -- a premortem is the "imagine it's
+# a year from now and this blew up, why?" exercise.
+
+User: imagine my product launch failed, why would that have happened
+{"intent": "ares_premortem_analysis", "entities": {"topic": "product launch"}, "response": "Running a premortem.", "confidence": 0.9}
+
+User: do a premortem on my thesis defence
+{"intent": "ares_premortem_analysis", "entities": {"topic": "thesis defence"}, "response": "Running a premortem.", "confidence": 0.92}
+
+User: what could go so wrong with this startup that it dies
+{"intent": "ares_premortem_analysis", "entities": {"topic": "startup"}, "response": "Running a premortem.", "confidence": 0.85}
+
+# ares_competitive_analysis: about RIVALS/opposition specifically (other
+# companies, other candidates, other teams). Different from
+# ares_swot_analysis, which looks inward at the topic itself, not named
+# competitors. If the user names competitors, put them in the
+# "competitors" entity as a comma-separated string.
+
+User: analyse my competitors for my coffee shop
+{"intent": "ares_competitive_analysis", "entities": {"topic": "coffee shop"}, "response": "Analysing the competitive landscape.", "confidence": 0.92}
+
+User: how do I stack up against Notion and Obsidian
+{"intent": "ares_competitive_analysis", "entities": {"topic": "note-taking app", "competitors": "Notion, Obsidian"}, "response": "Analysing the competitive landscape.", "confidence": 0.93}
+
+User: who are the biggest threats to my app in this market
+{"intent": "ares_competitive_analysis", "entities": {"topic": "app"}, "response": "Analysing the competitive landscape.", "confidence": 0.88}
+
+# ares_contingency_plan: a PLAN B / fallback if a specific risk hits.
+# Different from ares_strategic_plan, which is the primary plan itself.
+# If the user names the specific risk, put it in the "trigger" entity.
+
+User: give me a backup plan in case my funding falls through
+{"intent": "ares_contingency_plan", "entities": {"topic": "startup funding", "trigger": "funding falls through"}, "response": "Building your fallback plan.", "confidence": 0.9}
+
+User: what's my plan B if the internship offer gets withdrawn
+{"intent": "ares_contingency_plan", "entities": {"topic": "internship", "trigger": "offer gets withdrawn"}, "response": "Building your fallback plan.", "confidence": 0.9}
+
+User: help me prepare a fallback plan for the conference
+{"intent": "ares_contingency_plan", "entities": {"topic": "conference"}, "response": "Building your fallback plan.", "confidence": 0.87}
+
+# ares_war_room_briefing: a CONSOLIDATED status briefing pulling together
+# everything already known/discussed about a topic (past plans, risks,
+# SWOTs, decisions). Use for "where do things stand", "catch me up",
+# "give me the full picture" -- NOT for starting a fresh single-purpose
+# analysis, which should map to one of the other ares_* intents instead.
+
+User: give me a full briefing on the CFD project
+{"intent": "ares_war_room_briefing", "entities": {"topic": "CFD project"}, "response": "Pulling together a briefing.", "confidence": 0.9}
+
+User: catch me up on where things stand with the job search
+{"intent": "ares_war_room_briefing", "entities": {"topic": "job search"}, "response": "Pulling together a briefing.", "confidence": 0.88}
+
+User: give me the full strategic picture on the startup
+{"intent": "ares_war_room_briefing", "entities": {"topic": "startup"}, "response": "Pulling together a briefing.", "confidence": 0.88}
+
 ---
 
 # ---- APOLLO (HEALTH) ----
@@ -106,14 +287,71 @@ User: I need help making a decision about switching jobs
 User: log my workout today
 {"intent": "apollo_log_workout", "entities": {}, "response": "Logging your workout.", "confidence": 0.93}
 
+User: I slept 7.5 hours, pretty good quality
+{"intent": "apollo_track_sleep", "entities": {"hours": 7.5, "quality": "good"}, "response": "Logging your sleep.", "confidence": 0.93}
+
+# No separate "query" intent exists for sleep — a question like this
+# also routes to apollo_track_sleep, with no "hours" entity (there is
+# none to extract). ApolloEngine detects the missing hours + question
+# phrasing and reports the last logged night back instead of asking
+# "how many hours did you sleep" in response to a question.
 User: how did I sleep last night
 {"intent": "apollo_track_sleep", "entities": {}, "response": "Checking your sleep log.", "confidence": 0.91}
 
 User: log my mood as good
 {"intent": "apollo_log_mood", "entities": {"mood": "good"}, "response": "Mood logged.", "confidence": 0.92}
 
+User: log my mood: feeling good today
+{"intent": "apollo_log_mood", "entities": {"mood": "feeling good today"}, "response": "Mood logged.", "confidence": 0.92}
+
+# "log my mood ..." / "my mood is ..." is ALWAYS apollo_log_mood, even
+# though it starts with the word "log" like take_note examples do.
+# NEVER use take_note for mood.
+
 User: give me a health summary
 {"intent": "apollo_get_health_summary", "entities": {}, "response": "Fetching your health summary.", "confidence": 0.93}
+
+User: I weigh 72.5 kg today
+{"intent": "apollo_log_weight", "entities": {"weight": 72.5, "unit": "kg"}, "response": "Logging your weight.", "confidence": 0.93}
+
+User: log my weight as 154 lbs
+{"intent": "apollo_log_weight", "entities": {"weight": 154, "unit": "lb"}, "response": "Logging your weight.", "confidence": 0.93}
+
+# Same log-vs-query ambiguity as apollo_track_sleep above: no separate
+# "query" intent exists for weight either. When the phrasing is a question
+# and there's no weight entity to extract, ApolloEngine reports the trend
+# from existing logs instead of demanding a fresh number.
+User: what's my weight trend this month
+{"intent": "apollo_log_weight", "entities": {}, "response": "Checking your weight log.", "confidence": 0.9}
+
+User: I drank 500ml of water
+{"intent": "apollo_log_water", "entities": {"amount": 500}, "response": "Logging your water intake.", "confidence": 0.93}
+
+User: I had 2 glasses of water
+{"intent": "apollo_log_water", "entities": {"glasses": 2}, "response": "Logging your water intake.", "confidence": 0.92}
+
+# Same log-vs-query pattern again: a question with no amount to extract
+# reports today's running total instead of asking "how much water?".
+User: how much water have I had today
+{"intent": "apollo_log_water", "entities": {}, "response": "Checking your water log.", "confidence": 0.9}
+
+User: set a goal of 4 workouts a week
+{"intent": "apollo_set_health_goal", "entities": {"goal_type": "workout_frequency", "target": 4}, "response": "Setting your workout goal.", "confidence": 0.92}
+
+User: set a sleep goal of 8 hours
+{"intent": "apollo_set_health_goal", "entities": {"goal_type": "sleep_hours", "target": 8}, "response": "Setting your sleep goal.", "confidence": 0.92}
+
+User: I want to reach 68 kg
+{"intent": "apollo_set_health_goal", "entities": {"goal_type": "weight_target", "target": 68}, "response": "Setting your weight goal.", "confidence": 0.88}
+
+User: set a daily water goal of 2000ml
+{"intent": "apollo_set_health_goal", "entities": {"goal_type": "water_ml", "target": 2000}, "response": "Setting your water goal.", "confidence": 0.92}
+
+User: how am I doing on my health goals
+{"intent": "apollo_get_goal_progress", "entities": {}, "response": "Checking your goal progress.", "confidence": 0.92}
+
+User: am I hitting my workout target
+{"intent": "apollo_get_goal_progress", "entities": {}, "response": "Checking your goal progress.", "confidence": 0.88}
 
 ---
 
@@ -122,14 +360,114 @@ User: give me a health summary
 User: write me a poem about the ocean
 {"intent": "orpheus_write_poem", "entities": {"topic": "ocean"}, "response": "Writing a poem.", "confidence": 0.94}
 
+# Always extract a "topic"/"theme" entity from the user's own words when
+# one is present (mirrors write_poem/generate_lyrics below) — leaving
+# entities empty here forces Orpheus to fall back to the *entire* raw
+# utterance as the topic (e.g. "Brainstorm Ideas For My Project" instead
+# of "My Project").
 User: brainstorm ideas for my project
-{"intent": "orpheus_brainstorm", "entities": {}, "response": "Let's brainstorm.", "confidence": 0.91}
+{"intent": "orpheus_brainstorm", "entities": {"topic": "my project"}, "response": "Let's brainstorm.", "confidence": 0.91}
 
 User: give me a creative writing prompt
-{"intent": "orpheus_creative_prompt", "entities": {}, "response": "Here's a prompt.", "confidence": 0.90}
+{"intent": "orpheus_creative_prompt", "entities": {"medium": "writing"}, "response": "Here's a prompt.", "confidence": 0.90}
+
+User: give me 3 art prompts about the ocean
+{"intent": "orpheus_creative_prompt", "entities": {"medium": "art", "theme": "the ocean", "count": 3}, "response": "Here are some prompts.", "confidence": 0.92}
 
 User: generate lyrics about missing home
 {"intent": "orpheus_generate_lyrics", "entities": {"topic": "missing home"}, "response": "Generating lyrics.", "confidence": 0.92}
+
+User: write me a short sci-fi story about a lighthouse keeper
+{"intent": "orpheus_write_story", "entities": {"topic": "a lighthouse keeper", "genre": "sci-fi"}, "response": "Writing a story.", "confidence": 0.93}
+
+# "keep going" / "continue this" on a piece of THE USER'S OWN fiction or
+# verse is orpheus_continue_writing, matching voice/tense/style — not
+# metis_expand_text, which adds supporting detail to functional text
+# instead of extending a narrative voice.
+User: can you continue this story from where I left off
+{"intent": "orpheus_continue_writing", "entities": {}, "response": "Continuing that.", "confidence": 0.88}
+
+User: give me feedback on this poem I wrote
+{"intent": "orpheus_critique_writing", "entities": {}, "response": "Reviewing your poem.", "confidence": 0.9}
+
+# orpheus_rewrite_style vs. metis_rewrite_text: Orpheus shifts a piece's
+# creative VOICE/TONE (melancholic, playful, noir...) while preserving it
+# as art; Metis rewrites for a functional GOAL (clarity, professionalism,
+# confidence...). "Make this poem sound more melancholic" → Orpheus.
+# "Make this email sound more confident" → Metis.
+User: rewrite this poem to sound more melancholic
+{"intent": "orpheus_rewrite_style", "entities": {"tone": "melancholic"}, "response": "Rewriting that.", "confidence": 0.9}
+
+User: give me 5 fantasy character names
+{"intent": "orpheus_generate_names", "entities": {"category": "character", "theme": "fantasy", "count": 5}, "response": "Generating some names.", "confidence": 0.91}
+
+User: show me poems I've written before
+{"intent": "orpheus_get_creations", "entities": {"type": "poem"}, "response": "Pulling up your past poems.", "confidence": 0.9}
+
+---
+
+# ---- METIS (WRITING ASSISTANCE / EDITING) ----
+
+# Scope boundary vs. Orpheus: fiction/verse/lyrics/brainstorming always go
+# to orpheus_*, even though the verb ("write") overlaps. Everything else
+# that edits, corrects, or drafts *utilitarian* text (emails, reports,
+# cover letters, summaries, outlines, citations) is metis_*.
+
+User: fix the grammar in this: "he dont know nothing about it"
+{"intent": "metis_correct_text", "entities": {"text": "he dont know nothing about it"}, "response": "Correcting that.", "confidence": 0.95}
+
+User: can you check my spelling on this paragraph
+{"intent": "metis_correct_text", "entities": {}, "response": "Checking spelling.", "confidence": 0.85}
+
+User: simplify this sentence, it's too wordy
+{"intent": "metis_improve_clarity", "entities": {}, "response": "Simplifying that.", "confidence": 0.9}
+
+User: give me style suggestions for this paragraph
+{"intent": "metis_suggest_style", "entities": {}, "response": "Reviewing the style.", "confidence": 0.9}
+
+User: what tone does this email come across as
+{"intent": "metis_detect_tone", "entities": {}, "response": "Checking the tone.", "confidence": 0.9}
+
+User: make this sound more professional
+{"intent": "metis_detect_tone", "entities": {"target_tone": "professional"}, "response": "Adjusting the tone.", "confidence": 0.9}
+
+# "rewrite"/"reword" without a specific correction ask -> rewrite_text,
+# with the requested quality as the "goal" entity.
+User: rewrite this to sound more confident
+{"intent": "metis_rewrite_text", "entities": {"goal": "confidence"}, "response": "Rewriting that.", "confidence": 0.92}
+
+User: draft an email asking my landlord to fix the heater
+{"intent": "metis_draft_content", "entities": {"content_type": "email", "brief": "asking my landlord to fix the heater"}, "response": "Drafting that email.", "confidence": 0.93}
+
+User: write a cover letter for a marketing internship
+{"intent": "metis_draft_content", "entities": {"content_type": "cover_letter", "brief": "marketing internship"}, "response": "Drafting a cover letter.", "confidence": 0.92}
+
+User: summarize this article for me
+{"intent": "metis_summarize_text", "entities": {"length": "short"}, "response": "Summarizing that.", "confidence": 0.92}
+
+User: expand this paragraph with more detail
+{"intent": "metis_expand_text", "entities": {}, "response": "Expanding that.", "confidence": 0.88}
+
+User: shorten this to fit in a tweet
+{"intent": "metis_shorten_text", "entities": {"length": "short"}, "response": "Shortening that.", "confidence": 0.88}
+
+User: give me an outline for a report on renewable energy
+{"intent": "metis_generate_outline", "entities": {"topic": "renewable energy"}, "response": "Building an outline.", "confidence": 0.91}
+
+User: is this plagiarized
+{"intent": "metis_check_plagiarism", "entities": {}, "response": "Checking that.", "confidence": 0.8}
+
+User: give me an APA citation for this article
+{"intent": "metis_generate_citation", "entities": {"style": "apa", "source": "this article"}, "response": "Generating a citation.", "confidence": 0.88}
+
+User: check this document for consistent capitalization and terminology
+{"intent": "metis_check_consistency", "entities": {}, "response": "Checking consistency.", "confidence": 0.88}
+
+User: how readable is this piece
+{"intent": "metis_readability_report", "entities": {}, "response": "Assessing readability.", "confidence": 0.88}
+
+User: how much writing have I had you help with
+{"intent": "metis_writing_stats", "entities": {}, "response": "Pulling up your writing stats.", "confidence": 0.9}
 
 ---
 
@@ -139,13 +477,25 @@ User: recommend a movie for tonight
 {"intent": "dionysus_recommend_movie", "entities": {}, "response": "Finding a movie for you.", "confidence": 0.93}
 
 User: suggest a restaurant near me
-{"intent": "dionysus_find_restaurant", "entities": {}, "response": "Looking for restaurants.", "confidence": 0.91}
+{"intent": "dionysus_find_restaurant", "entities": {"location": "near me"}, "response": "Looking for restaurants near you.", "confidence": 0.91}
+
+User: find a restaurant near me
+{"intent": "dionysus_find_restaurant", "entities": {"location": "near me"}, "response": "Looking for restaurants near you.", "confidence": 0.91}
+
+User: any good sushi places nearby
+{"intent": "dionysus_find_restaurant", "entities": {"cuisine": "sushi", "location": "nearby"}, "response": "Looking for sushi places near you.", "confidence": 0.91}
 
 User: recommend some music for studying
 {"intent": "dionysus_recommend_music", "entities": {"mood": "studying"}, "response": "Finding study music.", "confidence": 0.92}
 
 User: help me plan an outing this weekend
 {"intent": "dionysus_plan_outing", "entities": {"time": "weekend"}, "response": "Planning your outing.", "confidence": 0.90}
+
+User: don't suggest Inception again
+{"intent": "dionysus_dismiss_recommendation", "entities": {"title": "Inception"}, "response": "Won't suggest that again.", "confidence": 0.9}
+
+User: I already watched The Matrix
+{"intent": "dionysus_mark_seen", "entities": {"title": "The Matrix"}, "response": "Marking that as watched.", "confidence": 0.9}
 
 ---
 
@@ -163,10 +513,55 @@ User: track my investment in index funds
 User: show me my spending report
 {"intent": "pluto_spending_report", "entities": {}, "response": "Generating spending report.", "confidence": 0.92}
 
+---
+
+# ---- HEPHAESTUS (BROWSER) ----
+
+User: go to youtube.com
+{"intent": "hephaestus_browser_action", "entities": {"action": "open", "url": "youtube.com"}, "response": "Opening youtube.com.", "confidence": 0.94}
+
+User: search the web for best pizza in mumbai
+{"intent": "hephaestus_search_web", "entities": {"query": "best pizza in mumbai"}, "response": "Searching the web.", "confidence": 0.92}
+
+User: what's the status of flight AI101
+{"intent": "hephaestus_check_flight", "entities": {"flight": "AI101"}, "response": "Checking flight status.", "confidence": 0.93}
+
+# hephaestus_open_app launches a real native desktop application (Chrome
+# the app, Notepad, Spotify, Edge, Firefox, Calculator, etc.) — this is
+# NOT the same as hephaestus_browser_action, which only drives a headless
+# automated browser. Use open_app whenever the user says "open"/"launch"
+# and names a desktop application rather than a URL or website.
+
+User: open chrome
+{"intent": "hephaestus_open_app", "entities": {"app": "chrome"}, "response": "Opening chrome.", "confidence": 0.95}
+
+User: open notepad
+{"intent": "hephaestus_open_app", "entities": {"app": "notepad"}, "response": "Opening notepad.", "confidence": 0.95}
+
+User: launch spotify
+{"intent": "hephaestus_open_app", "entities": {"app": "spotify"}, "response": "Opening spotify.", "confidence": 0.95}
+
+# hephaestus_scrape_page fetches and extracts readable text — either from
+# a given URL, or by searching for a topic and reading the top result.
+# Use this when the user wants the actual CONTENT of a page, not just a
+# browser tab opened or a list of search result titles.
+
+User: scrape wikipedia for Alan Turing
+{"intent": "hephaestus_scrape_page", "entities": {"query": "Alan Turing wikipedia"}, "response": "Reading that page.", "confidence": 0.9}
+
+User: read me the content of https://example.com/article
+{"intent": "hephaestus_scrape_page", "entities": {"url": "https://example.com/article"}, "response": "Reading that page.", "confidence": 0.92}
+
 # ---- CORE ----
 
 User: what time is it
 {"intent": "get_time", "entities": {}, "response": "Checking the time.", "confidence": 0.98}
+
+User: what is todays date
+{"intent": "get_date", "entities": {}, "response": "Checking the date.", "confidence": 0.97}
+
+User: what's the date today
+{"intent": "get_date", "entities": {}, "response": "Checking the date.", "confidence": 0.97}
 
 User: remind me to call mom tomorrow at 9am
 {"intent": "set_reminder", "entities": {"task": "call mom", "time": "09:00"}, "response": "Reminder set.", "confidence": 0.95}
@@ -177,8 +572,20 @@ User: take a note: buy milk
 User: show my notes
 {"intent": "get_notes", "entities": {"limit": 5}, "response": "Fetching your notes.", "confidence": 0.95}
 
+User: delete all my notes
+{"intent": "delete_notes", "entities": {}, "response": "Deleting your notes.", "confidence": 0.96}
+
+User: clear my notes
+{"intent": "delete_notes", "entities": {}, "response": "Deleting your notes.", "confidence": 0.96}
+
 User: my name is Akhil
 {"intent": "save_name", "entities": {"name": "Akhil"}, "response": "Name saved.", "confidence": 0.99}
+
+User: what did we talk about yesterday
+{"intent": "get_history", "entities": {}, "response": "Checking our conversation history.", "confidence": 0.95}
+
+User: what did we discuss earlier
+{"intent": "get_history", "entities": {}, "response": "Checking our conversation history.", "confidence": 0.9}
 
 User: what's my name
 {"intent": "get_user_info", "entities": {"key": "user_name"}, "response": "Retrieving your name.", "confidence": 0.99}
@@ -218,6 +625,21 @@ User: what meetings do I have tomorrow
 User: schedule a meeting with Sarah at 3pm tomorrow
 {"intent": "create_event", "entities": {"title": "meeting with Sarah", "time": "3pm", "date": "tomorrow"}, "response": "Creating your calendar event.", "confidence": 0.93}
 
+# Pass the date through as the user typed it — DD/MM/YYYY is fine, do NOT
+# try to reorder it into YYYY-MM-DD yourself; the calendar module parses
+# both formats.
+User: schedule a meeting with sarah at 11pm on 25/11/2026
+{"intent": "create_event", "entities": {"title": "meeting with sarah", "time": "23:00", "date": "25/11/2026"}, "response": "Creating your calendar event.", "confidence": 0.93}
+
+User: clear my schedule
+{"intent": "delete_events", "entities": {"date": "today"}, "response": "Clearing your calendar.", "confidence": 0.95}
+
+User: clear todays schedule
+{"intent": "delete_events", "entities": {"date": "today"}, "response": "Clearing your calendar.", "confidence": 0.95}
+
+User: cancel all my meetings tomorrow
+{"intent": "delete_events", "entities": {"date": "tomorrow"}, "response": "Clearing your calendar.", "confidence": 0.93}
+
 ---
 
 IMPORTANT:
@@ -225,6 +647,10 @@ IMPORTANT:
 - Always return valid JSON only
 - Do not include explanations outside JSON
 - Extract relevant information into entities
+- The examples above are formatting guides only. Never copy an example's
+  intent, entities, or wording just because it is topically similar
+  (e.g. both mention food) to the CURRENT user message. Base intent and
+  entities strictly on what the user actually typed this turn.
 
 STRICT RULES:
 
@@ -233,9 +659,61 @@ STRICT RULES:
 - iris_ingest → adding/importing media
 - NEVER use iris_search for notes or documents
 - NEVER use athena_search for images
-- read_email / send_email / list_events / create_event → Gmail or Calendar ONLY (mail, inbox, email, meetings, calendar, schedule)
+- read_email / send_email / list_events / create_event / delete_events → Gmail or Calendar ONLY (mail, inbox, email, meetings, calendar, schedule)
+- "clear my schedule" / "clear today's schedule" / "cancel my events" MUST map to delete_events, NOT list_events
 - NEVER use iris_search or athena_search for email or calendar requests
+
+- hephaestus_browser_action → browser automation only: opening a URL, or a
+  named browser action. Does NOT launch desktop applications.
+- hephaestus_scrape_page → browser automation PLUS content extraction: use
+  when the user wants the actual text/content of a page or topic, not just
+  a tab opened (e.g. "scrape X for Y", "read me the content of <url>")
+- hephaestus_open_app → launches a native DESKTOP application (Chrome the
+  app, Notepad, Spotify, Edge, Firefox, Calculator, etc.), not a browser
+  automation action. Use whenever the user says "open"/"launch" and names
+  an application rather than a URL or website.
+- NEVER use hephaestus_browser_action for "open <app name>" requests where
+  <app name> is a desktop application, not a URL — use hephaestus_open_app
 
 - chat → only general conversation or explanations
 - "add goal ..." MUST map to add_goal
 - "what are my goals" MUST map to get_goals
+
+- learn_fact / forget_fact -> durable facts ABOUT THE USER (name, family,
+  relationships, preferences, allergies, background). Triggered by "remember
+  that...", "learn this fact...", "forget that..."
+- take_note -> arbitrary reminders / to-do items / shopping lists ONLY.
+  NEVER use take_note when the user states a fact about themselves or asks
+  you to remember/learn/forget something about them -- use learn_fact /
+  forget_fact instead.
+- "what do you know about me" / "tell me about myself" -> get_user_info
+  with NO "key" entity (omit it entirely; do not invent a key)
+- "list/show/what are my habits" -> list_habits, NEVER get_goals.
+  "what are my goals" -> get_goals, NEVER list_habits. Habits and goals
+  are different Artemis concepts -- do not swap them.
+- "delete"/"remove"/"stop tracking" a habit or goal -> remove_habit /
+  remove_goal (permanent deletion). "abandon"/"give up on" a goal ->
+  abandon_goal (goal stays on record, marked abandoned, NOT deleted).
+  Do not conflate abandon_goal with remove_goal.
+- "at risk"/"going to miss"/"behind schedule" about goal deadlines ->
+  get_at_risk_goals, NEVER get_goals (which lists ALL active goals, not
+  just the ones close to missing their deadline).
+- "motivate me"/"pep talk"/"encourage me" about habits or goals ->
+  get_motivation. Only use this for Artemis's habit/goal domain -- generic
+  encouragement with no habit/goal context is chat instead.
+- "log my mood ..." -> apollo_log_mood, NEVER take_note, even though it
+  starts with a verb ("log") that resembles a take_note phrasing.
+
+- ares_premortem_analysis -> "assume this already failed, why" / "what could
+  kill this" framing. ares_analyse_risk -> forward-looking risk assessment
+  with likelihood/impact. Do not swap them.
+- ares_competitive_analysis -> about named or implied RIVALS/opposition.
+  ares_swot_analysis -> inward-looking analysis of the topic itself, no
+  named competitors required. Do not swap them.
+- ares_contingency_plan -> a Plan B / fallback for IF a specific risk hits.
+  ares_strategic_plan -> the primary plan itself. Do not swap them.
+- ares_war_room_briefing -> "catch me up" / "full picture" / "where do
+  things stand" status requests that should draw on everything already
+  known about the topic. Do NOT use it for a request to start a single
+  fresh analysis (risk, SWOT, plan, decision, premortem, competitive,
+  contingency) -- those map to their own specific ares_* intent instead.

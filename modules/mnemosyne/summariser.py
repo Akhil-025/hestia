@@ -52,7 +52,7 @@ class Summariser:
         topic   = "General"
 
         try:
-            llm_text = self.hestia_llm.generate(prompt)
+            llm_text = self.hestia_llm.generate(prompt, fmt="json")
             parsed   = json.loads(llm_text.strip())
             summary  = parsed.get("summary", "")
             topic    = parsed.get("topic", "General")
