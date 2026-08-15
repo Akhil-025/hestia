@@ -68,7 +68,7 @@ class CoreModule(BaseModule):
             return self._take_note(entities, raw)
 
         if intent == "get_notes":
-            return self._get_notes()
+            return self._get_notes(entities)
 
         if intent == "delete_notes":
             return self._delete_notes()
@@ -167,8 +167,19 @@ class CoreModule(BaseModule):
     # Matches the "Note saved: " prefix _take_note stores in hestia_response.
     _NOTE_PREFIX_RE = re.compile(r'^Note saved:\s*', re.IGNORECASE)
 
-    def _get_notes(self) -> dict:
-        rows = self._memory.db.get_by_intent("take_note", 10)
+    def _get_notes(self, entities: dict | None = None) -> dict:
+        entities = entities or {}
+        # NLU sometimes extracts a "topic" (e.g. "query my notes on machine
+        # learning" -> {"topic": "machine learning"}). Previously this was
+        # captured by the NLU but never read here, so every phrasing of
+        # "what notes do I have" returned the same unfiltered top-10 list
+        # regardless of what was actually asked for.
+        topic = (entities.get("topic") or entities.get("query") or "").strip().lower()
+
+        # Pull a larger pool when filtering so a topic match isn't limited
+        # to whatever happens to be in the most-recent 10 notes.
+        pool_size = 200 if topic else 10
+        rows = self._memory.db.get_by_intent("take_note", pool_size)
         notes = [{"query": r["query"], "response": r["response"], "intent": r["intent"]} for r in rows]
 
         if not notes:
@@ -182,9 +193,23 @@ class CoreModule(BaseModule):
             # fall back to that rather than showing nothing.
             return n.get("query", "").strip()
 
-        body = "Your notes:\n" + "\n".join(f"- {_content(n)}" for n in notes)
+        contents = [_content(n) for n in notes]
 
-        return {"response": body, "data": {"notes": notes}, "confidence": 0.9}
+        if topic:
+            matched = [c for c in contents if topic in c.lower()]
+            if not matched:
+                return {
+                    "response": f"I don't have any notes about '{topic}'.",
+                    "data": {"notes": [], "topic": topic},
+                    "confidence": 0.85,
+                }
+            # Most-recent-first, capped like the unfiltered path.
+            matched = matched[:10]
+            body = f"Your notes about '{topic}':\n" + "\n".join(f"- {c}" for c in matched)
+            return {"response": body, "data": {"notes": matched, "topic": topic}, "confidence": 0.9}
+
+        body = "Your notes:\n" + "\n".join(f"- {c}" for c in contents[:10])
+        return {"response": body, "data": {"notes": contents[:10]}, "confidence": 0.9}
 
     def _delete_notes(self) -> dict:
         try:
@@ -273,8 +298,33 @@ class CoreModule(BaseModule):
                 value = None
             if value:
                 return {"response": value, "data": {"key": key}, "confidence": 0.85}
+            # A specific key was asked for (or aliased from name/date/time)
+            # but nothing is stored under it — don't fall through to the
+            # general fact dump below, since that would answer a different
+            # question than the one asked.
+            return {"response": "I don't have that information yet.", "data": {}, "confidence": 0.3}
 
-        return {"response": "I don't have that information yet.", "data": {}, "confidence": 0.3}
+        # No specific key could be resolved at all — this is a broad
+        # "what do you know about me?" style question. Previously this
+        # always fell straight to "I don't have that information yet.",
+        # even when facts like user_name were already stored, because
+        # nothing here ever queried get_all_facts(). Aggregate whatever
+        # Mnemosyne actually has instead of claiming ignorance.
+        try:
+            facts = self._memory.db.get_all_facts(limit=10)
+        except Exception:
+            logger.exception("_get_user_info: get_all_facts() failed.")
+            facts = []
+
+        if not facts:
+            return {"response": "I don't have that information yet.", "data": {}, "confidence": 0.3}
+
+        def _label(k: str) -> str:
+            return k.replace("_", " ").strip()
+
+        lines = [f"- {_label(f['key'])}: {f['value']}" for f in facts]
+        body = "Here's what I know about you:\n" + "\n".join(lines)
+        return {"response": body, "data": {"facts": facts}, "confidence": 0.8}
 
     def _set_preference(self, entities: dict) -> dict:
         key = entities.get("key", "")

@@ -61,6 +61,13 @@ class FakeDB:
     def get_recent_interactions_excluding(self, limit, excluded_intents):
         return [r for r in self.rows if r["intent"] not in excluded_intents][:limit]
 
+    def get_all_facts(self, limit=100, offset=0):
+        # Mirrors MnemosyneDB.get_all_facts()'s dict shape (key/value/...),
+        # most-recently-learned first, since that's what real callers get.
+        items = list(self.facts.items())[::-1]
+        return [{"key": k, "value": v, "source": "user", "confidence": 1.0,
+                  "created_at": None, "updated_at": None} for k, v in items[:limit]]
+
 
 class FakeMemory:
     def __init__(self):
@@ -160,6 +167,41 @@ def test_get_user_info_unknown_key_is_low_confidence_not_an_error():
     assert r["response"]
 
 
+def test_get_user_info_no_key_falls_back_to_known_facts():
+    # Bug: "What do you know about me?" reaches get_user_info with no
+    # resolvable key (NLU sends entities={}), and the handler used to
+    # hard-return "I don't have that information yet." even when facts
+    # like user_name were already stored, because it never queried
+    # get_all_facts(). It should now surface what's actually known.
+    mem = FakeMemory()
+    mem.learn("user_name", "Akhil")
+    mem.learn("i_like_my_coffee_black", "user likes coffee black")
+    core = make_core(mem)
+    r = core.handle("get_user_info", {}, {})
+    assert "Akhil" in r["response"]
+    assert "coffee" in r["response"].lower()
+    assert r["response"] != "I don't have that information yet."
+
+
+def test_get_user_info_no_key_and_no_facts_still_admits_ignorance():
+    core = make_core()
+    r = core.handle("get_user_info", {}, {})
+    assert r["response"] == "I don't have that information yet."
+    assert r["confidence"] == 0.3
+
+
+def test_get_user_info_specific_key_missing_does_not_dump_all_facts():
+    # A specific (but unknown) key was asked for — this must not fall
+    # through to the general "here's everything I know" summary, since
+    # that would silently answer a different question than the one asked.
+    mem = FakeMemory()
+    mem.learn("user_name", "Akhil")
+    core = make_core(mem)
+    r = core.handle("get_user_info", {"key": "favourite_food"}, {})
+    assert r["response"] == "I don't have that information yet."
+    assert "Akhil" not in r["response"]
+
+
 # ---------------------------------------------------------------------------
 # take_note / get_notes round trip (uses the "Note saved:" prefix contract)
 # ---------------------------------------------------------------------------
@@ -190,6 +232,40 @@ def test_get_notes_empty_reports_no_notes():
     core = make_core()
     r = core.handle("get_notes", {}, {})
     assert "No notes" in r["response"]
+
+
+def test_get_notes_filters_by_topic_entity():
+    # Bug: "query my notes on machine learning" extracted {"topic": "..."}
+    # via the NLU, but _get_notes() took no entities at all and always
+    # returned the same unfiltered top-10 list regardless of what was
+    # asked. It must now actually filter on the topic.
+    mem = FakeMemory()
+    mem.db.rows.append({"query": "note", "response": "Note saved: buy new headphones", "intent": "take_note"})
+    mem.db.rows.append({"query": "note", "response": "Note saved: read a paper on machine learning", "intent": "take_note"})
+    core = make_core(mem)
+
+    r = core.handle("get_notes", {"topic": "machine learning"}, {})
+    assert "machine learning" in r["response"].lower()
+    assert "headphones" not in r["response"].lower()
+
+
+def test_get_notes_topic_with_no_match_says_so_instead_of_dumping_all():
+    mem = FakeMemory()
+    mem.db.rows.append({"query": "note", "response": "Note saved: buy new headphones", "intent": "take_note"})
+    core = make_core(mem)
+
+    r = core.handle("get_notes", {"topic": "taxes"}, {})
+    assert "taxes" in r["response"].lower()
+    assert "headphones" not in r["response"].lower()
+
+
+def test_get_notes_no_topic_is_unchanged_unfiltered_behaviour():
+    mem = FakeMemory()
+    mem.db.rows.append({"query": "note", "response": "Note saved: buy new headphones", "intent": "take_note"})
+    core = make_core(mem)
+
+    r = core.handle("get_notes", {}, {})
+    assert "headphones" in r["response"].lower()
 
 
 # ---------------------------------------------------------------------------
