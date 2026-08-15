@@ -284,6 +284,25 @@ class MnemosyneEngine(BaseModule):
                 deduped.append(r)
                 seen.add(r["id"])
 
+        # Vector search always returns up to `n_results` items even when
+        # none of them are actually relevant to the query — for a vague
+        # query like "what did we talk about yesterday?" the embedding
+        # weakly matches everything in history (job offers, flights, pizza,
+        # SWOT analyses), and without a floor all of it gets concatenated
+        # into one answer, which reads as a hallucinated mashup even though
+        # every individual line is real.
+        #
+        # `score` is now 1/(1 + L2_distance) (see
+        # vector_store.py::_distances_to_scores) — an absolute,
+        # batch-independent similarity, not a per-query min-max rescale.
+        # 0.5 is a starting point (score=0.5 <=> L2 distance=1.0 between
+        # embeddings), not a measured value — I don't have a way to run
+        # your actual embedding model here, so log the (query, score) pairs
+        # for a week of real traffic and adjust this against where genuine
+        # matches vs. noise actually fall for your embedding_model config.
+        _MIN_RELEVANCE = 0.5
+        deduped = [r for r in deduped if r.get("score", 0) >= _MIN_RELEVANCE]
+
         lines: list[str] = []
         for r in deduped[:n]:
             line = self._format_result(r)

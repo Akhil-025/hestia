@@ -39,8 +39,26 @@ class HecateEngine(BaseModule):
         # is a recall question.
         "remind me what", "remind me who", "remind me where",
         "remind me when", "remind me why", "remind me how",
-        "what did we talk about",
         "what have i told you", "forget that",
+        # "what did we talk about" intentionally removed from here — see
+        # _RECENCY_TRIGGERS below. It used to live in this list and route
+        # straight to Mnemosyne's semantic vector recall, but "what did we
+        # talk about yesterday/today/earlier" is a chronological request,
+        # not a topical one: it wants the last N raw interactions in order,
+        # not "whatever weakly matches this embedding". Bare "what did we
+        # talk about" (no time anchor) still falls through Tier 2/3/4 to
+        # the NLU-classified intent, which can legitimately be semantic
+        # recall for a genuinely topical phrasing like "what did we talk
+        # about regarding the Hestia project?".
+    ]
+    # Chronological phrasing — routes to Core's get_history (plain SQL read
+    # of the last N interactions, no LLM/embedding involved) instead of
+    # Mnemosyne's semantic recall. Checked before _MNEMOSYNE_TRIGGERS below.
+    _RECENCY_TRIGGERS = [
+        "what did we talk about yesterday", "what did we talk about today",
+        "what did we talk about earlier", "what did we talk about recently",
+        "what did we just talk about", "what did we discuss yesterday",
+        "what did we discuss today", "what did we discuss earlier",
     ]
     _IRIS_TRIGGERS = [
         "in my photos", "in my pictures", "in my images", "in my videos",
@@ -157,6 +175,13 @@ class HecateEngine(BaseModule):
                 "athena", ["mnemosyne"] if "mnemosyne" in active_modules else [],
                 1.0, "athena trigger", intent="search",
             )
+
+        # Recency-anchored phrasing ("...yesterday/today/earlier") wants
+        # chronological history, not semantic search — route to Core's
+        # get_history before the Mnemosyne trigger check below gets a
+        # chance to send it to vector recall instead.
+        if "core" in active_modules and self._match(q, self._RECENCY_TRIGGERS):
+            return self._route("core", [], 1.0, "recency trigger → get_history", intent="get_history")
 
         if "mnemosyne" in active_modules and self._match(q, self._MNEMOSYNE_TRIGGERS):
             return self._route("mnemosyne", [], 1.0, "mnemosyne trigger", intent="recall")

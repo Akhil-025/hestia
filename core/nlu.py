@@ -85,6 +85,44 @@ _KNOWN_PREFIXES: tuple = (
     "plutus_",
 )
 
+# Exact hallucinated-intent -> canonical-intent aliases. Unlike the
+# prefix/token-set recovery above, these are intent names the model invents
+# whole-cloth that don't token-match any canonical intent at all (so tiers
+# 1 and 2 of _resolve_intent() can't recover them), yet it keeps re-emitting
+# the *same* wrong name across all 3 correction attempts rather than
+# converging on the real one — burning the whole retry budget every time.
+# "get_recent_conversation" is the observed repeat offender: the model asks
+# for it whenever the user says something like "what did we talk about
+# yesterday?", and CoreModule's real equivalent is get_history.
+_INTENT_ALIASES: Dict[str, str] = {
+    "get_recent_conversation": "get_history",
+    "get_conversation_history": "get_history",
+    # Observed for "what did we talk about yesterday?" — doesn't token-match
+    # get_history ("past"/"conversation" vs "history") so it burned all 3
+    # retries before falling through to chat.
+    "get_past_conversation": "get_history",
+    "inform_name": "save_name",
+    "inform_user_name": "save_name",
+    "mail_unread_count": "read_email",
+    "read_unread_email": "read_email",
+    # Observed for "do I have any unread emails?" — "check"/"unread" don't
+    # token-match "read_email" even with synonym buckets, so both got
+    # rejected for all 3 attempts and the model free-formed generic
+    # "log into your email account" advice instead of calling Hermes.
+    "check_unread_emails": "read_email",
+    "check_email": "read_email",
+    "list_calendar_events": "list_events",
+    "athena_search_documents": "athena_search",
+    "athena_query_notes": "get_notes",
+    "iris_search_photos": "iris_search",
+    "iris_image_indexing_status": "iris_status",
+    # Observed for "give me my budget summary" — token-set match needs a
+    # "get" token that "budget_summary" doesn't have, and it's missing the
+    # pluto_ prefix entirely, so it never resolves to the canonical
+    # "pluto_get_budget_summary" and the model fabricates numbers instead.
+    "budget_summary": "pluto_get_budget_summary",
+}
+
 # Synonym buckets used during token-set matching so near-miss verbs don't
 # block an otherwise-correct auto-correction (e.g. the model saying
 # "get_habits" when the canonical intent is "list_habits" — same meaning,
@@ -441,8 +479,11 @@ class HestiaNLU:
         canonical intents in self.valid_intents. Returns the canonical
         intent name, or None if no confident match exists.
 
-        Two levels are tried:
+        Three levels are tried:
           1. Exact match (the common, well-behaved case).
+          1.5. Exact match against a small hardcoded table of known
+               hallucinated intent names (_INTENT_ALIASES) that don't
+               token-match any canonical intent.
           2. Token-set match ignoring known module prefixes, word order, and
              a small set of safe verb synonyms (get/list/show/fetch/view,
              add/create/new, delete/remove/clear/cancel, update/edit/modify/
@@ -467,6 +508,13 @@ class HestiaNLU:
         # 1. Exact match.
         if candidate in self.valid_intents:
             return candidate
+
+        # 1.5. Known hallucinated-intent alias (see _INTENT_ALIASES) — exact
+        # wrong names the model repeats verbatim across retries instead of
+        # drifting close enough for token-set matching to catch.
+        aliased = _INTENT_ALIASES.get(candidate)
+        if aliased and aliased in self.valid_intents:
+            return aliased
 
         # 2. Token-set match (prefix- and order-blind), only if unambiguous.
         candidate_tokens = self._token_set(candidate)
@@ -501,49 +549,90 @@ class HestiaNLU:
                 normalized[canonical_key] = normalized.pop(alias_key)
         return normalized
 
+    # Strips common lead-ins so both key-derivation and the final fallback
+    # key are built from the user's actual statement, not the command
+    # phrasing that introduced it (e.g. "learn this fact: X" -> "X").
+    _LEARN_FACT_LEAD_IN_RE = re.compile(
+        r"^\s*(?:remember(?:\s+that|\s+this)?|learn(?:\s+this)?\s+fact|note\s+that)"
+        r"\s*[:\-]?\s*",
+        re.IGNORECASE,
+    )
+
     def _repair_learn_fact(self, raw_text: str, entities: dict) -> dict:
         """
-        The model reliably picks "learn_fact" as the intent (the whitelist +
-        prompt examples get that part right) but has been observed to emit
-        {"key": "..."} with NO "value" at all — even when the raw text
-        plainly states one (e.g. "my sister's name is Priya" -> key
-        "user_sister_name", value missing). Without this, Mnemosyne just
-        asks "What should I remember?" and silently discards a fact the
-        user clearly stated.
+        The model has been observed to fail "learn_fact" entity extraction
+        in three distinct ways, all seen in real transcripts:
+
+          1. {"key": "..."} with NO "value" — e.g. "my sister's name is
+             Priya" -> key "user_sister_name", value missing.
+          2. {"fact": "<rephrased sentence>"} — no "key"/"value" at all,
+             e.g. "remember that i like my coffee black" ->
+             {"fact": "The user likes their coffee black."}.
+          3. {} entirely — e.g. "learn this fact: my sister's name is
+             priya" -> no entities whatsoever, even though the sentence has
+             a clean "X is Y" split sitting right there in the raw text.
+
+        In all three cases Mnemosyne would otherwise just ask "What should
+        I remember?" and silently discard a fact the user clearly stated.
 
         This is a best-effort textual salvage, not a replacement for the
-        model doing its job: it only fires when "key" is present, "value"
-        is missing, and the raw text contains an "X is Y" / "X: Y" pattern
-        to pull the tail from. If nothing matches, entities are returned
-        unchanged and Mnemosyne's own "what should I remember?" fallback
-        still applies — this never invents a value from nothing.
+        model doing its job. It only fires when there's no usable "value"
+        yet, and it never invents content: the value always comes from
+        either the raw text or the model's own "fact" rephrasing, never
+        from nothing.
         """
-        if not entities.get("key") or entities.get("value"):
+        if (entities.get("value") or "").strip():
             return entities
+
+        entities = dict(entities)
 
         def _clean_tail(s: str) -> str:
             return re.sub(r"[.!?]+\s*$", "", s).strip(" :").strip()
+
+        def _slugify(s: str) -> str:
+            s = re.sub(r"[^a-z0-9\s]", "", s.lower())
+            s = re.sub(r"\s+", "_", s.strip())
+            return s[:60] or "fact"
+
+        cleaned = self._LEARN_FACT_LEAD_IN_RE.sub("", raw_text or "").strip()
+        search_text = cleaned or raw_text or ""
 
         # Prefer the LAST standalone "is" in the sentence. Using the FIRST
         # match (or a colon) is wrong for phrasings like "learn this fact:
         # my sister's name is Priya" — the colon right after "fact" would
         # swallow the entire remainder ("my sister's name is Priya") as the
         # value instead of isolating "Priya".
-        is_matches = list(re.finditer(r"\bis\b", raw_text, re.I))
+        is_matches = list(re.finditer(r"\bis\b", search_text, re.I))
         if is_matches:
-            tail = _clean_tail(raw_text[is_matches[-1].end():])
+            head = search_text[: is_matches[-1].start()].strip(" '")
+            tail = _clean_tail(search_text[is_matches[-1].end():])
             if tail:
-                entities = dict(entities)
                 entities["value"] = tail
+                if not (entities.get("key") or "").strip():
+                    entities["key"] = _slugify(head) if head else _slugify(search_text)
                 return entities
 
         # No "is" anywhere — fall back to splitting on the last colon, for
         # phrasings like "remember: I like my coffee black".
-        if ":" in raw_text:
-            tail = _clean_tail(raw_text.rsplit(":", 1)[-1])
+        if ":" in search_text:
+            head, _, tail_raw = search_text.rpartition(":")
+            tail = _clean_tail(tail_raw)
             if tail:
-                entities = dict(entities)
                 entities["value"] = tail
+                if not (entities.get("key") or "").strip():
+                    entities["key"] = _slugify(head) if head.strip() else _slugify(tail)
+                return entities
+
+        # Last resort: no "is"/":" split available at all (case 2 above).
+        # Store the model's own "fact" rephrasing verbatim as the value
+        # (usually a clean sentence like "The user likes their coffee
+        # black."), and derive a key from the user's own wording so it's
+        # still human-recognisable later, rather than discarding the fact.
+        fallback_value = (entities.get("fact") or "").strip() or search_text
+        if fallback_value:
+            entities["value"] = fallback_value
+            if not (entities.get("key") or "").strip():
+                entities["key"] = _slugify(search_text) if search_text else _slugify(fallback_value)
 
         return entities
 

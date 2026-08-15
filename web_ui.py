@@ -67,14 +67,37 @@ class HestiaWebUI:
         if self.process_fn is None:
             logger.warning("[WebUI] process_fn not provided")
 
+    # Hosts that are only reachable from this machine. Anything else
+    # (0.0.0.0, a LAN IP, a hostname, etc.) means /api/* is potentially
+    # reachable by other devices/users.
+    _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+
     def _register_auth_guard(self) -> None:
         """If api_key is configured, require it (via X-API-Key header or
         ?api_key= query param) on every /api/* request. The UI page itself
-        (/) and static assets remain open so the dashboard can load."""
+        (/) and static assets remain open so the dashboard can load.
+
+        If NO api_key is configured, this used to just log a warning and
+        run fully open regardless of host — meaning a config typo like
+        host: "0.0.0.0" (to make the dashboard reachable from a phone on
+        the same LAN, say) would silently expose every /api/* endpoint
+        (including memory/notes/chat) to anyone on that network with no
+        authentication at all. Now: unauthenticated access is only ever
+        allowed when bound to loopback; anything else without an api_key
+        fails fast at startup instead of quietly running open.
+        """
         if not self.api_key:
+            if self.host not in self._LOOPBACK_HOSTS:
+                raise ValueError(
+                    f"[WebUI] Refusing to start: host={self.host!r} is not "
+                    "loopback-only and no api_key is configured. Set "
+                    "api_key in your config, or bind host to 127.0.0.1 for "
+                    "strictly-local use."
+                )
             logger.warning(
                 "[WebUI] No api_key configured — /api/* endpoints are "
-                "unauthenticated. Set api_key if this is reachable beyond localhost."
+                "unauthenticated. This is only safe because host=%r is "
+                "loopback-only.", self.host,
             )
             return
 

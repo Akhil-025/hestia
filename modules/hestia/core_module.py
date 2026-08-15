@@ -77,7 +77,7 @@ class CoreModule(BaseModule):
             return self._get_history(entities)
 
         if intent == "get_user_info":
-            return self._get_user_info(entities)
+            return self._get_user_info(entities, raw)
 
         if intent == "set_preference":
             return self._set_preference(entities)
@@ -231,7 +231,17 @@ class CoreModule(BaseModule):
     _DATE_KEYS = frozenset({"current_date", "date", "today", "todays_date"})
     _TIME_KEYS = frozenset({"current_time", "time"})
 
-    def _get_user_info(self, entities: dict) -> dict:
+    # Keys/phrasing the NLU has been observed to send (or fail to send) for
+    # "what's my name?" — it often emits get_user_info with entities={}
+    # rather than {"key": "user_name"}, even though _save_name() always
+    # stores the fact under the fixed key "user_name". Without this alias
+    # the fact is unreachable from that phrasing even though it was saved
+    # correctly — same class of bug the date/time aliasing above already
+    # covers, just for identity instead of date/time.
+    _NAME_KEYS = frozenset({"name", "user_name", "my_name", "users_name"})
+    _NAME_QUERY_RE = re.compile(r"\bname\b", re.IGNORECASE)
+
+    def _get_user_info(self, entities: dict, raw: str = "") -> dict:
         key = (entities.get("key") or "").strip().lower()
 
         if key in self._DATE_KEYS:
@@ -246,6 +256,14 @@ class CoreModule(BaseModule):
                 "data": {"key": key},
                 "confidence": 0.95,
             }
+
+        if key in self._NAME_KEYS:
+            key = "user_name"
+        elif not key and raw and self._NAME_QUERY_RE.search(raw):
+            # Last-resort recovery: NLU sent no key at all, but the raw
+            # question is plainly asking about the user's name (e.g.
+            # "what's my name?" / "do you know my name").
+            key = "user_name"
 
         if key:
             try:

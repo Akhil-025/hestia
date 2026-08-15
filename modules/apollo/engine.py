@@ -901,6 +901,28 @@ class ApolloEngine(BaseModule):
 # Module-level pure helpers
 # ---------------------------------------------------------------------------
 
+_LEADING_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
+
+
+def _extract_number(raw: Any) -> Optional[float]:
+    """
+    Pull the first number out of a string that may carry extra words the
+    NLU left in (e.g. "30 min run", "7 hours"). ``float(str(raw))`` chokes
+    on anything but a bare number, which is why these fields kept
+    round-tripping back to the user as "I didn't catch that" even when the
+    NLU had, in fact, caught it.
+    """
+    if raw is None:
+        return None
+    match = _LEADING_NUMBER_RE.search(str(raw))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
 def _parse_duration(raw: Any) -> tuple[int, Optional[str]]:
     """
     Parse and validate a workout duration.
@@ -910,10 +932,10 @@ def _parse_duration(raw: Any) -> tuple[int, Optional[str]]:
     """
     if raw is None:
         return _DEFAULT_WORKOUT_DURATION, None
-    try:
-        value = int(float(str(raw)))
-    except (ValueError, TypeError):
+    value_f = _extract_number(raw)
+    if value_f is None:
         return 0, "I didn't catch the workout duration. How many minutes?"
+    value = int(value_f)
     if not (_MIN_WORKOUT_DURATION <= value <= _MAX_WORKOUT_DURATION):
         return 0, (
             f"Duration should be between {_MIN_WORKOUT_DURATION} and "
@@ -929,9 +951,8 @@ def _parse_hours(raw: Any) -> tuple[float, Optional[str]]:
     Returns ``(hours_float, None)`` on success or ``(0.0, error_message)``
     on failure.
     """
-    try:
-        value = float(str(raw))
-    except (ValueError, TypeError):
+    value = _extract_number(raw)
+    if value is None:
         return 0.0, "I didn't catch the sleep duration. How many hours?"
     if not (_MIN_SLEEP_HOURS <= value <= _MAX_SLEEP_HOURS):
         return 0.0, (

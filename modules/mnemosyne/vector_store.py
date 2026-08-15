@@ -89,10 +89,22 @@ class MnemosyneVectorStore:
 
     @staticmethod
     def _distances_to_scores(distances: List[float]) -> List[float]:
+        # NOTE: this used to min-max normalize *within the returned batch*
+        # (score = 1 - (d - min(batch)) / (max(batch) - min(batch))). That
+        # guarantees the single closest result in any batch scores 1.0 no
+        # matter how far away it actually is — so a caller trying to reject
+        # "nothing here is relevant" by thresholding this score can never
+        # succeed, since the best-of-a-bad-batch always looks perfect. This
+        # collection is created without an explicit hnsw:space (see
+        # _initialize_chroma), so Chroma defaults to squared L2 distance,
+        # not cosine — there's no fixed [0, 2] range to rescale against.
+        # Converted to an absolute, batch-independent similarity instead:
+        # 1/(1 + distance) is monotonically decreasing, distance=0 -> 1.0,
+        # and it doesn't rescale based on what else happened to be in this
+        # particular result set. Embedding magnitudes are roughly stable
+        # for a fixed sentence-transformers model, so a fixed downstream
+        # threshold (see MnemosyneEngine._MIN_RELEVANCE) is meaningful
+        # against this — tune it empirically against your model's actual
+        # distance distribution for relevant vs. irrelevant pairs.
         from math import isfinite
-        finite = [d for d in distances if isfinite(d)]
-        if not finite:
-            return [0.0] * len(distances)
-        min_d, max_d = min(finite), max(finite)
-        denom = (max_d - min_d) or 1.0
-        return [max(0.0, min(1.0, 1.0 - (d - min_d) / denom)) if isfinite(d) else 0.0 for d in distances]
+        return [1.0 / (1.0 + d) if isfinite(d) and d >= 0 else 0.0 for d in distances]

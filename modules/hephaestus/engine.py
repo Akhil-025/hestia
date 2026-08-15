@@ -350,6 +350,24 @@ class HephaestusEngine(BaseModule):
         if not app_name:
             return _clarify("Which application should I open?")
 
+        # The NLU sometimes classifies "open <url>" (e.g. "open google.com")
+        # as open_app instead of browser_action, handing us a domain string
+        # that will never be in _app_map — it's not a desktop app at all.
+        # Rather than reporting "Unknown application: google.com", detect
+        # the URL shape here and redirect to the browser instead, same as
+        # if browser_action had been picked correctly in the first place.
+        if app_name.strip().lower() not in self._app_map and _looks_like_url(app_name):
+            logger.info(
+                "_open_app: %r looks like a URL, not an app; redirecting to browser_action.",
+                app_name,
+            )
+            if not self._is_ready():
+                return _err(_NOT_AVAILABLE)
+            url = app_name.strip()
+            if not url.lower().startswith(("http://", "https://")):
+                url = f"https://{url}"
+            return self._open_url(url)
+
         target = self._app_map.get(app_name.strip().lower())
         if not target:
             logger.warning("_open_app: unknown application %r.", app_name)

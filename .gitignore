@@ -68,3 +68,4 @@ Thumbs.db
 # Google credentials
 config/google_credentials.json
 
+hestia_test_prompts.md

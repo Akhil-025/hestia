@@ -251,6 +251,13 @@ class HermesEngine(BaseModule):
         logger.info("list_events: fetched %d event(s).", len(events))
         return _ok(summary, data={"events": [_event_to_dict(e) for e in events]})
 
+    # Fallback for when the NLU returns an empty entities dict but the raw
+    # text clearly names the event (e.g. "create an event tomorrow at 5pm
+    # called Gym"). Mirrors the take_note raw-text fallback in CoreModule.
+    _EVENT_TITLE_RE = re.compile(
+        r"\b(?:called|titled|named)\s+(.+?)\s*$", re.IGNORECASE
+    )
+
     def _create_event(self, entities: dict) -> dict:
         """Parse entities, build a datetime, and create a calendar event."""
         title: str = (
@@ -259,6 +266,12 @@ class HermesEngine(BaseModule):
             or entities.get("event")
             or ""
         ).strip()
+
+        if not title:
+            raw = (entities.get("raw_query") or "").strip()
+            match = self._EVENT_TITLE_RE.search(raw)
+            if match:
+                title = match.group(1).strip(" .!?\"'")
 
         if not title:
             return _clarify("What should I call the event?")
