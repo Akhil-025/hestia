@@ -9,10 +9,36 @@ from core.ollama_client import generate
 
 log = logging.getLogger(__name__)
 
+# Same "Note saved: " prefix contract as modules/hestia/core_module.py —
+# duplicated rather than imported to keep this module's dependency surface
+# limited to `modules.base`/`core.ollama_client`, matching the rest of the
+# file's import style.
+_NOTE_PREFIX_RE = re.compile(r'^Note saved:\s*', re.IGNORECASE)
+
+# Appended to every analysis prompt below. Each _*_PROMPT interpolates a
+# {grounding} block built by AresEngine._grounding() from real Mnemosyne
+# data (facts/goals/notes). Previously these prompts only ever received a
+# bare {topic} string and told the model to "be specific" — with nothing
+# true to draw on, a small local model's only way to comply was to invent
+# plausible-sounding specifics (fictional job offers, fictional
+# competitors, fictional battlefield content). This instruction gives the
+# model an explicit, honest way to be specific about what's real and
+# general where it isn't, instead of fabricating either way.
+_GROUNDING_RULE = (
+    "Only state specific facts, names, numbers, or events that appear in "
+    "KNOWN CONTEXT above or in the topic/options the user gave you. If "
+    "KNOWN CONTEXT is empty or not relevant to the topic, give sound "
+    "general strategic reasoning instead — do not invent specific details "
+    "to sound concrete."
+)
+
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
 _PLAN_PROMPT = """You are Ares, a strategic planning assistant.
 The user wants a strategic plan for: {topic}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
 
 Respond with ONLY valid JSON in this exact structure:
 {{
@@ -26,10 +52,13 @@ Respond with ONLY valid JSON in this exact structure:
   }}
 }}
 
-Be specific to the topic. No preamble. No explanation. JSON only."""
+""" + _GROUNDING_RULE + """ No preamble. No explanation. JSON only."""
 
 _RISK_PROMPT = """You are Ares, a risk analysis assistant.
 Analyse the risks for: {topic}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
 
 Respond with ONLY valid JSON in this exact structure:
 {{
@@ -43,10 +72,13 @@ Respond with ONLY valid JSON in this exact structure:
   ]
 }}
 
-Identify 4-6 distinct risks. Be specific to the topic. JSON only."""
+Identify 4-6 distinct risks. """ + _GROUNDING_RULE + """ JSON only."""
 
 _SWOT_PROMPT = """You are Ares, a strategic analysis assistant.
 Perform a SWOT analysis for: {topic}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
 
 Respond with ONLY valid JSON in this exact structure:
 {{
@@ -56,11 +88,14 @@ Respond with ONLY valid JSON in this exact structure:
   "threats": ["threat 1", "threat 2", "threat 3"]
 }}
 
-3-4 points per quadrant. Be specific to the topic. JSON only."""
+3-4 points per quadrant. """ + _GROUNDING_RULE + """ JSON only."""
 
 _DECISION_PROMPT = """You are Ares, a decision support assistant.
 The user needs help deciding: {topic}
 Their options are: {options}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
 
 Respond with ONLY valid JSON in this exact structure:
 {{
@@ -77,10 +112,14 @@ Respond with ONLY valid JSON in this exact structure:
   "next_step": "the single most important action to take now"
 }}
 
-Score each option out of 10. Be specific. JSON only."""
+Score each option out of 10. Only analyse the options the user actually
+named above — never invent additional or alternative options. """ + _GROUNDING_RULE + """ JSON only."""
 
 _PREMORTEM_PROMPT = """You are Ares, running a premortem exercise.
 Imagine it is some time in the future and the following has already failed, badly: {topic}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
 
 Respond with ONLY valid JSON in this exact structure:
 {{
@@ -96,11 +135,17 @@ Respond with ONLY valid JSON in this exact structure:
   "confidence_in_success": "Low | Medium | High"
 }}
 
-Identify 4-6 distinct, non-overlapping failure causes. Be specific to the topic. No preamble. JSON only."""
+Identify 4-6 distinct, non-overlapping failure causes. This is a hypothetical
+exercise, so plausible invented failure *causes* are expected and fine —
+but ground them in KNOWN CONTEXT where it's relevant instead of ignoring it.
+No preamble. JSON only."""
 
 _COMPETITIVE_PROMPT = """You are Ares, a competitive strategy assistant.
 Analyse the competitive landscape for: {topic}
 {competitors_line}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
 
 Respond with ONLY valid JSON in this exact structure:
 {{
@@ -117,11 +162,17 @@ Respond with ONLY valid JSON in this exact structure:
   "biggest_threat": "which competitor or force poses the greatest risk right now"
 }}
 
-If no competitors are named, infer 3-4 plausible rivals typical for the topic. Analyse 3-5 competitors total. Be specific. JSON only."""
+If specific competitors were named above, analyse only those. Otherwise,
+clearly label inferred rivals as illustrative examples typical for the
+topic rather than presenting them as known facts. Analyse 3-5 competitors
+total. """ + _GROUNDING_RULE + """ JSON only."""
 
 _CONTINGENCY_PROMPT = """You are Ares, a contingency planning assistant.
 Build a fallback plan for: {topic}
 {trigger_line}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
 
 Respond with ONLY valid JSON in this exact structure:
 {{
@@ -132,16 +183,17 @@ Respond with ONLY valid JSON in this exact structure:
   "decision_point": "the latest moment by which the switch to the fallback must be made"
 }}
 
-Be specific to the topic. JSON only."""
+""" + _GROUNDING_RULE + """ JSON only."""
 
 _WAR_ROOM_PROMPT = """You are Ares, delivering a consolidated strategic briefing.
 Topic: {topic}
 
-Prior analysis Hestia has on record for this topic (may be empty):
-{prior_context}
+KNOWN CONTEXT — the only real information you have about the user's
+actual situation (may be empty):
+{grounding}
 
-Synthesise the prior analysis above (if any) with your own judgement into ONE consolidated briefing.
-Respond with ONLY valid JSON in this exact structure:
+Synthesise KNOWN CONTEXT above into ONE consolidated briefing. Respond
+with ONLY valid JSON in this exact structure:
 {{
   "situation": "2-3 sentence summary of where things stand right now",
   "priorities": ["top priority 1", "top priority 2", "top priority 3"],
@@ -150,7 +202,12 @@ Respond with ONLY valid JSON in this exact structure:
   "confidence": "Low | Medium | High"
 }}
 
-If prior analysis is empty, work from the topic alone rather than inventing history. Be specific. JSON only."""
+If KNOWN CONTEXT is empty, you have no real basis for a briefing: set
+"situation" to a one-sentence honest statement that there's nothing on
+record yet for this topic, leave "priorities" and "open_risks" as empty
+lists, and set "confidence" to "Low". Do NOT invent a scenario, situation,
+or details of any kind — including unrelated scenarios like business or
+military situations — when KNOWN CONTEXT is empty. JSON only."""
 
 
 class AresEngine(BaseModule):
@@ -165,6 +222,16 @@ class AresEngine(BaseModule):
         "contingency_plan",
         "war_room_briefing",
     }
+
+    # Low temperature for these calls: every prompt above asks for
+    # structured, "be specific" analytical output, which is exactly the
+    # kind of task where high sampling temperature (Ollama's ~0.8 default)
+    # increases how much a small local model fabricates rather than making
+    # the output more useful. This is not passed to _premortem_analysis's
+    # hypothetical scenario generation any differently — the "do not
+    # invent" instruction there is already scoped to only ground the
+    # failure causes, not to suppress the hypothetical itself.
+    _ANALYSIS_OPTIONS = {"temperature": 0.2}
 
     def __init__(self, memory=None, ollama_cfg: dict = None, llm=None):
         self._memory = memory
@@ -204,13 +271,14 @@ class AresEngine(BaseModule):
 
     def _ollama_call(self, prompt: str) -> str:
         if self._llm_instance is not None:
-            return self._llm_instance.generate(prompt, fmt="json")
+            return self._llm_instance.generate(prompt, fmt="json", options=self._ANALYSIS_OPTIONS)
         return generate(
             prompt,
             model=self._ollama.get("model", "mistral"),
             host=self._ollama.get("host", "127.0.0.1"),
             port=self._ollama.get("port", 11434),
             fmt="json",
+            options=self._ANALYSIS_OPTIONS,
         )
 
     def _parse(self, raw: str, intent: str) -> dict | None:
@@ -244,11 +312,70 @@ class AresEngine(BaseModule):
             or "your topic"
         )
 
+    @staticmethod
+    def _note_text(row: dict) -> str:
+        resp = (row.get("response") or "").strip()
+        if _NOTE_PREFIX_RE.match(resp):
+            return _NOTE_PREFIX_RE.sub('', resp).strip()
+        return (row.get("query") or "").strip()
+
+    def _grounding(self, context: dict | None = None) -> str:
+        """
+        Assemble whatever real, verifiable context Mnemosyne has about the
+        user — known facts, active goals, recent notes — into a compact
+        block every prompt above injects as KNOWN CONTEXT.
+
+        This does not guarantee the topic will actually be covered by any
+        of it (a SWOT on "switching jobs" won't magically find real job
+        offers if none were ever logged) — but it gives the model
+        something true to reason from, and the _GROUNDING_RULE instruction
+        on each prompt gives it an explicit, honest fallback ("give sound
+        general strategic reasoning instead") rather than fabricating
+        specifics to satisfy "be specific to the topic".
+        """
+        if not self._memory:
+            return ""
+
+        parts: list[str] = []
+
+        try:
+            facts = self._memory.get_top_facts_for_context(limit=8)
+            if facts:
+                parts.append("Known facts about the user:\n" + facts)
+        except Exception:
+            log.warning("Ares: get_top_facts_for_context failed.", exc_info=True)
+
+        try:
+            goals = self._memory.db.get_goals(status="active")
+            if goals:
+                lines = "\n".join(f"- {g['text']}" for g in goals[:8])
+                parts.append("Active goals:\n" + lines)
+        except Exception:
+            log.warning("Ares: get_goals failed.", exc_info=True)
+
+        try:
+            notes = self._memory.db.get_by_intent("take_note", 8)
+            if notes:
+                lines = "\n".join(f"- {self._note_text(n)}" for n in notes)
+                parts.append("Recent notes:\n" + lines)
+        except Exception:
+            log.warning("Ares: get_by_intent(take_note) failed.", exc_info=True)
+
+        # Ares' own past analyses are persisted as facts (see _persist()),
+        # so anything already covered by the block above will naturally
+        # include prior Ares output too — no separate lookup needed here.
+
+        recent_intents = (context or {}).get("recent_intents")
+        if recent_intents:
+            parts.append("Recent conversation topics: " + ", ".join(recent_intents[-5:]))
+
+        return "\n\n".join(parts)
+
     # ── strategic_plan ───────────────────────────────────────────────────────
 
     def _strategic_plan(self, entities: dict, context: dict) -> dict:
         topic = self._topic(entities)
-        raw   = self._ollama_call(_PLAN_PROMPT.format(topic=topic))
+        raw   = self._ollama_call(_PLAN_PROMPT.format(topic=topic, grounding=self._grounding(context) or "(none)"))
         plan  = self._parse(raw, "strategic_plan")
 
         if not plan:
@@ -302,7 +429,7 @@ class AresEngine(BaseModule):
 
     def _analyse_risk(self, entities: dict, context: dict) -> dict:
         topic  = self._topic(entities)
-        raw    = self._ollama_call(_RISK_PROMPT.format(topic=topic))
+        raw    = self._ollama_call(_RISK_PROMPT.format(topic=topic, grounding=self._grounding(context) or "(none)"))
         result = self._parse(raw, "analyse_risk")
 
         if not result:
@@ -331,7 +458,7 @@ class AresEngine(BaseModule):
 
     def _swot_analysis(self, entities: dict, context: dict) -> dict:
         topic  = self._topic(entities)
-        raw    = self._ollama_call(_SWOT_PROMPT.format(topic=topic))
+        raw    = self._ollama_call(_SWOT_PROMPT.format(topic=topic, grounding=self._grounding(context) or "(none)"))
         result = self._parse(raw, "swot_analysis")
 
         if not result:
@@ -407,7 +534,7 @@ class AresEngine(BaseModule):
                 "confidence": 0.6,
             }
 
-        raw    = self._ollama_call(_DECISION_PROMPT.format(topic=topic, options=options))
+        raw    = self._ollama_call(_DECISION_PROMPT.format(topic=topic, options=options, grounding=self._grounding(context) or "(none)"))
         result = self._parse(raw, "decision_support")
 
         if not result:
@@ -458,7 +585,7 @@ class AresEngine(BaseModule):
 
     def _premortem_analysis(self, entities: dict, context: dict) -> dict:
         topic  = self._topic(entities)
-        raw    = self._ollama_call(_PREMORTEM_PROMPT.format(topic=topic))
+        raw    = self._ollama_call(_PREMORTEM_PROMPT.format(topic=topic, grounding=self._grounding(context) or "(none)"))
         result = self._parse(raw, "premortem_analysis")
 
         if not result:
@@ -505,7 +632,7 @@ class AresEngine(BaseModule):
         )
 
         raw    = self._ollama_call(
-            _COMPETITIVE_PROMPT.format(topic=topic, competitors_line=competitors_line)
+            _COMPETITIVE_PROMPT.format(topic=topic, competitors_line=competitors_line, grounding=self._grounding(context) or "(none)")
         )
         result = self._parse(raw, "competitive_analysis")
 
@@ -557,7 +684,7 @@ class AresEngine(BaseModule):
         )
 
         raw    = self._ollama_call(
-            _CONTINGENCY_PROMPT.format(topic=topic, trigger_line=trigger_line)
+            _CONTINGENCY_PROMPT.format(topic=topic, trigger_line=trigger_line, grounding=self._grounding(context) or "(none)")
         )
         result = self._parse(raw, "contingency_plan")
 
@@ -610,17 +737,32 @@ class AresEngine(BaseModule):
     def _war_room_briefing(self, entities: dict, context: dict) -> dict:
         topic = self._topic(entities)
 
-        prior_context = ""
+        # Two sources of grounding, combined:
+        #  1. memory.remember(topic) — fuzzy semantic recall keyed off the
+        #     topic string. Kept because it can surface things the
+        #     structured lookups below won't (e.g. summarised history),
+        #     but it's an unreliable signal on its own: when `topic` falls
+        #     back to the raw command sentence (e.g. "summarize my recent
+        #     work and highlight gaps"), it's an instruction, not a search
+        #     term, so recall can return weak/irrelevant matches.
+        #  2. self._grounding() — the same structured facts/goals/notes
+        #     lookup every other Ares prompt now uses, which doesn't
+        #     depend on the topic string being a good search query.
+        semantic_context = ""
         if self._memory:
             try:
-                prior_context = self._memory.remember(topic, n=6)
+                semantic_context = self._memory.remember(topic, n=6)
             except Exception:
                 log.warning("Ares: memory recall failed for war_room_briefing on %r", topic)
+
+        structured_context = self._grounding(context)
+
+        combined = "\n\n".join(p for p in (structured_context, semantic_context) if p)
 
         raw    = self._ollama_call(
             _WAR_ROOM_PROMPT.format(
                 topic=topic,
-                prior_context=prior_context or "(nothing on record)",
+                grounding=combined or "(nothing on record)",
             )
         )
         result = self._parse(raw, "war_room_briefing")
@@ -629,10 +771,15 @@ class AresEngine(BaseModule):
             return {"response": raw or "I had trouble putting that briefing together.",
                     "data": {}, "confidence": 0.3}
 
-        response = self._format_war_room(topic, result, bool(prior_context))
+        response = self._format_war_room(topic, result, bool(combined))
         self._persist(f"briefing_{topic}", response)
 
-        return {"response": response, "data": result, "confidence": 0.9}
+        # A briefing built from no real context isn't wrong, but it also
+        # isn't grounded in anything — reflect that in confidence instead
+        # of reporting the same 0.9 as a briefing backed by real data.
+        confidence = 0.9 if combined else 0.4
+
+        return {"response": response, "data": result, "confidence": confidence}
 
     @staticmethod
     def _format_war_room(topic: str, result: dict, had_prior_context: bool) -> str:
