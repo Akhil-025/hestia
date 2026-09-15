@@ -26,4 +26,4 @@ Metis — writing assistance & editing: correct_text, improve_clarity, suggest_s
 
 Dionysus — entertainment/leisure: recommend_movie (OMDB-backed), find_restaurant, recommend_music, plan_outing.
 
-Pluto — personal finance: log_expense, get_budget_summary, track_investment (live crypto/stock prices), spending_report (AI-generated).
+Pluto — personal finance: log_expense, get_budget_summary, track_investment (live crypto/stock prices), spending_report (AI-generated), optimize_portfolio (PyPortfolioOpt max-Sharpe allocation over your tracked holdings), backtest_strategy (vectorbt SMA-crossover backtest for a given ticker), forecast_spending (LightGBM short-horizon forecast trained on your own logged expenses), financial_advisor_chat (multi-step langchain ReAct agent answering open-ended finance questions using the tools above).

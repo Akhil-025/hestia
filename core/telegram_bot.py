@@ -5,6 +5,7 @@ import tempfile
 from typing import Callable, Optional
 
 logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -65,7 +66,7 @@ class HestiaTelegramBot:
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         chat_id = update.effective_chat.id
-        print(f"[TELEGRAM] chat_id: {chat_id}")
+        logger.info("[TelegramBot] /start from chat_id: %s", chat_id)
         if not self._is_allowed(chat_id):
             await update.message.reply_text("Unauthorised.")
             return
@@ -116,7 +117,7 @@ class HestiaTelegramBot:
             if update.message is not None:
                 await msg.reply_text("Got it — location saved.")
         except Exception:
-            logging.error("[TelegramBot] Failed to save location.", exc_info=True)
+            logger.error("[TelegramBot] Failed to save location.", exc_info=True)
             if update.message is not None:
                 await msg.reply_text("I couldn't save that location.")
 
@@ -164,5 +165,5 @@ class HestiaTelegramBot:
         except subprocess.CalledProcessError:
             await update.message.reply_text("I couldn't process that audio file. Is ffmpeg installed?")
         except Exception as e:
-            logging.error(f"[TelegramBot] Voice handling error: {e}")
+            logger.error("[TelegramBot] Voice handling error: %s", e)
             await update.message.reply_text("Something went wrong processing that voice note.")

@@ -10,6 +10,14 @@ from typing import Optional
 import requests
 
 from core.ollama_client import generate
+from core.free_apis import (
+    FreeAPIError,
+    audiodb_artist_lookup as _fa_audiodb_artist,
+    audiodb_top_tracks as _fa_audiodb_top_tracks,
+    meal_suggestion as _fa_meal_suggestion,
+    cocktail_suggestion as _fa_cocktail_suggestion,
+    trivia_question as _fa_trivia_question,
+)
 from modules.base import BaseModule
 from .db import DionysusDB
 
@@ -79,6 +87,7 @@ class DionysusEngine(BaseModule):
         "plan_outing",
         "dismiss_recommendation",
         "mark_seen",
+        "recommend_recipe",
     }
 
     def __init__(self, ollama_cfg: dict = None, browser_agent=None, memory=None, llm=None):
@@ -105,6 +114,8 @@ class DionysusEngine(BaseModule):
             return self._dismiss_recommendation(entities)
         if intent == "mark_seen":
             return self._mark_seen(entities)
+        if intent == "recommend_recipe":
+            return self._recommend_recipe(entities)
         return {"response": "Unknown Dionysus intent.", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:
@@ -335,16 +346,30 @@ class DionysusEngine(BaseModule):
             track  = rec.get("track", "")
             reason = rec.get("reason", "")
 
-            # Spotify live data
+            # Spotify live data (needs SPOTIFY_CLIENT_ID/SECRET). When
+            # those aren't configured — or the lookup otherwise fails —
+            # fall back to TheAudioDB (free, keyless) for at least a
+            # bio/genre note instead of silently dropping the metadata.
             spotify = self._fetch_spotify(artist, track)
             preview = spotify.get("preview_url") if spotify else None
             sp_link = spotify.get("external_urls", {}).get("spotify", "") if spotify else ""
             popularity = spotify.get("popularity") if spotify else None
 
+            audiodb_genre = None
+            if not spotify:
+                try:
+                    artist_info = _fa_audiodb_artist(artist)
+                except FreeAPIError:
+                    artist_info = None
+                if artist_info:
+                    audiodb_genre = artist_info.get("genre")
+
             lines.append(f"  {artist} — {track}")
             lines.append(f"    {reason}")
             if popularity is not None:
                 lines.append(f"    Spotify popularity: {popularity}/100")
+            elif audiodb_genre:
+                lines.append(f"    Genre (TheAudioDB): {audiodb_genre}")
             if sp_link:
                 lines.append(f"    {sp_link}")
             lines.append("")
@@ -355,6 +380,7 @@ class DionysusEngine(BaseModule):
                 "spotify_link": sp_link,
                 "popularity": popularity,
                 "preview_url": preview,
+                "audiodb_genre": audiodb_genre,
             })
 
         return {
@@ -446,6 +472,29 @@ class DionysusEngine(BaseModule):
                 "confidence": 0.3,
             }
 
+        # Sprinkle in a couple of free, keyless extras so the plan feels
+        # less generic: a food idea (TheMealDB) and, roughly half the
+        # time, a trivia icebreaker (Open Trivia DB). Both are
+        # best-effort — an outing plan must never fail because a bonus
+        # API call did.
+        extra_tips: list[str] = []
+        try:
+            meal = _fa_meal_suggestion()
+            if meal:
+                extra_tips.append(f"Food idea: {meal.get('name')} ({meal.get('area', 'various')} cuisine)")
+        except FreeAPIError:
+            log.debug("plan_outing: meal suggestion unavailable.", exc_info=True)
+        try:
+            trivia = _fa_trivia_question()
+            if trivia:
+                extra_tips.append(f"Icebreaker: {trivia.get('question')}")
+        except FreeAPIError:
+            log.debug("plan_outing: trivia question unavailable.", exc_info=True)
+
+        if extra_tips:
+            result.setdefault("tips", [])
+            result["tips"].extend(extra_tips)
+
         response = self._format_outing(result)
         self.db.log("outing", result.get("title", topic), response)
 
@@ -454,6 +503,37 @@ class DionysusEngine(BaseModule):
             "data": result,
             "confidence": 0.9,
         }
+
+    def _recommend_recipe(self, entities: dict) -> dict:
+        """
+        Suggest a meal or cocktail via TheMealDB / TheCocktailDB (both
+        free, community test key "1" — fine for hobby/personal-scale
+        use). New intent: `recommend_recipe`.
+        """
+        cuisine = (entities.get("cuisine") or entities.get("area") or "").strip() or None
+        want_cocktail = (entities.get("category") or "").strip().lower() == "drink"
+
+        try:
+            if want_cocktail:
+                pick = _fa_cocktail_suggestion()
+                if not pick:
+                    return {"response": "Couldn't find a cocktail suggestion right now.", "data": {}, "confidence": 0.3}
+                response = f"Try: {pick['name']} (served in a {pick.get('glass', 'glass')})"
+                data = {"type": "cocktail", **pick}
+            else:
+                pick = _fa_meal_suggestion(cuisine)
+                if not pick:
+                    return {"response": "Couldn't find a meal suggestion right now.", "data": {}, "confidence": 0.3}
+                response = f"Try cooking: {pick['name']}"
+                if pick.get("area"):
+                    response += f" ({pick['area']} cuisine)"
+                data = {"type": "meal", **pick}
+        except FreeAPIError:
+            log.exception("_recommend_recipe: upstream recipe API failed.")
+            return {"response": "Recipe service is unavailable right now — try again shortly.", "data": {}, "confidence": 0.2}
+
+        self.db.log("recipe", pick.get("name", ""), response)
+        return {"response": response, "data": data, "confidence": 0.85}
 
     @staticmethod
     def _format_outing(result: dict) -> str:

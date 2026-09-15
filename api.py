@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Request, HTTPException, Depends, Query
+from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -69,7 +69,23 @@ async def lifespan(app: FastAPI):
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(device_name: str = "laptop") -> FastAPI:
+def create_app(
+    device_name: str = "laptop",
+    api_key: Optional[str] = None,
+    cors_origins: Optional[list[str]] = None,
+) -> FastAPI:
+    """
+    api_key: optional shared secret required (via X-API-Key header or
+        ?api_key= query param) on every /sync/* request. If unset, /sync/*
+        is unauthenticated — the caller (main.py's start_sync_api) is
+        responsible for only allowing that when the server is bound to
+        loopback, the same contract web_ui.py enforces for /api/*.
+    cors_origins: browser origins allowed to call this API cross-origin.
+        This is a device-to-device sync endpoint, not something a web page
+        should be calling, so it defaults to none (no wildcard) rather
+        than the previous allow_origins=["*"], which let any web page in
+        any tab make authenticated-looking requests to it.
+    """
     application = FastAPI(
         title="Memory Sync API",
         version="1.0.0",
@@ -80,15 +96,20 @@ def create_app(device_name: str = "laptop") -> FastAPI:
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins or [],
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
 
     application.state.device_name = device_name
+    application.state.api_key = api_key
     return application
 
 
+# Default, unauthenticated app instance kept for backwards compatibility
+# (e.g. `uvicorn api:app`). main.py's start_sync_api builds its own app via
+# create_app(api_key=...) instead, so this instance is never the one that
+# actually gets served in normal operation.
 app = create_app()
 
 
@@ -101,6 +122,24 @@ def get_memory(request: Request):
     if memory is None:
         raise HTTPException(status_code=503, detail="Memory store not initialised")
     return memory
+
+
+def require_api_key(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(default=None),
+) -> None:
+    """Guard for /sync/* routes. No-op if the app wasn't given an api_key
+    (unauthenticated single-device/loopback use); otherwise requires an
+    exact match via header or query param.
+    """
+    configured = getattr(request.app.state, "api_key", None)
+    if not configured:
+        return None
+    supplied = x_api_key or api_key
+    if supplied != configured:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +187,12 @@ async def health(request: Request):
     )
 
 
-@app.get("/sync/pull", response_model=PullResponse, tags=["sync"])
+@app.get(
+    "/sync/pull",
+    response_model=PullResponse,
+    tags=["sync"],
+    dependencies=[Depends(require_api_key)],
+)
 async def sync_pull(
     since: Optional[str] = Query(
         default=None,
@@ -187,7 +231,12 @@ async def sync_pull(
         raise HTTPException(status_code=500, detail="Failed to retrieve interactions")
 
 
-@app.post("/sync/push", response_model=PushResponse, tags=["sync"])
+@app.post(
+    "/sync/push",
+    response_model=PushResponse,
+    tags=["sync"],
+    dependencies=[Depends(require_api_key)],
+)
 async def sync_push(
     payload: PushRequest,
     memory=Depends(get_memory),

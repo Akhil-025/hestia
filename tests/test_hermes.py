@@ -1,270 +1,243 @@
-# tests/test_hestia.py
+# tests/test_hermes.py
 """
-Regression tests for modules/hestia (CoreModule + HestiaOrchestrator).
+Regression tests for modules/hermes/engine.py (HermesEngine).
 
-Run with:  pytest tests/test_hestia.py -v
-(or:       python -m pytest tests/test_hestia.py -v
- or:       python3 tests/test_hestia.py)
+Run with:  pytest tests/test_hermes.py -v
+(or:       python -m pytest tests/test_hermes.py -v
+ or:       python3 tests/test_hermes.py)
 
-These cover one real bug found and fixed in CoreModule, plus the
-orchestrator's dispatch/registration contract that every module (including
-Hermes and Chronos) relies on:
+Note on history: this file previously contained a copy-pasted duplicate of
+tests/test_hestia.py's CoreModule/orchestrator tests instead of anything
+exercising HermesEngine — there was no dedicated coverage for Hermes at all.
+Replaced with real HermesEngine tests below.
 
-1. CoreModule.get_user_info()/get_system_info() used naive
-   datetime.datetime.now() — server-local time — while ChronosEngine and
-   HermesEngine both resolve the user's configured IANA timezone via
-   ZoneInfo. Since get_user_info() is the exact recovery path the NLU
-   falls into when it misclassifies "what's today's date" (see
-   test_hecate.py's date-key tests), a server running in a different
-   timezone than the user (e.g. UTC vs Asia/Kolkata) would silently answer
-   with the wrong date/time — disagreeing with what Chronos would have
-   said for the identical question. Fixed by threading a `timezone_name`
-   constructor arg through to a ZoneInfo, same as Hermes/Chronos.
+Main focus: send_email's confirmation gating. Hestia is voice-driven, and
+send_email used to call Google's API the instant "to" and "body" were
+non-empty — one misheard recipient or body would have been enough to put a
+real message in someone's inbox. It's now two-phase: the first call
+validates and previews without sending, and only a call carrying
+entities["_confirmed"] = True (sent only by HestiaOrchestrator's pending-
+confirmation mechanism, after the user's next reply reads as a clear "yes")
+actually sends anything. See modules/hestia/orchestrator.py's "Confirmation
+gating" section and tests/test_hestia.py's
+test_orchestrator_holds_delete_notes_pending_until_confirmed for the
+end-to-end version of the same mechanism.
 """
 import sys
 import os
-import re
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from modules.hestia.core_module import CoreModule
-from modules.hestia.orchestrator import HestiaOrchestrator
-from modules.hecate import HecateEngine
-from modules.base import BaseModule
-
-_TZ_NAME = "Asia/Kolkata"
-_TZ = ZoneInfo(_TZ_NAME)
+from modules.hermes.engine import HermesEngine
 
 
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
 
-class FakeDB:
-    def __init__(self):
-        self.facts = {}
-        self.rows = []
+class FakeGoogleAgent:
+    """Minimal stand-in for core.google_agent.HestiaGoogleAgent covering
+    only what HermesEngine actually calls."""
 
-    def get_fact(self, key):
-        return self.facts.get(key)
+    def __init__(self, authenticated=True):
+        self._authenticated = authenticated
+        self.sent_emails = []  # list of (to, subject, body)
+        self.send_should_succeed = True
 
-    def get_by_intent(self, intent, limit):
-        return [r for r in self.rows if r["intent"] == intent][:limit]
+    def is_authenticated(self):
+        return self._authenticated
 
-    def delete_by_intent(self, intent):
-        before = len(self.rows)
-        self.rows = [r for r in self.rows if r["intent"] != intent]
-        return before - len(self.rows)
+    def send_email(self, to, subject, body):
+        self.sent_emails.append((to, subject, body))
+        return self.send_should_succeed
 
-    def get_recent_interactions_excluding(self, limit, excluded_intents):
-        return [r for r in self.rows if r["intent"] not in excluded_intents][:limit]
+    def read_emails(self, max_results=5):
+        return []
 
+    def format_emails_for_tts(self, emails):
+        return "No emails."
 
-class FakeMemory:
-    def __init__(self):
-        self.db = FakeDB()
-        self.learned = {}
+    def list_events(self, max_results=5, days_ahead=7):
+        return []
 
-    def learn(self, key, value):
-        self.learned[key] = value
-        self.db.facts[key] = value
+    def format_events_for_tts(self, events):
+        return "No events."
 
+    def create_event(self, title, start_dt, end_dt=None, location="", description=""):
+        return True
 
-def make_core(memory=None, timezone_name=_TZ_NAME):
-    return CoreModule(memory=memory or FakeMemory(), ollama_cfg={}, timezone_name=timezone_name)
-
-
-# ---------------------------------------------------------------------------
-# Bug fix: timezone-aware date/time answers
-# ---------------------------------------------------------------------------
-
-def test_get_user_info_current_date_uses_configured_timezone_not_server_time():
-    core = make_core(timezone_name=_TZ_NAME)
-    r = core.handle("get_user_info", {"key": "current_date"}, {})
-    expected = datetime.now(_TZ).strftime("%A, %B %d, %Y")
-    assert expected in r["response"]
+    def delete_event(self, event_id):
+        return True
 
 
-def test_get_user_info_current_time_uses_configured_timezone():
-    core = make_core(timezone_name=_TZ_NAME)
-    r = core.handle("get_user_info", {"key": "current_time"}, {})
-    assert re.search(r"\d{1,2}:\d{2} (AM|PM)", r["response"])
+_UNSET = object()
 
 
-def test_get_system_info_uses_configured_timezone():
-    core = make_core(timezone_name=_TZ_NAME)
-    r = core.handle("get_system_info", {}, {})
-    assert re.search(r"\d{1,2}:\d{2} (AM|PM)", r["response"])
-
-
-def test_unrecognised_timezone_falls_back_to_utc_without_raising():
-    core = make_core(timezone_name="Not/ARealZone")
-    assert core._tz == ZoneInfo("UTC")
-
-
-def test_default_timezone_is_utc_when_unspecified():
-    core = CoreModule(memory=FakeMemory(), ollama_cfg={})
-    assert core._tz == ZoneInfo("UTC")
+def make_hermes(agent=_UNSET, timezone_name="Asia/Kolkata"):
+    """Build a HermesEngine. Pass agent=None explicitly to simulate no
+    Google agent configured at all (distinct from an unauthenticated one)."""
+    if agent is _UNSET:
+        agent = FakeGoogleAgent()
+    return HermesEngine(google_agent=agent, timezone_name=timezone_name)
 
 
 # ---------------------------------------------------------------------------
-# Defensive entity handling
+# Readiness / not-connected guard
 # ---------------------------------------------------------------------------
 
-def test_save_name_handles_explicit_none_without_raising():
-    core = make_core()
-    r = core.handle("save_name", {"name": None}, {})
-    assert r["confidence"] == 0.0
-    assert r["response"]
+def test_handle_returns_not_connected_when_agent_missing():
+    hermes = make_hermes(agent=None)
+    r = hermes.handle("send_email", {"to": "bob@example.com", "body": "hi"}, {})
+    assert "not connected" in r["response"].lower()
 
 
-def test_save_name_titlecases_and_persists():
-    mem = FakeMemory()
-    core = make_core(mem)
-    r = core.handle("save_name", {"name": "alice smith"}, {})
-    assert mem.learned["user_name"] == "Alice Smith"
-    assert "Alice Smith" in r["response"]
-
-
-def test_get_history_handles_non_numeric_limit_without_raising():
-    core = make_core()
-    r = core.handle("get_history", {"limit": "not-a-number"}, {})
-    assert r["response"]  # falls back to default limit, doesn't crash
-
-
-def test_get_history_handles_missing_limit():
-    core = make_core()
-    r = core.handle("get_history", {}, {})
-    assert r["response"]
+def test_handle_returns_not_connected_when_unauthenticated():
+    hermes = make_hermes(agent=FakeGoogleAgent(authenticated=False))
+    r = hermes.handle("send_email", {"to": "bob@example.com", "body": "hi"}, {})
+    assert "not connected" in r["response"].lower()
 
 
 # ---------------------------------------------------------------------------
-# get_user_info: date/time keys vs generic fact lookup
+# send_email: confirmation gating
 # ---------------------------------------------------------------------------
 
-def test_get_user_info_generic_fact_lookup_still_works():
-    mem = FakeMemory()
-    mem.learn("favourite_colour", "blue")
-    core = make_core(mem)
-    r = core.handle("get_user_info", {"key": "favourite_colour"}, {})
-    assert r["response"] == "blue"
-    assert r["confidence"] == 0.85
+def test_send_email_missing_recipient_asks_who_without_confirmation_flow():
+    agent = FakeGoogleAgent()
+    hermes = make_hermes(agent)
+    r = hermes.handle("send_email", {"body": "hi"}, {})
+    assert "who" in r["response"].lower()
+    assert r.get("needs_confirmation", False) is False
+    assert agent.sent_emails == []
 
 
-def test_get_user_info_unknown_key_is_low_confidence_not_an_error():
-    core = make_core()
-    r = core.handle("get_user_info", {"key": "unknown_thing"}, {})
-    assert r["confidence"] == 0.3
-    assert r["response"]
+def test_send_email_missing_body_asks_what_without_confirmation_flow():
+    agent = FakeGoogleAgent()
+    hermes = make_hermes(agent)
+    r = hermes.handle("send_email", {"to": "bob@example.com"}, {})
+    assert "what" in r["response"].lower()
+    assert r.get("needs_confirmation", False) is False
+    assert agent.sent_emails == []
 
 
-# ---------------------------------------------------------------------------
-# take_note / get_notes round trip (uses the "Note saved:" prefix contract)
-# ---------------------------------------------------------------------------
+def test_send_email_first_call_asks_for_confirmation_and_sends_nothing():
+    agent = FakeGoogleAgent()
+    hermes = make_hermes(agent)
 
-def test_take_note_extracts_content_from_entities():
-    core = make_core()
-    r = core.handle("take_note", {"content": "buy milk"}, "")
-    assert r["data"]["note"] == "buy milk"
-    assert r["response"] == "Note saved: buy milk"
-
-
-def test_take_note_falls_back_to_stripping_raw_query():
-    core = make_core()
-    r = core.handle("take_note", {"raw_query": "take a note: buy toy"}, {})
-    assert r["data"]["note"] == "buy toy"
-
-
-def test_get_notes_reads_note_content_back_from_response_prefix():
-    mem = FakeMemory()
-    mem.db.rows.append({"query": "take a note buy milk", "response": "Note saved: buy milk", "intent": "take_note"})
-    core = make_core(mem)
-    r = core.handle("get_notes", {}, {})
-    assert "buy milk" in r["response"]
-    assert "Note saved" not in r["response"]
-
-
-def test_get_notes_empty_reports_no_notes():
-    core = make_core()
-    r = core.handle("get_notes", {}, {})
-    assert "No notes" in r["response"]
-
-
-# ---------------------------------------------------------------------------
-# can_handle / unknown intent contract
-# ---------------------------------------------------------------------------
-
-def test_can_handle_covers_all_declared_intents():
-    core = make_core()
-    for intent in (
-        "save_name", "take_note", "get_notes", "delete_notes",
-        "get_history", "set_preference", "get_system_info",
-        "get_user_info", "chat",
-    ):
-        assert core.can_handle(intent)
-    assert not core.can_handle("totally_unknown_intent")
-
-
-def test_unhandled_intent_returns_blank_zero_confidence_not_a_crash():
-    core = make_core()
-    r = core.handle("totally_unknown_intent", {}, {})
-    assert r["confidence"] == 0.0
-    assert r["data"] == {}
-
-
-# ---------------------------------------------------------------------------
-# Orchestrator: registration, dispatch, and error containment
-# ---------------------------------------------------------------------------
-
-def _build_orchestrator(core=None):
-    orch = HestiaOrchestrator()
-    orch.register_hecate(HecateEngine())
-    orch.register(core or make_core())
-    return orch
-
-
-def test_orchestrator_registers_core_and_dispatches_to_it():
-    orch = _build_orchestrator()
-    resp = orch.dispatch(
-        "what is today's date",
-        {"intent": "get_user_info", "entities": {"key": "current_date"}, "confidence": 0.9},
+    r = hermes.handle(
+        "send_email",
+        {"to": "bob@example.com", "subject": "Hi", "body": "See you at 5pm"},
+        {},
     )
-    expected = datetime.now(_TZ).strftime("%A, %B %d, %Y")
-    assert expected in resp
+
+    assert r.get("needs_confirmation") is True
+    assert "bob@example.com" in r["response"]
+    assert "See you at 5pm" in r["response"]
+    assert r["confirm_intent"] == "send_email"
+    assert r["confirm_entities"] == {
+        "to": "bob@example.com", "subject": "Hi", "body": "See you at 5pm",
+    }
+    assert agent.sent_emails == []  # nothing actually sent yet
 
 
-def test_orchestrator_falls_back_gracefully_when_module_raises():
-    class _ExplodingModule(BaseModule):
-        name = "core"
+def test_send_email_confirmed_call_actually_sends():
+    agent = FakeGoogleAgent()
+    hermes = make_hermes(agent)
 
-        def can_handle(self, intent):
-            return True
+    preview = hermes.handle(
+        "send_email", {"to": "bob@example.com", "body": "hi"}, {},
+    )
+    assert preview.get("needs_confirmation") is True
 
-        def handle(self, intent, entities, context):
+    r = hermes.handle(
+        "send_email",
+        {"to": "bob@example.com", "subject": "Message from Hestia", "body": "hi", "_confirmed": True},
+        {},
+    )
+
+    assert r["confidence"] > 0
+    assert "sent" in r["response"].lower()
+    assert agent.sent_emails == [("bob@example.com", "Message from Hestia", "hi")]
+
+
+def test_send_email_confirmed_call_reports_failure_without_crashing():
+    agent = FakeGoogleAgent()
+    agent.send_should_succeed = False
+    hermes = make_hermes(agent)
+
+    r = hermes.handle(
+        "send_email",
+        {"to": "bob@example.com", "subject": "Hi", "body": "hi", "_confirmed": True},
+        {},
+    )
+    assert r["confidence"] == 0.0
+    assert "couldn't send" in r["response"].lower()
+    assert agent.sent_emails == [("bob@example.com", "Hi", "hi")]  # attempted once
+
+
+def test_send_email_confirmed_call_survives_agent_exception():
+    class _ExplodingAgent(FakeGoogleAgent):
+        def send_email(self, to, subject, body):
+            raise RuntimeError("network down")
+
+    hermes = make_hermes(_ExplodingAgent())
+    r = hermes.handle(
+        "send_email",
+        {"to": "bob@example.com", "subject": "Hi", "body": "hi", "_confirmed": True},
+        {},
+    )
+    assert r["confidence"] == 0.0
+    assert r["response"]  # graceful message, not a raised exception
+
+
+def test_send_email_preview_truncates_long_body_for_readability():
+    agent = FakeGoogleAgent()
+    hermes = make_hermes(agent)
+    long_body = "x" * 500
+    r = hermes.handle("send_email", {"to": "bob@example.com", "body": long_body}, {})
+    assert r.get("needs_confirmation") is True
+    assert len(r["response"]) < len(long_body)
+    assert "…" in r["response"]
+    # The FULL body is preserved in confirm_entities for the actual send,
+    # not the truncated preview text.
+    assert r["confirm_entities"]["body"] == long_body
+
+
+# ---------------------------------------------------------------------------
+# Baseline sanity: intents / aliases / dispatch contract
+# ---------------------------------------------------------------------------
+
+def test_can_handle_covers_all_declared_intents_and_aliases():
+    hermes = make_hermes()
+    for intent in ("read_email", "send_email", "list_events", "create_event", "delete_events"):
+        assert hermes.can_handle(intent)
+    for alias in ("check_email", "get_calendar_event", "schedule_event", "clear_calendar"):
+        assert hermes.can_handle(alias)
+    assert not hermes.can_handle("totally_unknown_intent")
+
+
+def test_unhandled_intent_returns_graceful_response_not_a_crash():
+    hermes = make_hermes()
+    r = hermes.handle("totally_unknown_intent", {}, {})
+    assert r["confidence"] == 0.0
+    assert r["response"]
+
+
+def test_read_email_summarises_via_agent():
+    agent = FakeGoogleAgent()
+    hermes = make_hermes(agent)
+    r = hermes.handle("read_email", {}, {})
+    assert r["response"] == "No emails."
+
+
+def test_engine_never_raises_when_agent_read_emails_throws():
+    class _ExplodingAgent(FakeGoogleAgent):
+        def read_emails(self, max_results=5):
             raise RuntimeError("boom")
 
-    orch = HestiaOrchestrator()
-    orch.register_hecate(HecateEngine())
-    orch.register(_ExplodingModule())
-    resp = orch.dispatch("anything", {"intent": "chat", "entities": {}, "confidence": 0.9})
-    assert resp  # a graceful string, never an unhandled exception
-
-
-def test_orchestrator_rejects_non_basemodule_registration():
-    orch = HestiaOrchestrator()
-    try:
-        orch.register(object())
-        assert False, "expected TypeError"
-    except TypeError:
-        pass
-
-
-def test_orchestrator_replacing_a_module_updates_active_modules_once():
-    orch = _build_orchestrator()
-    orch.register(make_core())  # re-register "core"
-    assert orch.registered_modules.count("core") == 1
+    hermes = make_hermes(_ExplodingAgent())
+    r = hermes.handle("read_email", {}, {})
+    assert r["confidence"] == 0.0
+    assert r["response"]
 
 
 if __name__ == "__main__":

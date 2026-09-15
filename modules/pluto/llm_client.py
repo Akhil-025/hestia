@@ -8,6 +8,7 @@ Unified LLM client with fallback and structured output.
 
 import json
 import logging
+import time
 from enum import Enum
 from typing import Optional, Union, Dict, Any
 
@@ -15,6 +16,15 @@ from .config import PlutoConfig
 from .retry import retry
 
 logger = logging.getLogger(__name__)
+
+# Same logger name core/ollama_client.py uses, deliberately — Pluto's
+# ReAct agent (agents.py) makes several sequential generate() calls per
+# query through THIS client, not through core.ollama_client, so its calls
+# were previously invisible to any timing/profiling done on the shared
+# client. Tagging both with one logger name means a single log grep shows
+# the full timeline of a query regardless of which client made the call —
+# see core/ollama_client.py's module docstring for the full reasoning.
+_latency_logger = logging.getLogger("hestia.llm_latency")
 
 
 class OutputFormat(str, Enum):
@@ -80,11 +90,24 @@ class LLMClient:
             "stream": False,
         }
         payload.update(kwargs)
+        t0 = time.perf_counter()
         try:
             response = requests.post(url, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
-            return data.get("response", "")
+            result = data.get("response", "")
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            _latency_logger.info(
+                "ollama call ok source=pluto model=%s elapsed_ms=%.0f "
+                "prompt_chars=%d response_chars=%d",
+                self.config.ollama_model, elapsed_ms, len(prompt), len(result),
+            )
+            return result
         except Exception as e:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            _latency_logger.warning(
+                "ollama call failed source=pluto model=%s elapsed_ms=%.0f error=%s",
+                self.config.ollama_model, elapsed_ms, e,
+            )
             logger.error(f"Ollama call failed: {e}")
             raise

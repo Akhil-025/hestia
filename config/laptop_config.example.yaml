@@ -1,0 +1,166 @@
+# config/laptop_config.example.yaml
+#
+# Template — copy this to config/laptop_config.yaml and fill in your own
+# values. laptop_config.yaml itself is gitignored (see .gitignore) so your
+# real Telegram chat ID, local paths, etc. never get committed. This file
+# should only ever contain placeholders.
+
+
+# Browser automation
+browser:
+  enabled: true
+  headless: true
+
+# Web UI dashboard
+webui:
+  enabled: true
+  host: "127.0.0.1"
+  port: 5000
+
+# Google integration
+google:
+  enabled: true
+  credentials_path: "config/google_credentials.json"
+  token_path: "data/google_token.json"
+
+# General
+database:
+  path: "data/hestia.db"
+
+# STT (Whisper via faster-whisper)
+stt:
+  model_size: "base.en"
+  # "auto" picks cuda if a usable GPU is detected, else cpu. "cuda" now
+  # also degrades to cpu automatically (with a printed warning) instead of
+  # crashing on machines without an NVIDIA GPU — see core/stt.py's
+  # _resolve_device(). float16 is only valid on GPU and is auto-downgraded
+  # to int8 whenever the resolved device is cpu, so this is safe to leave
+  # as-is on any machine.
+  device: "auto"
+  compute_type: "float16"
+  samplerate: 16000
+  noise_filter: true
+
+# TTS
+tts:
+  engine: "pyttsx3"  # or "piper", "coqui"
+  rate: 175
+  volume: 1.0
+  piper_model_path: "models/piper/en_US-lessac-medium.onnx"
+
+# Wake word (Vosk)
+wake_word:
+  model_path: "models/vosk-model-small-en-us-0.15"
+  wake_words: null
+
+# Barge-in: lets you interrupt Hestia mid-reply by just talking over her,
+# instead of waiting for her to finish — see core/barge_in.py. Only ever
+# listens while she's actually speaking, so it never competes with
+# wake-word detection or STT for the microphone.
+#
+# IMPORTANT — no echo cancellation: this is plain VAD + amplitude
+# detection, not real acoustic echo cancellation (AEC). On a laptop with
+# the mic and speakers close together, Hestia's own voice can bleed into
+# the mic and trigger a false self-interruption. `min_rms` below is a
+# partial mitigation, not a fix — a headset (mic physically isolated
+# from the speaker output) is the reliable way to avoid this.
+barge_in:
+  enabled: true
+  vad_aggressiveness: 2       # webrtcvad 0-3, higher = stricter
+  speech_frames_to_trigger: 3  # consecutive 30ms speech frames (~90ms) to fire
+  min_rms: 300.0               # amplitude floor (0-32768) a frame must also
+                                # clear to count toward the trigger; raise
+                                # this (try 600-1200) if Hestia is cutting
+                                # herself off on laptop speakers, lower it
+                                # (or set to 0) if real interruptions are
+                                # being missed. See core/barge_in.py.
+  pre_roll_frames: 10          # ~300ms of audio kept buffered before a
+                                # trigger so the follow-up recording isn't
+                                # missing its lead-in
+  post_trigger_silence_frames: 25  # ~750ms of silence ends the follow-up
+                                    # recording that starts once barge-in
+                                    # fires
+  max_capture_seconds: 12.0    # hard cap on that follow-up recording
+
+# Ollama
+ollama:
+  model: "mistral"
+  host: "127.0.0.1"
+  port: 11434
+
+# Chronos (time/date/weather/reminders) — get_time/get_date default to
+# UTC if this is missing, which will look "wrong" for any non-UTC user.
+chronos:
+  timezone: "Asia/Kolkata"
+
+# LLM providers (priority order)
+llm:
+  providers:
+    - name: "ollama"
+      model: "mistral"
+      host: "127.0.0.1"
+      port: 11434
+
+# NLU
+nlu:
+  prompt_path: "config/nlu_prompt.txt"
+  # Optional — point classification at a separate model and/or a separate
+  # Ollama instance, independent of the `ollama:` block above (which
+  # reasoning/chat/RAG/Pluto's ReAct agent still use). Classification is a
+  # small structured JSON call, not full reasoning, so a smaller/faster
+  # model here can cut per-query latency without touching response quality
+  # elsewhere. Leave commented out to keep NLU on `ollama.model` (no
+  # behaviour change). Check `ollama list` for models you already have
+  # pulled, or `ollama pull <name>` for a small one, before setting this.
+  # model: "phi3"
+  # host: "127.0.0.1"
+  # port: 11435
+
+# Scheduler
+scheduler:
+  enabled: true
+  check_interval: 60  # seconds
+
+heartbeat:
+  enabled: true
+  interval: 1800
+  summarise_interval: 86400
+
+skills:
+  path: "skills"
+  enabled: true
+
+telegram:
+  enabled: true
+  # No `token:` key here on purpose. yaml.safe_load doesn't interpolate
+  # ${VAR} syntax, so a placeholder here would never resolve to a real
+  # value anyway — and secrets belong in the environment, not a file
+  # that might get committed or zipped up. Set the TELEGRAM_BOT_TOKEN
+  # environment variable instead; main.py's build_telegram_bot() reads
+  # it from there directly. See that method's docstring for the full
+  # rationale.
+  allowed_chat_ids: [123456789]  # your Telegram chat id — message @userinfobot to get yours
+
+athena:
+  enabled: true
+
+mnemosyne:
+  enabled: true
+
+iris:
+  enabled: true
+  source_dir: "C:/Users/YOUR_USERNAME/Pictures"  # e.g. "/home/you/Pictures" on Linux/macOS
+
+  # Optional overrides (recommended later)
+  db_path: "data/iris/iris.db"
+  output_dir: "data/iris/organized"
+  cache_dir: "data/iris/cache"
+  chroma_dir: "data/iris/chroma_db"
+
+  batch_size: 50
+  max_workers: 4
+  use_gpu: false
+
+
+sync:
+  enabled: false   # set true to enable multi-device sync API on port 5001

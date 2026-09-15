@@ -12,13 +12,16 @@ The JSON must contain:
 ---
 
 Valid intents:
-get_time, get_date, get_weather, set_reminder,
+get_time, get_date, get_weather, set_reminder, get_holiday,
+apollo_lookup_food, apollo_suggest_exercise,
+pluto_convert_currency, pluto_company_lookup, pluto_analyze_asset,
+dionysus_recommend_recipe, suggest_activity,
 take_note, get_notes, delete_notes, get_history,
 save_name, get_user_info, set_preference, get_system_info,
 learn_fact, forget_fact,
 chat,
-iris_search, iris_ingest, iris_status,
-athena_search,
+iris_search, iris_ingest, iris_status, iris_analyse, iris_query,
+athena_search, athena_ingest, athena_status,
 add_goal, get_goals, update_goal, remove_goal, abandon_goal,
 add_habit, complete_habit, list_habits, remove_habit,
 productivity_summary, get_at_risk_goals, get_motivation,
@@ -36,6 +39,7 @@ metis_check_consistency, metis_readability_report, metis_writing_stats,
 dionysus_recommend_movie, dionysus_find_restaurant, dionysus_recommend_music, dionysus_plan_outing,
 dionysus_dismiss_recommendation, dionysus_mark_seen,
 pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report,
+pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, pluto_financial_advisor_chat,
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
 hephaestus_scrape_page, hephaestus_open_app,
 read_email, send_email, list_events, create_event, delete_events
@@ -201,6 +205,12 @@ User: give me some motivation
 User: I need a pep talk about my habits
 {"intent": "get_motivation", "entities": {}, "response": "Let me put together a pep talk.", "confidence": 0.92}
 
+User: I'm bored, suggest something to do
+{"intent": "suggest_activity", "entities": {}, "response": "Let me find something for you to do.", "confidence": 0.93}
+
+User: give me an idea for a relaxing activity
+{"intent": "suggest_activity", "entities": {"type": "relaxation"}, "response": "Let me find something relaxing for you.", "confidence": 0.9}
+
 ---
 
 
@@ -323,6 +333,18 @@ User: log my weight as 154 lbs
 # from existing logs instead of demanding a fresh number.
 User: what's my weight trend this month
 {"intent": "apollo_log_weight", "entities": {}, "response": "Checking your weight log.", "confidence": 0.9}
+
+User: how many calories are in a banana
+{"intent": "apollo_lookup_food", "entities": {"food": "banana"}, "response": "Looking up nutrition info.", "confidence": 0.93}
+
+User: nutrition info for Nutella
+{"intent": "apollo_lookup_food", "entities": {"food": "Nutella"}, "response": "Looking up nutrition info.", "confidence": 0.95}
+
+User: suggest some exercises for chest
+{"intent": "apollo_suggest_exercise", "entities": {"muscle_group": "chest"}, "response": "Finding chest exercises.", "confidence": 0.93}
+
+User: find exercises for bench press
+{"intent": "apollo_suggest_exercise", "entities": {"muscle_group": "bench press"}, "response": "Finding exercises for that.", "confidence": 0.9}
 
 User: I drank 500ml of water
 {"intent": "apollo_log_water", "entities": {"amount": 500}, "response": "Logging your water intake.", "confidence": 0.93}
@@ -497,6 +519,15 @@ User: don't suggest Inception again
 User: I already watched The Matrix
 {"intent": "dionysus_mark_seen", "entities": {"title": "The Matrix"}, "response": "Marking that as watched.", "confidence": 0.9}
 
+User: suggest a meal for dinner
+{"intent": "dionysus_recommend_recipe", "entities": {}, "response": "Finding a recipe for you.", "confidence": 0.92}
+
+User: give me an Indian meal idea
+{"intent": "dionysus_recommend_recipe", "entities": {"cuisine": "Indian"}, "response": "Finding an Indian meal idea.", "confidence": 0.93}
+
+User: suggest a cocktail
+{"intent": "dionysus_recommend_recipe", "entities": {"type": "cocktail"}, "response": "Finding a cocktail for you.", "confidence": 0.9}
+
 ---
 
 # ---- PLUTO (FINANCE) ----
@@ -506,6 +537,21 @@ User: log an expense of 500 rupees for groceries
 
 User: give me my budget summary
 {"intent": "pluto_get_budget_summary", "entities": {}, "response": "Fetching your budget summary.", "confidence": 0.93}
+
+User: convert 100 USD to INR
+{"intent": "pluto_convert_currency", "entities": {"amount": 100, "from_currency": "USD", "to_currency": "INR"}, "response": "Converting currency.", "confidence": 0.95}
+
+User: what's the exchange rate from EUR to GBP
+{"intent": "pluto_convert_currency", "entities": {"amount": 1, "from_currency": "EUR", "to_currency": "GBP"}, "response": "Checking the exchange rate.", "confidence": 0.92}
+
+User: look up SEC filings for Apple
+{"intent": "pluto_company_lookup", "entities": {"company": "Apple"}, "response": "Looking up company filings.", "confidence": 0.9}
+
+User: search SEC for a company named Tesla
+{"intent": "pluto_company_lookup", "entities": {"company": "Tesla"}, "response": "Looking up company filings.", "confidence": 0.9}
+
+User: analyze the stock AAPL
+{"intent": "pluto_analyze_asset", "entities": {"ticker": "AAPL"}, "response": "Analyzing that asset.", "confidence": 0.92}
 
 User: track my investment in index funds
 {"intent": "pluto_track_investment", "entities": {"type": "index funds"}, "response": "Tracking your investment.", "confidence": 0.91}
@@ -565,6 +611,15 @@ User: what's the date today
 
 User: remind me to call mom tomorrow at 9am
 {"intent": "set_reminder", "entities": {"task": "call mom", "time": "09:00"}, "response": "Reminder set.", "confidence": 0.95}
+
+User: is tomorrow a public holiday
+{"intent": "get_holiday", "entities": {}, "response": "Checking the holiday calendar.", "confidence": 0.93}
+
+User: is 2026-01-26 a holiday in India
+{"intent": "get_holiday", "entities": {"date": "2026-01-26", "country": "IN"}, "response": "Checking the holiday calendar.", "confidence": 0.95}
+
+User: what public holidays are there in the US this year
+{"intent": "get_holiday", "entities": {"country": "US"}, "response": "Checking the holiday calendar.", "confidence": 0.9}
 
 User: take a note: buy milk
 {"intent": "take_note", "entities": {"content": "buy milk"}, "response": "Note saved.", "confidence": 0.96}

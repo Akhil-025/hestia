@@ -225,6 +225,62 @@ def test_forget_fact_with_none_key_does_not_crash():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# forget_fact: confirmation gating
+#
+# Forgetting a fact is irreversible and "forget fact" is exactly the kind
+# of short phrase STT gets wrong, so the first call must preview what would
+# be forgotten and ask for confirmation instead of deleting it immediately
+# (see HestiaOrchestrator's confirmation mechanism in
+# modules/hestia/orchestrator.py). Only a call carrying
+# entities["_confirmed"] = True actually forgets anything.
+# ---------------------------------------------------------------------------
+
+def test_forget_fact_unknown_key_reports_nothing_to_forget_without_asking():
+    tmp = tempfile.mkdtemp()
+    try:
+        engine, _ = make_engine(tmp)
+        r = engine.handle("forget_fact", {"key": "favourite_colour"}, {})
+        assert r.get("needs_confirmation", False) is False
+        assert "don't have anything" in r["response"].lower()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_forget_fact_first_call_asks_for_confirmation_and_forgets_nothing():
+    tmp = tempfile.mkdtemp()
+    try:
+        engine, _ = make_engine(tmp)
+        engine.learn("favourite_colour", "teal")
+
+        r = engine.handle("forget_fact", {"key": "favourite_colour"}, {})
+
+        assert r.get("needs_confirmation") is True
+        assert "teal" in r["response"]
+        assert r["confirm_intent"] == "forget_fact"
+        assert r["confirm_entities"] == {"key": "favourite_colour"}
+        # Still there — nothing was forgotten yet.
+        assert engine.db.get_fact("favourite_colour") == "teal"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_forget_fact_confirmed_call_actually_forgets():
+    tmp = tempfile.mkdtemp()
+    try:
+        engine, _ = make_engine(tmp)
+        engine.learn("favourite_colour", "teal")
+
+        preview = engine.handle("forget_fact", {"key": "favourite_colour"}, {})
+        assert preview.get("needs_confirmation") is True
+
+        r = engine.handle("forget_fact", {"key": "favourite_colour", "_confirmed": True}, {})
+        assert r["response"] == "Forgotten: favourite colour."
+        assert engine.db.get_fact("favourite_colour") is None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_get_user_info_with_real_key_still_works():
     tmp = tempfile.mkdtemp()
     try:

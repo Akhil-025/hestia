@@ -212,7 +212,19 @@ class HermesEngine(BaseModule):
         return _ok(summary, data={"emails": [_email_to_dict(e) for e in emails]})
 
     def _send_email(self, entities: dict) -> dict:
-        """Validate recipients / body and send a plain-text email."""
+        """
+        Validate recipients / body and send a plain-text email.
+
+        Two-phase, gated by the orchestrator's confirmation mechanism (see
+        HestiaOrchestrator._resolve_pending): the first call — entities has
+        no "_confirmed" flag yet — validates the request and returns a
+        preview + confirmation question WITHOUT calling Google's API. Only
+        the second call, made by the orchestrator itself after the user's
+        next reply reads as a clear "yes", actually sends anything. This
+        matters specifically because Hestia is voice-driven: a single
+        misheard recipient or body should never be enough to put a real
+        message in someone's inbox.
+        """
         to: str = (entities.get("to") or "").strip()
         subject: str = (entities.get("subject") or _DEFAULT_SUBJECT).strip()
         body: str = (
@@ -223,6 +235,21 @@ class HermesEngine(BaseModule):
             return _clarify("Who should I send it to?")
         if not body:
             return _clarify("What should the email say?")
+
+        if not entities.get("_confirmed"):
+            preview = _truncate(body, 120)
+            return {
+                "response": (
+                    f'Send an email to {to}, subject "{subject}", saying '
+                    f'"{preview}"? Say yes to send it.'
+                ),
+                "data": {"to": to, "subject": subject, "body": body},
+                "confidence": 0.9,
+                "needs_confirmation": True,
+                "confirm_intent": "send_email",
+                "confirm_entities": {"to": to, "subject": subject, "body": body},
+                "confirm_label": f"send that email to {to}",
+            }
 
         try:
             success = self._google.send_email(to, subject, body)
@@ -528,6 +555,14 @@ def _parse_time(time_str: str) -> Optional[time]:
         return time(hour, minute)
 
     return None
+
+
+def _truncate(text: str, max_len: int) -> str:
+    """Shorten *text* for a spoken/displayed confirmation preview."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
 
 
 def _clamp_int(value: Any, lo: int, hi: int) -> int:

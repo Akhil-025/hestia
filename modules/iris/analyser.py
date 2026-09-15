@@ -10,11 +10,21 @@ import io
 import re
 
 class IrisAnalyser:
-    def __init__(self, db, ollama_host: str, ollama_port: int, ollama_model: str = "llava:7b"):
+    def __init__(
+        self,
+        db,
+        ollama_host: str,
+        ollama_port: int,
+        ollama_model: str = "llava:7b",
+        embedder=None,     # ClipEmbedder | None — optional, degrades silently
+        vector_index=None,  # ImageVectorIndex | None — optional, degrades silently
+    ):
         self.db = db
         self.ollama_host = ollama_host
         self.ollama_port = ollama_port
         self.ollama_model = ollama_model
+        self.embedder = embedder
+        self.vector_index = vector_index
         self.logger = logging.getLogger(__name__)
 
     def analyse_file(self, file_id: int) -> bool:
@@ -47,6 +57,13 @@ class IrisAnalyser:
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG")
                 image_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            # Semantic embedding is independent of the caption LLM call below
+            # (different failure modes — a slow/unavailable Ollama vision
+            # model shouldn't block CLIP indexing, and vice versa), so it
+            # runs as its own best-effort step. Both `embedder` and
+            # `vector_index` are optional and silently no-op if unavailable.
+            self._embed_and_index(file_id, file_path)
 
             prompt = (
                 "You are an image description assistant. "
@@ -101,6 +118,24 @@ class IrisAnalyser:
             except Exception:
                 pass
             return False
+
+    def _embed_and_index(self, file_id: int, file_path: Path) -> None:
+        """
+        Best-effort: compute a CLIP embedding for this image and upsert it
+        into the vector index, keyed by Iris's own file_id. Never raises —
+        a missing/unavailable embedder or vector_index (e.g. torch not
+        installed) must not block caption analysis, which is the primary
+        path this method is called from.
+        """
+        if self.embedder is None or self.vector_index is None:
+            return
+        try:
+            vector = self.embedder.embed_image(file_path)
+            if vector is None:
+                return
+            self.vector_index.upsert(file_id, vector)
+        except Exception as e:
+            self.logger.warning(f"[Iris] Embedding step failed for file {file_id}: {e}")
 
     def _send_to_ollama(self, image_base64: str, prompt: str) -> str:
         url = f"http://{self.ollama_host}:{self.ollama_port}/api/generate"

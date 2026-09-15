@@ -28,6 +28,11 @@ from datetime import date
 from typing import Any, Optional
 
 from core.ollama_client import generate
+from core.free_apis import (
+    FreeAPIError,
+    is_public_holiday as _fa_is_public_holiday,
+    suggest_activity as _fa_suggest_activity,
+)
 from modules.base import BaseModule
 from .tracker import (
     ArtemisTracker,
@@ -138,6 +143,7 @@ class ArtemisEngine(BaseModule):
         "add_goal", "update_goal", "list_goals", "get_goals",
         "remove_goal", "abandon_goal", "get_at_risk_goals",
         "productivity_summary", "get_motivation",
+        "suggest_activity",
     })
 
     def __init__(
@@ -200,6 +206,8 @@ class ArtemisEngine(BaseModule):
             return self._productivity_summary()
         if intent == "get_motivation":
             return self._motivation()
+        if intent == "suggest_activity":
+            return self._suggest_activity(entities)
         return {"response": "Artemis can't handle that request.", "data": {}, "confidence": 0.5}
 
     # ------------------------------------------------------------------
@@ -439,14 +447,43 @@ class ArtemisEngine(BaseModule):
 
         response = f"{response}\n\n{coaching}"
 
+        # Holiday-aware framing: a quiet day that happens to be a public
+        # holiday shouldn't read as a habit failure. Best-effort only —
+        # Nager.Date is free/keyless but this must never block the summary
+        # if it's unreachable.
+        holiday_name: Optional[str] = None
+        try:
+            holiday_name = _fa_is_public_holiday(today.isoformat())
+        except FreeAPIError:
+            logger.debug("_productivity_summary: holiday check unavailable.", exc_info=True)
+        if holiday_name:
+            response += f"\n\n(Today is {holiday_name} — factor that into today's numbers.)"
+
         data = {
             "avg_streak": avg_streak,
             "habits": {name: v.to_dict() for name, v in habits.items()},
             "goals": {name: v.to_dict() for name, v in goals.items()},
             "at_risk_goals": {name: g.to_dict() for name, g in at_risk.items()},
             "overdue_goals": list(overdue.keys()),
+            "holiday_today": holiday_name,
         }
         return _ok(response, data=data, confidence=0.8)
+
+    def _suggest_activity(self, entities: dict) -> dict:
+        """
+        Suggest a concrete activity to break stagnation, via the Bored
+        API (free, no key; falls back to a small static list if the
+        remote service is unreachable — see core/free_apis.py). New
+        intent: `suggest_activity`.
+        """
+        activity_type = (entities.get("type") or entities.get("category") or "").strip() or None
+        suggestion = _fa_suggest_activity(activity_type)
+        activity = suggestion.get("activity", "Take a short break and stretch.")
+        kind = suggestion.get("type")
+        response = f"Here's an idea: {activity}"
+        if kind:
+            response += f" ({kind})"
+        return _ok(response, data={"suggestion": suggestion}, confidence=0.75)
 
     def _motivation(self) -> dict:
         habits = self.tracker.get_habits()

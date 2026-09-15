@@ -38,6 +38,32 @@ class HestiaLLMAdapter:
                 text = response.get("text", "")
             else:
                 text = str(response)
+
+            # core.ollama_client.generate() — what self.llm ultimately calls
+            # — never raises. Every failure (Ollama unreachable, timed out,
+            # bad HTTP status, ...) is caught there, logged to the
+            # "hestia.llm_latency" logger, and turned into "". That meant a
+            # fully failed generation call landed here looking identical to
+            # success: {"text": "", "error": None, ...}. query_service.py's
+            # _generate_answer() only raises LLMError when "error" is set
+            # (correctly — see that file), so it never fired for this case:
+            # a connectivity failure during RAG synthesis silently produced
+            # an empty "answer" with no error at all, rather than surfacing
+            # one. Athena's own contract (see class docstring) has no
+            # legitimate case where an empty string is a valid answer, so
+            # treat it as a failure here explicitly — regardless of which
+            # underlying cause produced it (that detail is already in the
+            # hestia.llm_latency log if needed).
+            if not text or not text.strip():
+                logger.warning(
+                    "HestiaLLMAdapter.generate: LLM returned an empty "
+                    "response (see hestia.llm_latency log for cause)."
+                )
+                return {
+                    "text": "",
+                    "error": "LLM returned an empty response.",
+                    "meta": {},
+                }
             return {"text": text, "error": None, "meta": {}}
         except Exception as e:
             logger.exception("HestiaLLMAdapter.generate failed")

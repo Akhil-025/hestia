@@ -33,7 +33,7 @@ It integrates multiple data sources into a single assistant capable of **cross-d
 - **Unified intelligence** — memory + documents + media in one system
 - **Cross-module reasoning** — answers combine multiple data sources
 - **Modular architecture** — easily extensible and maintainable
-- **Deterministic routing** — predictable, controllable behavior
+- **Deterministic routing** — the same input always reaches the same module; routing is a fixed set of rules (registry lookup, then ordered fallback tiers), not an LLM call, so behavior is repeatable and auditable — though the fallback tiers are hand-tuned heuristics, not a formal grammar (see Hecate's engine.py)
 
 ---
 
@@ -41,7 +41,7 @@ It integrates multiple data sources into a single assistant capable of **cross-d
 
 ### Execution Flow
 
-Every query follows the same deterministic path through the system. No module calls another directly — all routing is centralized through Hecate.
+Every query follows the same repeatable path through the system — Hecate resolves routing from a fixed, ordered set of rules rather than a model call, so a given input always reaches the same module. No module calls another directly — all routing is centralized through Hecate.
 
 ```mermaid
 flowchart TD
@@ -299,6 +299,7 @@ Controls:
 - Routing is improving (partially heuristic)
 - No multi-device sync
 
+
 ---
 
 ## Roadmap
@@ -315,7 +316,7 @@ Controls:
 
 - Local-first over cloud-dependent
 - Modular over monolithic
-- Deterministic routing over opaque behavior
+- Deterministic, rule-based routing over opaque model-driven behavior
 - User data ownership as a core constraint
 
 ---

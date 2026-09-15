@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from modules.base import BaseModule
 from core.ollama_client import generate
+from core.free_apis import FreeAPIError, sec_company_search as _fa_sec_company_search
 
 log = logging.getLogger(__name__)
 
@@ -631,8 +632,27 @@ class AresEngine(BaseModule):
             f"Known competitors/rivals: {competitors}" if competitors else ""
         )
 
+        # Best-effort grounding in real public-record data via SEC EDGAR
+        # (free, keyless). Only fires for topics that resolve to a
+        # US-listed filer — most competitive_analysis topics won't, and
+        # that's fine; this is a bonus signal, not a requirement, so a
+        # miss or a network failure must never block the analysis.
+        sec_line = ""
+        try:
+            matches = _fa_sec_company_search(topic)
+        except FreeAPIError:
+            log.debug("_competitive_analysis: SEC EDGAR lookup unavailable.", exc_info=True)
+            matches = []
+        if matches:
+            names = ", ".join(f"{m.get('title')} ({m.get('ticker')})" for m in matches[:3])
+            sec_line = f"SEC EDGAR public filers matching {topic!r}: {names}"
+
+        grounding = self._grounding(context) or "(none)"
+        if sec_line:
+            grounding = f"{grounding}\n{sec_line}" if grounding != "(none)" else sec_line
+
         raw    = self._ollama_call(
-            _COMPETITIVE_PROMPT.format(topic=topic, competitors_line=competitors_line, grounding=self._grounding(context) or "(none)")
+            _COMPETITIVE_PROMPT.format(topic=topic, competitors_line=competitors_line, grounding=grounding)
         )
         result = self._parse(raw, "competitive_analysis")
 
@@ -641,6 +661,9 @@ class AresEngine(BaseModule):
                     "data": {}, "confidence": 0.3}
 
         response = self._format_competitive(topic, result)
+        if sec_line:
+            response += f"\n\nPUBLIC FILINGS\n  {sec_line}"
+            result["sec_matches"] = matches
         self._persist(f"competitive_{topic}", response)
 
         return {"response": response, "data": result, "confidence": 0.9}

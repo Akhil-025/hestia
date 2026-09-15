@@ -23,6 +23,23 @@ class PlutoConfig(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_timeout: int = 10
+    # Collection analyze_asset() stores past analyses into for later
+    # similarity search (see MarketIntelligenceManager._store_in_qdrant /
+    # find_similar_analyses). Created automatically on first write.
+    qdrant_collection: str = "pluto_market_analysis"
+
+    # Sentence-transformer used to embed analysis text for Qdrant storage.
+    # Same default model Athena's local_rag.py uses, so there's only one
+    # model to have downloaded/cached for text embeddings across the repo.
+    embedding_model: str = "all-MiniLM-L6-v2"
+
+    # Optional trained XGBoost model for MarketIntelligenceManager's
+    # generate_quant_score(). When unset or the file doesn't exist,
+    # generate_quant_score() falls back to a documented technical-
+    # indicator heuristic instead of silently scoring with an untrained
+    # model — there is no default path here on purpose, since shipping
+    # one would imply a model exists when none is trained yet.
+    stock_model_path: Optional[Path] = None
 
     # Ollama
     ollama_host: str = "127.0.0.1"

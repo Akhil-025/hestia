@@ -7,25 +7,28 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
   <style>
+    /* Palette drawn from illustrated-Greek-mythology editorial decks:
+       parchment/cream ground, deep teal-navy ink, terracotta + dusty
+       rose accents. Hestia = hearth goddess, so warm terracotta stands
+       in for the old violet "glow" as the primary accent. */
     :root {
-      --bg:        #080810;
-      --surface:   #0e0e1a;
-      --surface2:  #14141f;
-      --border:    #1e1e2e;
-      --border2:   #26263a;
-      --text:      #ddddf0;
-      --muted:     #6060808;
-      --muted:     #606080;
-      --accent:    #a78bfa;
-      --accent2:   #c4b5fd;
-      --accent3:   #7c3aed;
-      --green:     #34d399;
-      --yellow:    #fbbf24;
-      --red:       #f87171;
-      --blue:      #60a5fa;
-      --teal:      #2dd4bf;
-      --glow:      rgba(167,139,250,0.08);
-      --glow2:     rgba(167,139,250,0.15);
+      --bg:        #f1e6d3;
+      --surface:   #faf3e6;
+      --surface2:  #f5ead6;
+      --border:    #e4d3b3;
+      --border2:   #d3bd93;
+      --text:      #1f3b3d;
+      --muted:     #7a6a55;
+      --accent:    #c1502e;
+      --accent2:   #a63f28;
+      --accent3:   #b85c38;
+      --green:     #6b7f3f;
+      --yellow:    #c9962f;
+      --red:       #a63f28;
+      --blue:      #2f5f66;
+      --teal:      #3c7169;
+      --glow:      rgba(193,80,46,0.08);
+      --glow2:     rgba(193,80,46,0.16);
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -67,23 +70,41 @@
     }
 
     .brand {
-      padding: 32px 24px 24px;
+      padding: 32px 24px 20px;
       display: flex;
       align-items: center;
       gap: 12px;
     }
 
     .brand-icon {
-      width: 34px;
-      height: 34px;
-      border-radius: 10px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
       background: linear-gradient(135deg, var(--accent3), var(--accent));
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 17px;
       flex-shrink: 0;
-      box-shadow: 0 0 16px rgba(124,58,237,0.4);
+      box-shadow: 0 0 16px rgba(193,80,46,0.35);
+      border: 2px solid var(--surface2);
+      outline: 1px solid var(--border2);
+    }
+
+    .brand-icon img {
+      width: 19px;
+      height: auto;
+      display: block;
+    }
+
+    /* Greek-key meander, in place of the old straight rule */
+    .meander {
+      height: 12px;
+      margin: 0 24px 20px;
+      opacity: 0.6;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='12' viewBox='0 0 24 12'%3E%3Cpath d='M0 9 H6 V3 H12 V9 H18 V3 H24' fill='none' stroke='%23d3bd93' stroke-width='1.6'/%3E%3C/svg%3E");
+      background-repeat: repeat-x;
+      background-position: left center;
     }
 
     .brand-name {
@@ -216,7 +237,7 @@
       position: fixed;
       top: -200px; right: -200px;
       width: 600px; height: 600px;
-      background: radial-gradient(circle, rgba(124,58,237,0.06) 0%, transparent 70%);
+      background: radial-gradient(circle, rgba(193,80,46,0.07) 0%, transparent 70%);
       pointer-events: none;
       z-index: 0;
     }
@@ -227,18 +248,81 @@
       max-width: 1000px;
       position: relative;
       z-index: 1;
-      animation: fadeIn 0.2s ease;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.28s cubic-bezier(.16,1,.3,1), transform 0.28s cubic-bezier(.16,1,.3,1);
     }
     .section.active { display: block; }
+    .section.active.show { opacity: 1; transform: translateY(0); }
 
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(6px); }
+    /* Staggered entrance for grid/list children each time a section shows */
+    .section.show .metric-card,
+    .section.show .activity-item,
+    .section.show .history-item,
+    .section.show .note-card,
+    .section.show .skill-card,
+    .section.show .mood-row {
+      animation: itemIn 0.35s cubic-bezier(.16,1,.3,1) both;
+    }
+    .section.show .metric-card:nth-child(1) { animation-delay: 0.02s; }
+    .section.show .metric-card:nth-child(2) { animation-delay: 0.06s; }
+    .section.show .metric-card:nth-child(3) { animation-delay: 0.10s; }
+    .section.show .metric-card:nth-child(4) { animation-delay: 0.14s; }
+
+    @keyframes itemIn {
+      from { opacity: 0; transform: translateY(7px); }
       to   { opacity: 1; transform: translateY(0); }
     }
 
     /* ── Section header ──────────────────────── */
     .page-header {
       margin-bottom: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .page-header-text { min-width: 240px; }
+
+    /* Torn-paper edge, echoing the illustrated decks' color-block breaks */
+    .page-header::after {
+      content: '';
+      display: block;
+      width: 100%;
+      margin-top: 18px;
+      height: 9px;
+      background:
+        linear-gradient(135deg, var(--border2) 25%, transparent 25%) 0 0,
+        linear-gradient(225deg, var(--border2) 25%, transparent 25%) 0 0;
+      background-size: 14px 14px;
+      opacity: 0.6;
+    }
+
+    /* ── Section emblem — illustrated figures from the mythology deck ── */
+    .page-figure {
+      height: 116px;
+      width: auto;
+      max-width: 160px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    .page-figure img {
+      height: 100%;
+      width: auto;
+      max-width: 160px;
+      object-fit: contain;
+      display: block;
+      filter: drop-shadow(0 12px 16px rgba(31,59,61,0.16));
+      transition: transform 0.25s ease;
+    }
+    .page-figure:hover img { transform: translateY(-3px); }
+
+    @media (max-width: 560px) {
+      .page-figure { display: none; }
     }
 
     .page-eyebrow {
@@ -279,7 +363,8 @@
       padding: 20px 16px;
       position: relative;
       overflow: hidden;
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      box-shadow: 0 2px 0 rgba(122,106,85,0.08);
     }
 
     .metric-card::before {
@@ -362,12 +447,12 @@
       flex-shrink: 0;
     }
 
-    .badge-time   { background: rgba(96,165,250,0.15); color: var(--blue); border: 1px solid rgba(96,165,250,0.2); }
-    .badge-note   { background: rgba(52,211,153,0.15); color: var(--green); border: 1px solid rgba(52,211,153,0.2); }
-    .badge-chat   { background: rgba(167,139,250,0.15); color: var(--accent2); border: 1px solid rgba(167,139,250,0.2); }
-    .badge-remind { background: rgba(251,191,36,0.15); color: var(--yellow); border: 1px solid rgba(251,191,36,0.2); }
-    .badge-weather{ background: rgba(45,212,191,0.15); color: var(--teal); border: 1px solid rgba(45,212,191,0.2); }
-    .badge-other  { background: rgba(96,96,128,0.15); color: var(--muted); border: 1px solid rgba(96,96,128,0.2); }
+    .badge-time   { background: rgba(47,95,102,0.12); color: var(--blue); border: 1px solid rgba(47,95,102,0.25); }
+    .badge-note   { background: rgba(107,127,63,0.14); color: var(--green); border: 1px solid rgba(107,127,63,0.25); }
+    .badge-chat   { background: rgba(184,92,56,0.14); color: var(--accent2); border: 1px solid rgba(184,92,56,0.25); }
+    .badge-remind { background: rgba(201,150,47,0.16); color: var(--yellow); border: 1px solid rgba(201,150,47,0.25); }
+    .badge-weather{ background: rgba(60,113,105,0.14); color: var(--teal); border: 1px solid rgba(60,113,105,0.25); }
+    .badge-other  { background: rgba(122,106,85,0.14); color: var(--muted); border: 1px solid rgba(122,106,85,0.25); }
 
     /* ── Timestamp ───────────────────────────── */
     .ts {
@@ -578,9 +663,9 @@
       flex-shrink: 0;
     }
 
-    .pip-pos { background: var(--green); box-shadow: 0 0 6px rgba(52,211,153,0.5); }
+    .pip-pos { background: var(--green); box-shadow: 0 0 6px rgba(107,127,63,0.5); }
     .pip-neu { background: var(--muted); }
-    .pip-neg { background: var(--red); box-shadow: 0 0 6px rgba(248,113,113,0.4); }
+    .pip-neg { background: var(--red); box-shadow: 0 0 6px rgba(166,63,40,0.4); }
 
     .mood-time { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--muted); }
     .mood-label { font-size: 14px; color: var(--text); }
@@ -685,7 +770,7 @@
 
     .bubble.user {
       background: linear-gradient(135deg, var(--accent3), var(--accent));
-      color: #fff;
+      color: #faf3e6;
       border-bottom-right-radius: 4px;
     }
 
@@ -758,7 +843,7 @@
       background: linear-gradient(135deg, var(--accent3), var(--accent));
       border: none;
       border-radius: 9px;
-      color: #fff;
+      color: #faf3e6;
       font-size: 14px;
       font-family: 'DM Sans', sans-serif;
       font-weight: 500;
@@ -806,12 +891,14 @@
 <!-- ── Sidebar ──────────────────────────────────────────── -->
 <aside class="sidebar">
   <div class="brand">
-    <div class="brand-icon">🔥</div>
+    <div class="brand-icon"><img src="/static/img/gods/flame-icon.png" alt=""></div>
     <div class="brand-name">
       Hestia
       <span>personal ai</span>
     </div>
   </div>
+
+  <div class="meander"></div>
 
   <nav class="nav">
     <div class="nav-label">Navigate</div>
@@ -863,10 +950,15 @@
 <main class="main">
 
   <!-- Overview -->
-  <section id="overview" class="section active">
+  <section id="overview" class="section active show">
     <div class="page-header">
-      <div class="page-eyebrow">Dashboard</div>
-      <h1 class="page-title">Hestia is <em>running.</em></h1>
+      <div class="page-header-text">
+        <div class="page-eyebrow">Dashboard</div>
+        <h1 class="page-title">Hestia is <em>running.</em></h1>
+      </div>
+      <div class="page-figure" aria-hidden="true">
+        <img src="/static/img/gods/hearth.png" alt="">
+      </div>
     </div>
 
     <div class="metric-grid">
@@ -897,8 +989,13 @@
   <!-- History -->
   <section id="history" class="section">
     <div class="page-header">
-      <div class="page-eyebrow">Memory</div>
-      <h1 class="page-title"><em>Interaction</em> History</h1>
+      <div class="page-header-text">
+        <div class="page-eyebrow">Memory</div>
+        <h1 class="page-title"><em>Interaction</em> History</h1>
+      </div>
+      <div class="page-figure" aria-hidden="true">
+        <img src="/static/img/gods/underworld.png" alt="">
+      </div>
     </div>
     <div class="search-wrap">
       <span class="search-icon">⌕</span>
@@ -912,8 +1009,13 @@
   <!-- Notes -->
   <section id="notes" class="section">
     <div class="page-header">
-      <div class="page-eyebrow">Mnemosyne</div>
-      <h1 class="page-title">Your <em>Notes</em></h1>
+      <div class="page-header-text">
+        <div class="page-eyebrow">Mnemosyne</div>
+        <h1 class="page-title">Your <em>Notes</em></h1>
+      </div>
+      <div class="page-figure" aria-hidden="true">
+        <img src="/static/img/gods/muse.png" alt="">
+      </div>
     </div>
     <div class="notes-grid" id="notes-grid">
       <div class="empty" style="grid-column:1/-1">
@@ -925,8 +1027,13 @@
   <!-- Facts -->
   <section id="facts" class="section">
     <div class="page-header">
-      <div class="page-eyebrow">Mnemosyne</div>
-      <h1 class="page-title">Known <em>Facts</em></h1>
+      <div class="page-header-text">
+        <div class="page-eyebrow">Mnemosyne</div>
+        <h1 class="page-title">Known <em>Facts</em></h1>
+      </div>
+      <div class="page-figure" aria-hidden="true">
+        <img src="/static/img/gods/athena.png" alt="">
+      </div>
     </div>
     <table class="facts-table" id="facts-table">
       <thead>
@@ -947,8 +1054,13 @@
   <!-- Moods -->
   <section id="moods" class="section">
     <div class="page-header">
-      <div class="page-eyebrow">Wellbeing</div>
-      <h1 class="page-title">Mood <em>Log</em></h1>
+      <div class="page-header-text">
+        <div class="page-eyebrow">Wellbeing</div>
+        <h1 class="page-title">Mood <em>Log</em></h1>
+      </div>
+      <div class="page-figure" aria-hidden="true">
+        <img src="/static/img/gods/dionysus.png" alt="">
+      </div>
     </div>
     <div class="mood-timeline" id="mood-list">
       <div class="empty"><div class="empty-icon">◉</div><div class="empty-text">Loading…</div></div>
@@ -958,8 +1070,13 @@
   <!-- Skills -->
   <section id="skills" class="section">
     <div class="page-header">
-      <div class="page-eyebrow">Capabilities</div>
-      <h1 class="page-title">Loaded <em>Skills</em></h1>
+      <div class="page-header-text">
+        <div class="page-eyebrow">Capabilities</div>
+        <h1 class="page-title">Loaded <em>Skills</em></h1>
+      </div>
+      <div class="page-figure" aria-hidden="true">
+        <img src="/static/img/gods/zeus.png" alt="">
+      </div>
     </div>
     <div class="skills-grid" id="skills-grid">
       <div class="empty" style="grid-column:1/-1">
@@ -971,8 +1088,13 @@
   <!-- Chat -->
   <section id="chat" class="section">
     <div class="page-header">
-      <div class="page-eyebrow">Interface</div>
-      <h1 class="page-title">Talk to <em>Hestia</em></h1>
+      <div class="page-header-text">
+        <div class="page-eyebrow">Interface</div>
+        <h1 class="page-title">Talk to <em>Hestia</em></h1>
+      </div>
+      <div class="page-figure" aria-hidden="true">
+        <img src="/static/img/gods/orpheus.png" alt="">
+      </div>
     </div>
     <div class="chat-wrap">
       <div class="chat-messages" id="chat-messages"></div>
@@ -1036,17 +1158,39 @@
     if (up) up.textContent = s.uptime || '';
   }
 
-  // ── Navigation ───────────────────────────────────────
+  // ── Navigation (fade/slide crossfade between sections) ───────
   const loaded = {};
+  const mainEl = document.querySelector('.main');
+
+  function switchSection(sec) {
+    const current = document.querySelector('.section.active');
+    const next = document.getElementById(sec);
+    if (!next || current === next) return;
+
+    if (!loaded[sec]) { loadSection(sec); loaded[sec] = true; }
+
+    if (!current) {
+      next.classList.add('active');
+      requestAnimationFrame(() => next.classList.add('show'));
+      return;
+    }
+
+    current.classList.remove('show');
+    window.setTimeout(() => {
+      current.classList.remove('active');
+      next.classList.add('active');
+      mainEl.scrollTop = 0;
+      void next.offsetWidth; // force reflow so the transition re-triggers
+      requestAnimationFrame(() => next.classList.add('show'));
+    }, 200);
+  }
+
   document.querySelectorAll('.nav a').forEach(link => {
     link.addEventListener('click', e => {
       e.preventDefault();
       document.querySelectorAll('.nav a').forEach(l => l.classList.remove('active'));
       link.classList.add('active');
-      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-      const sec = link.dataset.section;
-      document.getElementById(sec).classList.add('active');
-      if (!loaded[sec]) { loadSection(sec); loaded[sec] = true; }
+      switchSection(link.dataset.section);
     });
   });
 

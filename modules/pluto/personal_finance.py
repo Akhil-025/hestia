@@ -23,6 +23,14 @@ from .llm_client import LLMClient, OutputFormat
 from .retry import retry
 from .logging_config import get_logger
 from .metrics import MetricsCollector
+from core.free_apis import (
+    FreeAPIError,
+    convert_currency as _fa_convert_currency,
+    fx_rate as _fa_fx_rate,
+    sec_company_facts as _fa_sec_company_facts,
+    sec_company_search as _fa_sec_company_search,
+    fred_series_latest as _fa_fred_series_latest,
+)
 
 logger = get_logger(__name__)
 
@@ -325,6 +333,85 @@ class PersonalFinanceManager:
             data={"totals": totals, "grand_total": grand, "transaction_count": len(expenses)},
             confidence=0.95,
         )
+
+    def convert_currency(self, entities: dict) -> dict:
+        """
+        Convert an amount between currencies via Frankfurter (ECB rates,
+        free, no key, no rate limit). New intent: `convert_currency`.
+
+        Expected entities: amount, from_currency (or 'from'), to_currency
+        (or 'to'); to_currency defaults to the module's configured
+        currency symbol's ISO code when not supplied and inferable.
+        """
+        try:
+            amount = float(entities.get("amount"))
+        except (TypeError, ValueError):
+            return self._ok("How much, and in which currency?", confidence=0.5)
+
+        from_ccy = (entities.get("from_currency") or entities.get("from") or "").strip()
+        to_ccy = (entities.get("to_currency") or entities.get("to") or "INR").strip()
+        if not from_ccy:
+            return self._ok(
+                "Which currency are you converting from (e.g. USD, EUR)?", confidence=0.5
+            )
+
+        try:
+            converted = _fa_convert_currency(amount, from_ccy, to_ccy)
+            rate = _fa_fx_rate(from_ccy, to_ccy)
+        except FreeAPIError as e:
+            logger.warning("convert_currency: Frankfurter lookup failed: %s", e)
+            return self._err(
+                f"I couldn't fetch a live rate for {from_ccy.upper()}→{to_ccy.upper()} right now."
+            )
+
+        return self._ok(
+            f"{amount:,.2f} {from_ccy.upper()} = {converted:,.2f} {to_ccy.upper()} "
+            f"(rate: 1 {from_ccy.upper()} = {rate:.4f} {to_ccy.upper()})",
+            data={"amount": amount, "from": from_ccy.upper(), "to": to_ccy.upper(),
+                  "converted": converted, "rate": rate},
+            confidence=0.95,
+        )
+
+    def company_lookup(self, entities: dict) -> dict:
+        """
+        Lightweight macro/company context using two free, keyless-ish
+        sources: SEC EDGAR (company lookup, always free) and FRED
+        (macro series, needs an optional FRED_API_KEY — degrades to
+        "unavailable" rather than erroring when absent).
+
+        New intent: `company_lookup`. Deliberately named apart from
+        modules/pluto/market_intelligence.py's `MarketIntelligenceManager`
+        (a separate Postgres/Redis/XGBoost quant pipeline via
+        `analyze_asset`) — this is a much lighter, free-data-only path for
+        "what does the public record say about X" questions.
+        """
+        company = (entities.get("company") or entities.get("name") or entities.get("raw_query") or "").strip()
+        lines: list[str] = []
+
+        if company:
+            try:
+                matches = _fa_sec_company_search(company)
+            except FreeAPIError as e:
+                logger.warning("market_intelligence: SEC search failed: %s", e)
+                matches = []
+            if matches:
+                top = matches[0]
+                lines.append(
+                    f"SEC EDGAR: {top.get('title')} (ticker {top.get('ticker')}, CIK {top.get('cik_str')})"
+                )
+            else:
+                lines.append(f"No SEC EDGAR match found for {company!r} (SEC only covers US-listed filers).")
+
+        cpi = _fa_fred_series_latest("CPIAUCSL")
+        if cpi is not None:
+            lines.append(f"US CPI (FRED, latest): {cpi:.2f}")
+        else:
+            lines.append("Macro data (FRED) unavailable — set FRED_API_KEY in .env for CPI/rate context.")
+
+        if not lines:
+            return self._ok("Tell me a company name or ticker and I'll pull what public data I can.", confidence=0.5)
+
+        return self._ok("\n".join(lines), data={"company": company}, confidence=0.8)
 
     # ------------------------------------------------------------------
     # Internal Helpers

@@ -23,28 +23,19 @@ from typing import Any, Optional
 
 from modules.base import BaseModule
 from modules.hecate.engine import HecateEngine
+from modules.hecate.intent_registry import strip_module_prefix as _strip_module_prefix
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_MODULE_PREFIXES: tuple[str, ...] = (
-    "apollo_",
-    "ares_",
-    "orpheus_",
-    "dionysus_",
-    "pluto_",
-    "hermes_",
-    "chronos_",
-    "athena_",
-    "iris_",
-    "artemis_",
-    "hephaestus_",
-    "mnemosyne_",
-    "metis_",
-)
+# Module-prefix stripping now lives in modules/hecate/intent_registry.py —
+# a single source of truth shared with Hecate's router and the NLU's intent
+# whitelist, instead of a fourth independent copy of the same prefix tuple
+# living here. See that file's module docstring for the drift this used to
+# cause (intents that existed in a module's own _INTENTS set but were
+# missing from one or more of these copies, making them unreachable).
 
 _FALLBACK_DECISION: dict[str, Any] = {
     "primary": "core",
@@ -56,6 +47,64 @@ _FALLBACK_DECISION: dict[str, Any] = {
 
 _MAX_RECENT_INTENTS = 10
 _GENERIC_ERROR = "I'm sorry, something went wrong. Please try again."
+
+# ---------------------------------------------------------------------------
+# Confirmation gating
+# ---------------------------------------------------------------------------
+# Some intents are irreversible or externally visible enough (sending an
+# email, deleting every saved note, forgetting a remembered fact) that a
+# single misheard word from STT — or a bad NLU guess — shouldn't be enough
+# to actually do them. Those handlers don't perform the action on their
+# first call; instead they return `needs_confirmation=True` with the
+# `confirm_intent`/`confirm_entities` needed to actually execute it, and the
+# orchestrator holds that as pending state until the very next query either
+# confirms or cancels it (or it expires, below). See
+# HestiaOrchestrator._execute_confirmed / _classify_yes_no.
+_CONFIRMATION_TTL_SECONDS = 120
+
+_AFFIRMATIVE_PHRASES: frozenset[str] = frozenset(
+    {
+        "yes", "yeah", "yea", "yep", "yup", "confirm", "confirmed",
+        "do it", "send it", "go ahead", "sure", "please do",
+        "affirmative", "ok", "okay", "correct", "proceed",
+    }
+)
+_NEGATIVE_PHRASES: frozenset[str] = frozenset(
+    {
+        "no", "nope", "nah", "cancel", "don't", "do not", "stop",
+        "never mind", "nevermind", "negative", "abort",
+    }
+)
+# Single leading word that still counts even inside a longer reply, e.g.
+# "yes please" or "no thanks" — the exact-phrase sets above only match the
+# whole (stripped) utterance.
+_AFFIRMATIVE_LEAD_WORDS: frozenset[str] = frozenset(
+    {"yes", "yeah", "yea", "yep", "yup", "confirm", "sure", "ok", "okay"}
+)
+_NEGATIVE_LEAD_WORDS: frozenset[str] = frozenset(
+    {"no", "nope", "nah", "cancel", "stop", "negative", "abort"}
+)
+
+
+def _classify_yes_no(text: str) -> Optional[bool]:
+    """
+    Return True for an affirmative reply, False for a negative one, or None
+    if *text* doesn't clearly look like either (in which case the caller
+    should NOT guess — see the pending-confirmation handling in dispatch()).
+    """
+    q = (text or "").strip().lower().rstrip(".!?")
+    if not q:
+        return None
+    if q in _AFFIRMATIVE_PHRASES:
+        return True
+    if q in _NEGATIVE_PHRASES:
+        return False
+    words = q.split()
+    if words and words[0] in _AFFIRMATIVE_LEAD_WORDS:
+        return True
+    if words and words[0] in _NEGATIVE_LEAD_WORDS:
+        return False
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +131,30 @@ class DispatchResult:
     data: dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.0
     context_update: dict[str, Any] = field(default_factory=dict)
+    # Confirmation-gating fields — see "Confirmation gating" above. Unset
+    # (needs_confirmation=False) for the overwhelming majority of handlers;
+    # only irreversible/externally-visible actions set these.
+    needs_confirmation: bool = False
+    confirm_intent: Optional[str] = None
+    confirm_entities: dict[str, Any] = field(default_factory=dict)
+    confirm_label: str = "do that"
+
+
+@dataclass
+class PendingConfirmation:
+    """
+    A confirmation-gated action awaiting the user's next reply.
+
+    Held as single, instance-level state on the orchestrator (not per-
+    session) because Hestia is a single-user, single-conversation
+    assistant — see HestiaOrchestrator's class docstring.
+    """
+
+    module: str
+    intent: str
+    entities: dict[str, Any]
+    label: str
+    created_at: float
 
 
 @dataclass
@@ -146,6 +219,9 @@ class HestiaOrchestrator:
         self._hecate: Optional[HecateEngine] = None
         self._ctx = OrchestratorContext()
         self._lock = threading.Lock()
+        # Set only while a confirmation-gated action (see "Confirmation
+        # gating" above) is awaiting the user's yes/no on the *next* query.
+        self._pending: Optional[PendingConfirmation] = None
         # Used by _synthesize() so synthesis honours the configured model/host/port
         # instead of silently falling back to core.ollama_client's hardcoded defaults.
         self._ollama_cfg: dict = ollama_cfg or {}
@@ -219,6 +295,13 @@ class HestiaOrchestrator:
         """
         t_start = time.perf_counter()
 
+        # A confirmation-gated action from the previous turn takes priority
+        # over normal routing — this query is presumed to be the user's
+        # answer to "send it?" / "delete them?" / etc., not a new request.
+        pending_response = self._resolve_pending(raw_query)
+        if pending_response is not None:
+            return pending_response
+
         raw_intent: str = nlu_result.get("intent") or "chat"
         # Intent convention: NLU emits prefixed intents (e.g. "ares_analyse_risk").
         # The orchestrator strips the module prefix *here*, before dispatching, so
@@ -270,6 +353,27 @@ class HestiaOrchestrator:
             nlu_result=nlu_result,
         )
 
+        if isinstance(response, DispatchResult) and response.needs_confirmation:
+            # The module validated the request but deliberately did NOT
+            # perform it (see "Confirmation gating"). Hold it as pending and
+            # hand the confirmation question back as this turn's response —
+            # the actual action only runs if the *next* query reads as a
+            # clear "yes" (see _resolve_pending).
+            with self._lock:
+                self._pending = PendingConfirmation(
+                    module=primary_name,
+                    intent=response.confirm_intent or intent,
+                    entities=dict(response.confirm_entities or entities),
+                    label=response.confirm_label,
+                    created_at=time.time(),
+                )
+                self._ctx.push_intent(raw_intent)
+            logger.info(
+                "Pending confirmation set: module=%s intent=%s label=%r",
+                primary_name, response.confirm_intent or intent, response.confirm_label,
+            )
+            return response.response
+
         if isinstance(response, DispatchResult):
             # Synthesis
             if synthesize and secondary_names:
@@ -298,6 +402,168 @@ class HestiaOrchestrator:
         # String fallback (should not normally reach here)
         with self._lock:
             self._ctx.push_intent(raw_intent)
+        return response  # type: ignore[return-value]
+
+    def try_stream_chat(self, raw_query: str, nlu_result: dict[str, Any]):
+        """
+        Return a generator of text chunks for a plain conversational turn
+        that can be streamed straight into TTS as it's produced, or
+        ``None`` when this turn needs the full dispatch() machinery
+        instead.
+
+        Streams "core module, chat intent, nothing pending confirmation"
+        turns — including ones Hecate flagged for secondary-module
+        synthesis. In the blocking dispatch() path, synthesis costs a
+        second, fully-blocking LLM call after the first has already
+        finished (see _synthesize()); here, secondary context is folded
+        into the *same* streamed generation via core.stream_chat's
+        context_block (see its docstring), so synthesis no longer
+        disqualifies a turn from streaming. Any other case (any other
+        primary module, a non-chat intent, an awaited yes/no) still
+        returns None and the caller falls back to the ordinary blocking
+        dispatch(). That keeps this additive: it never changes *what*
+        gets answered, only whether — and how — the answer gets to start
+        speaking before the whole thing exists.
+        """
+        with self._lock:
+            if self._pending is not None:
+                # A confirmation is awaiting this exact reply — that flow
+                # needs dispatch()'s _resolve_pending handling, not a
+                # fresh chat completion.
+                return None
+
+        raw_intent: str = nlu_result.get("intent") or "chat"
+        intent = _strip_module_prefix(raw_intent)
+
+        decision = self._route(raw_query, nlu_result)
+        primary_name: str = decision.get("primary") or "core"
+
+        override_intent = decision.get("intent")
+        if isinstance(override_intent, str) and override_intent:
+            intent = override_intent
+
+        secondary_names = [
+            n for n in (decision.get("secondary") or []) if n != primary_name
+        ]
+        synthesize = bool(decision.get("synthesize", False))
+
+        if primary_name != "core" or intent != "chat":
+            return None
+
+        core = self._modules.get("core")
+        if core is None or not hasattr(core, "stream_chat"):
+            return None
+
+        # Mirrors dispatch()'s own gate on when synthesis actually runs
+        # ("if synthesize and secondary_names:") — if either is missing,
+        # there's nothing to fold in and this is just plain chat.
+        context_block = ""
+        if synthesize and secondary_names:
+            with self._lock:
+                context = self._ctx.as_dict()
+            _, secondary_ctx_cache = self._enrich_context(context, secondary_names)
+            if secondary_ctx_cache:
+                context_block = _build_context_block(secondary_ctx_cache)
+
+        def _generator():
+            try:
+                yield from core.stream_chat(raw_query, context_block)
+            finally:
+                with self._lock:
+                    self._ctx.push_intent(raw_intent)
+
+        return _generator()
+
+    # ------------------------------------------------------------------
+    # Private – confirmation gating
+    # ------------------------------------------------------------------
+
+    def _resolve_pending(self, raw_query: str) -> Optional[str]:
+        """
+        If a confirmation-gated action is awaiting a reply, consume this
+        query as that reply and return the resulting response string.
+        Returns None if there is nothing pending (or it just expired), in
+        which case *raw_query* should be routed normally instead.
+
+        An ambiguous reply (neither a clear yes nor a clear no) silently
+        drops the pending action rather than guessing — e.g. asking a
+        follow-up question about something unrelated must not later have a
+        stray "yes" accidentally send the email. The user simply has to
+        re-ask if they actually wanted it.
+        """
+        with self._lock:
+            pending = self._pending
+            if pending is not None and (time.time() - pending.created_at) > _CONFIRMATION_TTL_SECONDS:
+                logger.info(
+                    "Pending confirmation for %s.%s expired unanswered.",
+                    pending.module, pending.intent,
+                )
+                self._pending = None
+                pending = None
+
+        if pending is None:
+            return None
+
+        verdict = _classify_yes_no(raw_query)
+
+        if verdict is True:
+            with self._lock:
+                self._pending = None
+            return self._execute_confirmed(pending)
+
+        if verdict is False:
+            with self._lock:
+                self._pending = None
+            logger.info(
+                "Pending confirmation for %s.%s declined by user.",
+                pending.module, pending.intent,
+            )
+            return f"Okay, I won't {pending.label}."
+
+        with self._lock:
+            self._pending = None
+        logger.info(
+            "Pending confirmation for %s.%s abandoned (next query wasn't a yes/no).",
+            pending.module, pending.intent,
+        )
+        return None
+
+    def _execute_confirmed(self, pending: PendingConfirmation) -> str:
+        """
+        Actually perform a previously-confirmed action by re-dispatching
+        straight to the module that asked for confirmation, bypassing
+        Hecate — the routing decision was already made when the
+        confirmation question was first asked.
+        """
+        entities = dict(pending.entities)
+        entities["_confirmed"] = True
+        raw_query = str(entities.get("raw_query") or "")
+
+        with self._lock:
+            context = self._ctx.as_dict()
+
+        response = self._dispatch_primary(
+            primary_name=pending.module,
+            intent=pending.intent,
+            raw_intent=pending.intent,
+            entities=entities,
+            context=context,
+            raw_query=raw_query,
+            nlu_result={"intent": pending.intent, "entities": entities, "confidence": 1.0},
+        )
+
+        if isinstance(response, DispatchResult):
+            with self._lock:
+                self._ctx.apply_update(response.context_update)
+                self._ctx.push_intent(pending.intent)
+            logger.info(
+                "Confirmed action executed: module=%s intent=%s",
+                pending.module, pending.intent,
+            )
+            return response.response
+
+        with self._lock:
+            self._ctx.push_intent(pending.intent)
         return response  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
@@ -516,14 +782,6 @@ class HestiaOrchestrator:
 # Module-level pure helpers
 # ---------------------------------------------------------------------------
 
-def _strip_module_prefix(intent: str) -> str:
-    """Remove a known module prefix from *intent*, if present."""
-    for prefix in _MODULE_PREFIXES:
-        if intent.startswith(prefix):
-            return intent[len(prefix):]
-    return intent
-
-
 def _to_dispatch_result(raw: Any) -> DispatchResult:
     """
     Coerce a module's handle() return value to a DispatchResult.
@@ -540,6 +798,10 @@ def _to_dispatch_result(raw: Any) -> DispatchResult:
             data=raw.get("data") or {},
             confidence=float(raw.get("confidence") or 0.0),
             context_update=raw.get("context_update") or {},
+            needs_confirmation=bool(raw.get("needs_confirmation", False)),
+            confirm_intent=raw.get("confirm_intent"),
+            confirm_entities=raw.get("confirm_entities") or {},
+            confirm_label=str(raw.get("confirm_label") or "do that"),
         )
 
     if isinstance(raw, str):

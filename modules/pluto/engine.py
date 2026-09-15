@@ -18,6 +18,10 @@ from .config import PlutoConfig
 from .db import DatabaseManager
 from .personal_finance import PersonalFinanceManager, _err
 from .market_intelligence import MarketIntelligenceManager
+from .portfolio import PortfolioOptimizer
+from .backtest import StrategyBacktester
+from .forecasting import SpendForecaster
+from .advisor_agent import FinancialAdvisorAgent
 from .llm_client import LLMClient
 from .health import HealthChecker
 from .metrics import MetricsCollector, track_metrics
@@ -38,6 +42,8 @@ class PlutoEngine(BaseModule):
         "get_budget_summary",
         "track_investment",
         "spending_report",
+        "convert_currency",
+        "company_lookup",
     })
 
     _PF_INTENT_ALIASES: dict[str, str] = {
@@ -58,11 +64,43 @@ class PlutoEngine(BaseModule):
         "report": "spending_report",
         "get_report": "spending_report",
         "expense_report": "spending_report",
+        "convert": "convert_currency",
+        "currency_convert": "convert_currency",
+        "fx": "convert_currency",
+        "company_info": "company_lookup",
+        "lookup_company": "company_lookup",
+        "sec_lookup": "company_lookup",
     }
 
     _MI_INTENTS: frozenset[str] = frozenset({
         "analyze_asset"
     })
+
+    # Quant/ML features (portfolio.py, backtest.py, forecasting.py,
+    # advisor_agent.py) — separate from _PF_INTENTS/_MI_INTENTS because
+    # they operate on different backing managers (self.portfolio_optimizer,
+    # self.backtester, self.forecaster, self.advisor) rather than
+    # pf_manager/mi_manager.
+    _QUANT_INTENTS: frozenset[str] = frozenset({
+        "optimize_portfolio",
+        "backtest_strategy",
+        "forecast_spending",
+        "financial_advisor_chat",
+    })
+
+    _QUANT_INTENT_ALIASES: dict[str, str] = {
+        "optimise_portfolio": "optimize_portfolio",
+        "portfolio_optimization": "optimize_portfolio",
+        "rebalance_portfolio": "optimize_portfolio",
+        "backtest": "backtest_strategy",
+        "run_backtest": "backtest_strategy",
+        "forecast_expenses": "forecast_spending",
+        "predict_spending": "forecast_spending",
+        "spending_forecast": "forecast_spending",
+        "ask_pluto": "financial_advisor_chat",
+        "finance_advisor": "financial_advisor_chat",
+        "ask_financial_advisor": "financial_advisor_chat",
+    }
 
     def __init__(
         self,
@@ -74,6 +112,10 @@ class PlutoEngine(BaseModule):
         kimi_client: Optional[Any] = None,
         db_manager: Optional[DatabaseManager] = None,
         metrics: Optional[MetricsCollector] = None,
+        portfolio_optimizer: Optional[Any] = None,
+        backtester: Optional[Any] = None,
+        forecaster: Optional[Any] = None,
+        advisor: Optional[Any] = None,
     ) -> None:
         """
         `ollama_cfg` mirrors the `{host, port, model}` dict every other
@@ -104,6 +146,21 @@ class PlutoEngine(BaseModule):
 
         self.health_checker = HealthChecker(self.config, self.db_manager)
 
+        # Quant/ML features. These read from pf_manager.db (the local
+        # SQLite investments/expenses tables) rather than db_manager's
+        # Postgres/Redis/Qdrant stack, matching the local-first scope
+        # described in each module's docstring.
+        self.portfolio_optimizer = portfolio_optimizer or PortfolioOptimizer(
+            db=self.pf_manager.db, currency=self.config.currency
+        )
+        self.backtester = backtester or StrategyBacktester()
+        self.forecaster = forecaster or SpendForecaster(
+            db=self.pf_manager.db, currency=self.config.currency
+        )
+        self.advisor = advisor or FinancialAdvisorAgent(
+            pf_manager=self.pf_manager, llm_client=self.llm_client
+        )
+
         logger.info("PlutoEngine coordinator initialized.")
 
     @staticmethod
@@ -124,7 +181,9 @@ class PlutoEngine(BaseModule):
         return (
             intent in self._PF_INTENTS or
             intent in self._PF_INTENT_ALIASES or
-            intent in self._MI_INTENTS
+            intent in self._MI_INTENTS or
+            intent in self._QUANT_INTENTS or
+            intent in self._QUANT_INTENT_ALIASES
         )
 
     @track_metrics("handle")
@@ -135,6 +194,34 @@ class PlutoEngine(BaseModule):
         """
         try:
             resolved_intent = self._PF_INTENT_ALIASES.get(intent, intent)
+            resolved_intent = self._QUANT_INTENT_ALIASES.get(resolved_intent, resolved_intent)
+
+            # Quant/ML Routes
+            if resolved_intent == "optimize_portfolio":
+                return self.portfolio_optimizer.optimize()
+
+            if resolved_intent == "backtest_strategy":
+                ticker = (entities.get("ticker") or entities.get("name") or "").strip()
+                if not ticker:
+                    return _err("Which ticker should I backtest? e.g. 'backtest RELIANCE'.")
+                fast = int(entities.get("fast_window", 10) or 10)
+                slow = int(entities.get("slow_window", 50) or 50)
+                return self.backtester.backtest_sma_crossover(
+                    ticker, fast_window=fast, slow_window=slow
+                )
+
+            if resolved_intent == "forecast_spending":
+                horizon = int(entities.get("horizon_days", 7) or 7)
+                return self.forecaster.forecast(horizon_days=horizon)
+
+            if resolved_intent == "financial_advisor_chat":
+                question = (
+                    entities.get("question")
+                    or entities.get("raw_query")
+                    or entities.get("query")
+                    or ""
+                ).strip()
+                return self.advisor.ask(question)
 
             # Personal Finance Routes
             if resolved_intent == "log_expense":
@@ -145,6 +232,10 @@ class PlutoEngine(BaseModule):
                 return self.pf_manager.track_investment(entities)
             if resolved_intent == "spending_report":
                 return self.pf_manager.spending_report()
+            if resolved_intent == "convert_currency":
+                return self.pf_manager.convert_currency(entities)
+            if resolved_intent == "company_lookup":
+                return self.pf_manager.company_lookup(entities)
 
             # Market Intelligence Routes
             if resolved_intent == "analyze_asset":
@@ -153,10 +244,15 @@ class PlutoEngine(BaseModule):
                     return _err("No ticker provided for asset analysis.")
 
                 result = self.mi_manager.analyze_asset(ticker)
+                # Confidence reflects how much clean data the score is
+                # standing on (result["reliability"]), not the score's
+                # own bullish/bearish reading — a bearish-but-well-
+                # supported call shouldn't report low confidence just
+                # because quant_score itself is low.
                 return {
                     "response": result["explanation"],
                     "data": result,
-                    "confidence": min(result["quant_score"], 0.95),
+                    "confidence": min(result.get("reliability", 0.5), 0.95),
                 }
 
             return _err(f"Unknown intent: {intent!r}")

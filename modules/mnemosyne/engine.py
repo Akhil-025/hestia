@@ -203,9 +203,35 @@ class MnemosyneEngine(BaseModule):
         return _ok(f"Got it — I'll remember your {_readable(key)}.", confidence=0.95)
 
     def _handle_forget_fact(self, entities: dict) -> dict:
+        """
+        Forget a remembered fact.
+
+        Gated by the orchestrator's confirmation mechanism (see
+        HestiaOrchestrator._resolve_pending): the first call shows what's
+        about to be forgotten and asks for confirmation instead of deleting
+        it immediately — forgetting is not undoable, and "forget fact" is
+        exactly the kind of short, easily-misheard phrase STT gets wrong.
+        """
         key: str = (entities.get("key") or "").strip()
         if not key:
             return _ok("Which fact should I forget?", confidence=0.0)
+
+        if not entities.get("_confirmed"):
+            current = self.db.get_fact(key)
+            if not current:
+                return _ok(f"I don't have anything remembered for {_readable(key)}.", confidence=0.5)
+            return {
+                "response": (
+                    f"Forget that your {_readable(key)} is \"{current}\"? "
+                    "Say yes to confirm."
+                ),
+                "data": {"key": key, "value": current},
+                "confidence": 0.9,
+                "needs_confirmation": True,
+                "confirm_intent": "forget_fact",
+                "confirm_entities": {"key": key},
+                "confirm_label": f"forget your {_readable(key)}",
+            }
 
         self.forget(key)
         logger.info("Fact forgotten: key=%s", key)

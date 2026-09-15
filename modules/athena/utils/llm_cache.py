@@ -3,10 +3,13 @@ modules/athena/utils/llm_cache.py
 
 LLM response caching — fixed for Hestia (relative config import).
 """
-import json
 import hashlib
+import json
+import logging
 
 from modules.athena.config import paths
+
+logger = logging.getLogger(__name__)
 
 
 def question_hash(question: str, context_ids: list) -> str:
@@ -20,7 +23,7 @@ def load_cached_answer(qhash: str):
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"Cache read error: {e}")
+            logger.warning("Cache read error for %s: %s", qhash, e)
     return None
 
 
@@ -32,4 +35,4 @@ def save_cached_answer(qhash: str, payload: dict):
             encoding="utf-8",
         )
     except Exception as e:
-        print(f"Cache write error: {e}")
+        logger.warning("Cache write error for %s: %s", qhash, e)

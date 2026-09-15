@@ -29,6 +29,13 @@ class IrisConfig:
     batch_size: int = 50
     max_workers: int = 4
     use_gpu: bool = False
+    # Combined Hamming distance (average-hash + phash, each 64-bit with the
+    # imagehash defaults used in ingestion.py) below which two images count
+    # as near-duplicates. 0 = identical hashes. ~10-14 catches re-saves,
+    # recompressions, and minor resizes/crops without false-positiving on
+    # genuinely different photos; raise it to be stricter about what counts
+    # as "duplicate enough to skip", lower it to only catch closer matches.
+    perceptual_hash_threshold: int = 12
 
     def __post_init__(self):
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
@@ -69,6 +76,7 @@ def get_config(path: str = "config/laptop_config.yaml") -> IrisConfig:
         batch_size=iris_cfg.get("batch_size", 50),
         max_workers=iris_cfg.get("max_workers", 4),
         use_gpu=iris_cfg.get("use_gpu", False),
+        perceptual_hash_threshold=iris_cfg.get("perceptual_hash_threshold", 12),
     )
 
     return _config

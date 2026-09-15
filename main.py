@@ -68,6 +68,7 @@ logger = _configure_logging()
 
 import yaml
 
+from core.barge_in import BargeInListener
 from core.browser_agent import HestiaBrowserAgent
 from core.event_bus import bus
 from core.heartbeat import HestiaHeartbeat
@@ -155,11 +156,29 @@ class HestiaBuilder:
         )
 
     def build_nlu(self) -> HestiaNLU:
+        # NLU classification and general reasoning are different workloads
+        # sharing one model/one Ollama instance today: classification is a
+        # small schema-constrained JSON call that runs on EVERY query (see
+        # core/nlu.py), often with up to 3 retries, while reasoning (chat,
+        # RAG synthesis, Pluto's multi-step ReAct loop) is much heavier
+        # generation — see core/ollama_client.py's new latency logging for
+        # how to tell which one is actually the bottleneck before deciding
+        # this is worth acting on.
+        #
+        # HestiaNLU already accepts an independent model/host/port (see its
+        # `providers` handling); this was never wired up to config, so NLU
+        # was silently forced onto whatever `ollama.model` was. `nlu.model`
+        # (and optionally `nlu.host`/`nlu.port`, for pointing NLU at an
+        # entirely separate Ollama instance) let classification run on a
+        # smaller/faster model independently of reasoning. All three are
+        # optional and fall back to the `ollama:` block, so existing
+        # configs behave exactly as before until set.
+        nlu_cfg = self.config.get("nlu", {})
         return HestiaNLU(
-            model=self.ollama_cfg.get("model", "mistral"),
-            host=self.ollama_cfg.get("host", "127.0.0.1"),
-            port=self.ollama_cfg.get("port", 11434),
-            prompt_path=self.config.get("nlu", {}).get("prompt_path"),
+            model=nlu_cfg.get("model") or self.ollama_cfg.get("model", "mistral"),
+            host=nlu_cfg.get("host") or self.ollama_cfg.get("host", "127.0.0.1"),
+            port=nlu_cfg.get("port") or self.ollama_cfg.get("port", 11434),
+            prompt_path=nlu_cfg.get("prompt_path"),
         )
 
     def build_mnemosyne(self, llm: HestiaLLM) -> MnemosyneEngine:
@@ -328,10 +347,13 @@ class HestiaBuilder:
 
     # -- I/O --------------------------------------------------------------
 
-    def build_io(self) -> tuple[HestiaSTT, HestiaTTS, WakeWordDetector]:
+    def build_io(
+        self,
+    ) -> tuple[HestiaSTT, HestiaTTS, WakeWordDetector, BargeInListener]:
         stt_cfg = self.config.get("stt", {})
         tts_cfg = self.config.get("tts", {})
         wake_cfg = self.config.get("wake_word", {})
+        barge_in_cfg = self.config.get("barge_in", {})
 
         stt = HestiaSTT(
             model_size=stt_cfg.get("model_size", "base.en"),
@@ -351,7 +373,29 @@ class HestiaBuilder:
             model_path=wake_cfg.get("model_path", "models/vosk-model-small-en-us-0.15"),
             wake_words=wake_cfg.get("wake_words"),
         )
-        return stt, tts, wake_detector
+        # Barge-in is opt-out (default true): it only ever runs while
+        # Hestia is speaking (see Hestia._speak_streaming /
+        # _speak_with_barge_in), so leaving it enabled costs nothing when
+        # the user never interrupts, and lets them the moment they do.
+        barge_in = BargeInListener(
+            samplerate=barge_in_cfg.get("samplerate", stt_cfg.get("samplerate", 16000)),
+            vad_aggressiveness=barge_in_cfg.get("vad_aggressiveness", 2),
+            speech_frames_to_trigger=barge_in_cfg.get("speech_frames_to_trigger", 3),
+            # See core/barge_in.py's docstring: without real acoustic echo
+            # cancellation, min_rms is the only lever for cutting down
+            # false self-interruptions from Hestia's own voice bleeding
+            # into the mic on shared speaker/mic hardware (e.g. a
+            # laptop). Raise barge_in.min_rms in config if she's
+            # interrupting herself; lower it (or use a headset, the real
+            # fix) if real interruptions go unnoticed.
+            min_rms=barge_in_cfg.get("min_rms", 300.0),
+            pre_roll_frames=barge_in_cfg.get("pre_roll_frames", 10),
+            post_trigger_silence_frames=barge_in_cfg.get(
+                "post_trigger_silence_frames", stt_cfg.get("silence_frames", 33) - 8
+            ),
+            max_capture_seconds=barge_in_cfg.get("max_capture_seconds", 12.0),
+        )
+        return stt, tts, wake_detector, barge_in
 
     # -- Heartbeat / web UI / sync API ------------------------------------
 
@@ -389,11 +433,15 @@ class HestiaBuilder:
         gives it access to a fully-initialised ``process_fn`` (STT, memory,
         orchestrator, etc.) instead of requiring a second, separate init path.
 
-        Note: ``config/laptop_config.yaml`` writes the token as
-        ``${TELEGRAM_BOT_TOKEN}`` but ``_load_config`` uses plain
-        ``yaml.safe_load`` with no env-var interpolation, so that placeholder
-        is never resolved from the YAML. The token is read directly from the
-        environment instead, same as Dionysus reads its API keys.
+        Note: the bot token is read directly from the ``TELEGRAM_BOT_TOKEN``
+        environment variable, same as Dionysus reads its API keys —
+        ``config/laptop_config.yaml`` deliberately has no ``token:`` key.
+        (An earlier version of that file wrote one as
+        ``${TELEGRAM_BOT_TOKEN}``, but ``_load_config`` uses plain
+        ``yaml.safe_load`` with no env-var interpolation, so that
+        placeholder was never actually resolved — it just looked like it
+        worked. Removed rather than "fixed" via interpolation, since
+        secrets belong in the environment regardless.)
         """
         telegram_cfg = self.config.get("telegram", {})
         if not telegram_cfg.get("enabled", False):
@@ -423,22 +471,54 @@ class HestiaBuilder:
             logger.exception("Telegram bot failed to start; continuing without it.")
             return None
 
+    # Hosts that are only reachable from this machine. Anything else means
+    # /sync/* is potentially reachable by other devices/users. Mirrors the
+    # same constant/contract in web_ui.py's _register_auth_guard.
+    _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+
     def start_sync_api(self, mnemosyne: MnemosyneEngine) -> None:
         if not self.sync_cfg.get("enabled", False):
             return
+
+        host = self.sync_cfg.get("host", "127.0.0.1")
+        port = int(self.sync_cfg.get("port", 5001))
+
+        # Shared secret for /sync/*, same convention as TELEGRAM_BOT_TOKEN:
+        # read from the environment, never from the YAML, so it can't end
+        # up committed or zipped up alongside the rest of the config.
+        api_key = os.getenv("HESTIA_SYNC_API_KEY", "").strip() or None
+
+        if not api_key and host not in self._LOOPBACK_HOSTS:
+            logger.error(
+                "Refusing to start Sync API: host=%r is not loopback-only "
+                "and HESTIA_SYNC_API_KEY is not set. Set that environment "
+                "variable, or bind sync.host to 127.0.0.1 for strictly-"
+                "local use.", host,
+            )
+            return
+
+        if not api_key:
+            logger.warning(
+                "Sync API starting without HESTIA_SYNC_API_KEY — /sync/* "
+                "is unauthenticated. This is only safe because host=%r is "
+                "loopback-only.", host,
+            )
+
         try:
             import uvicorn
-            from api import app as sync_app
+            from api import create_app
 
+            sync_app = create_app(api_key=api_key)
             sync_app.state.memory = mnemosyne
-            host = self.sync_cfg.get("host", "127.0.0.1")
-            port = int(self.sync_cfg.get("port", 5001))
 
             def _run() -> None:
                 uvicorn.run(sync_app, host=host, port=port, log_level="warning")
 
             threading.Thread(target=_run, daemon=True, name="SyncAPI").start()
-            logger.info("Sync API running at http://%s:%d", host, port)
+            logger.info(
+                "Sync API running at http://%s:%d%s",
+                host, port, " (authenticated)" if api_key else "",
+            )
         except Exception:
             logger.exception("Sync API failed to start; continuing without it.")
 
@@ -497,7 +577,8 @@ class Hestia:
             self.mnemosyne, optional_modules
         )
 
-        self.stt, self.tts, self.wake_detector = builder.build_io()
+        self.stt, self.tts, self.wake_detector, self.barge_in = builder.build_io()
+        self._barge_in_enabled: bool = self.config.get("barge_in", {}).get("enabled", True)
 
         # -- Wiring: connect already-built subsystems together -------------
         self._init_event_bus()
@@ -634,34 +715,194 @@ class Hestia:
         return response
 
     # ------------------------------------------------------------------
+    # Voice-only query entry point (streaming + barge-in)
+    # ------------------------------------------------------------------
+
+    def process_voice_turn(self, text: str) -> str:
+        """
+        Voice-loop counterpart to process_text(): same NLU → dispatch →
+        speak → log pipeline, but for the common "just chatting" case it
+        streams the LLM's reply straight into TTS sentence-by-sentence
+        (see HestiaOrchestrator.try_stream_chat) instead of waiting for
+        the whole response, and lets the user interrupt Hestia mid-reply
+        by talking over her (see core/barge_in.py).
+
+        Only used by run_voice_loop() — process_text() remains the
+        blocking, single-string-in-single-string-out entry point used by
+        the web UI, Telegram bot, and heartbeat, none of which have
+        anywhere to send partial output as it streams in.
+
+        Never raises; errors produce a safe fallback string, same
+        contract as process_text().
+        """
+        cleaned = _clean_input(text)
+        if not cleaned:
+            return ""
+
+        logger.info("You: %s", cleaned)
+
+        try:
+            context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
+            nlu_result = self.nlu.understand(cleaned, context)
+        except Exception:
+            logger.exception("NLU failed for input=%r.", cleaned[:80])
+            nlu_result = {"intent": "chat", "entities": {}, "response": ""}
+
+        stream = None
+        try:
+            stream = self.orchestrator.try_stream_chat(cleaned, nlu_result)
+        except Exception:
+            logger.exception(
+                "try_stream_chat() failed for input=%r; falling back to "
+                "blocking dispatch().", cleaned[:80],
+            )
+            stream = None
+
+        if stream is not None:
+            response = self._speak_streaming(stream)
+        else:
+            try:
+                response = self.orchestrator.dispatch(cleaned, nlu_result)
+            except Exception:
+                logger.exception("Orchestrator dispatch failed.")
+                response = "I'm sorry, something went wrong."
+
+            response = _postprocess(response)
+            logger.info("Hestia: %s", response)
+            self._speak_with_barge_in(response)
+
+        try:
+            self.wake_detector.flush_audio_queue()
+        except Exception:
+            logger.debug("flush_audio_queue() failed; ignoring.")
+
+        bus.emit_sync(
+            "interaction_logged",
+            {
+                "query": cleaned,
+                "response": response,
+                "intent": nlu_result.get("intent", "chat"),
+            },
+        )
+
+        return response
+
+    def _speak_streaming(self, chunks) -> str:
+        """
+        Feed a generator of streamed text chunks into HestiaTTS.speak_stream
+        while the barge-in listener is armed, and return the full
+        concatenated response once playback finishes (or is cut short by
+        an interruption).
+        """
+        parts: list[str] = []
+
+        def _tap():
+            for chunk in chunks:
+                parts.append(chunk)
+                yield chunk
+
+        self._with_barge_in(lambda: self.tts.speak_stream(_tap()))
+
+        response = "".join(parts).strip()
+        if not response:
+            response = "Done."
+        logger.info("Hestia: %s", response)
+        return response
+
+    def _speak_with_barge_in(self, response: str) -> None:
+        """Speak a single finished response with the barge-in listener
+        armed, so even non-streamed replies can be interrupted."""
+        self._with_barge_in(lambda: self.tts.speak(response))
+
+    def _with_barge_in(self, speak_fn) -> None:
+        """
+        Run *speak_fn* (a zero-arg callable that queues something on
+        self.tts) with the barge-in listener armed for its duration, then
+        wait for playback to actually finish before disarming — arming
+        only around a single turn, rather than for the whole voice loop,
+        is what keeps this from ever conflicting with WakeWordDetector or
+        HestiaSTT owning the microphone (see core/barge_in.py's
+        docstring).
+        """
+        if not self._barge_in_enabled:
+            speak_fn()
+            self.tts.wait_until_done()
+            return
+
+        self.barge_in.reset()
+        self.barge_in.start(on_barge_in=self.tts.stop)
+        try:
+            speak_fn()
+            self.tts.wait_until_done()
+        finally:
+            self.barge_in.stop()
+
+    # ------------------------------------------------------------------
     # Run-loops
     # ------------------------------------------------------------------
 
     def run_voice_loop(self) -> None:
         """
         Alternate between wake-word detection and STT, feeding into
-        ``process_text``.
+        ``process_voice_turn``.
+
+        Normally each cycle starts by waiting for the wake word again.
+        But if the user barged in — started talking over Hestia's reply
+        before it finished — the next cycle skips straight back to
+        listening instead: they're already mid-sentence, so making them
+        say "Hestia" again first would be exactly the walkie-talkie
+        feeling barge-in exists to avoid.
+
+        When BargeInListener captured the user's follow-up itself (see
+        core/barge_in.py — it keeps recording, on the same mic stream,
+        from the moment it noticed the interruption), that recording is
+        used directly instead of calling stt.listen_once() again: a
+        second, freshly-opened microphone stream would only start
+        capturing *after* the barge-in listener's stream had already
+        closed, losing whatever the user said in that gap. Falling back
+        to stt.listen_once() (skip_wake_word) only happens if barge-in
+        fired but for some reason didn't end up with usable audio (e.g.
+        it hit max_capture_seconds with nothing but noise).
         """
         logger.info("Voice loop started — listening for wake word.")
         try:
+            skip_wake_word = False
+            pending_audio = None
             while True:
-                if not self.wake_detector.listen_for_wake_word(
-                    timeout=_WAKE_WORD_TIMEOUT
-                ):
-                    continue
+                if pending_audio is not None:
+                    text = self.stt.transcribe_audio(pending_audio)
+                    pending_audio = None
+                elif skip_wake_word:
+                    skip_wake_word = False
+                    text = self.stt.listen_once(max_duration=_STT_MAX_DURATION)
+                else:
+                    if not self.wake_detector.listen_for_wake_word(
+                        timeout=_WAKE_WORD_TIMEOUT
+                    ):
+                        continue
 
-                self.tts.speak("Yes?")
+                    self.tts.speak("Yes?")
+                    self.tts.wait_until_done()
+                    text = self.stt.listen_once(max_duration=_STT_MAX_DURATION)
 
-                text = self.stt.listen_once(max_duration=_STT_MAX_DURATION)
                 if not text or len(text.strip()) < _MIN_VOICE_INPUT_LEN:
                     self.tts.speak("I didn't catch that.")
+                    self.tts.wait_until_done()
                     continue
 
                 if text.lower().strip() in _EXIT_WORDS:
                     self.tts.speak("Goodbye.")
+                    self.tts.wait_until_done()
                     break
 
-                self.process_text(text)
+                self.process_voice_turn(text)
+
+                if self._barge_in_enabled and self.barge_in.consume_triggered():
+                    captured = self.barge_in.consume_captured_audio()
+                    if captured is not None and len(captured) > 0:
+                        pending_audio = captured
+                    else:
+                        skip_wake_word = True
 
         except KeyboardInterrupt:
             logger.info("Voice loop interrupted by user.")
@@ -694,6 +935,16 @@ class Hestia:
     def _shutdown(self) -> None:
         """Gracefully stop background services."""
         logger.info("Shutting down Hestia…")
+        try:
+            # force=True: a mid-capture barge-in listener would otherwise
+            # wait for its own natural end-of-utterance (up to
+            # max_capture_seconds) before stop() returns — fine during
+            # normal turn-taking, but shutdown (e.g. Ctrl-C) should never
+            # be held up by that.
+            self.barge_in.stop(force=True)
+        except Exception:
+            logger.debug("barge_in.stop() raised; ignoring.")
+
         try:
             self.heartbeat.stop()
         except Exception:

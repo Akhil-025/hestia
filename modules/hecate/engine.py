@@ -1,25 +1,62 @@
-# modules/hecate/engine.py  
+# modules/hecate/engine.py
 
 from modules.base import BaseModule
+from modules.hecate.intent_registry import (
+    INTENT_MODULE_MAP,
+    PREFIX_TO_MODULE,
+    strip_module_prefix,
+)
 
 
 class HecateEngine(BaseModule):
     """
     Decision engine. The only component allowed to perform routing.
     Hestia calls decide() once per query. No module calls decide() on another module.
+
+    Routing tiers, in order:
+      1. Registry lookup       — any intent registered in intent_registry.py
+                                  dispatches directly, O(1). This covers
+                                  every module and intent Hestia has; it
+                                  used to be ~15 separate hand-written
+                                  `if intent in {...}` / `.startswith()`
+                                  blocks here (one per module, added
+                                  piecemeal over time), each a chance for a
+                                  new intent to be forgotten or for tier
+                                  ordering to shadow another tier's match.
+                                  See intent_registry.py's module docstring
+                                  for the drift that caused in practice.
+      2. Text-trigger fallback — only reached when the NLU didn't return a
+                                  registered intent (typically "chat", or
+                                  something unrecognised). These compensate
+                                  for classification misses in phrasing the
+                                  small local model struggles with — that's
+                                  a model-accuracy problem, not a routing-
+                                  table problem, so it still needs explicit
+                                  handling here.
+      3. Prefix fallback       — defense-in-depth for an intent that still
+                                  carries a real module's prefix but isn't
+                                  in the registry (e.g. a hallucinated
+                                  provider response, or a new module intent
+                                  added to a module before its registry
+                                  entry). Best-effort; the target module's
+                                  own can_handle() has final say.
+      4. Keyword / cross-module — Artemis keyword matching and
+                                  compare/combine cross-module synthesis.
+      5. Confidence-based       — generic high/low-confidence fallback to
+                                  core chat.
     """
     name = "hecate"
 
-    # Moved verbatim from main.py — single source of truth for trigger matching
+    # --- Tier 2 data: raw-text triggers ---------------------------------
+    # Moved verbatim from the original tiered implementation — these exist
+    # specifically because the NLU intent can't be trusted for these
+    # phrasings (it commonly falls back to "chat"), so matching happens on
+    # the raw query text instead.
     _ATHENA_TRIGGERS = [
         "from my notes", "in my documents", "from my files",
         "according to my notes", "what does my", "explain from",
         "in my notes", "from my docs", "search my documents",
     ]
-    # Mirrors _IRIS_TRIGGERS' ingest/search split below — without a
-    # dedicated ingest trigger, Athena had no voice/chat-reachable way to
-    # index new documents at all (only the private engine._ingest() method,
-    # never wired to anything a user could actually say).
     _ATHENA_INGEST_TRIGGERS = [
         "ingest my documents", "ingest my notes", "ingest documents",
         "index my documents", "index my notes", "scan my documents",
@@ -29,27 +66,18 @@ class HecateEngine(BaseModule):
         "do you remember", "what do you know about me",
         # NOT the bare phrase "remind me" — that also matches genuine
         # reminder-creation requests ("remind me to call mom tomorrow"),
-        # which belong to Chronos's "set_reminder" intent. A bare match
-        # here stole every such request the NLU classified as "chat"
-        # (Chronos has no Tier-2 text-trigger fallback of its own to
-        # recover it), silently turning "remind me to X" into a semantic
-        # memory search that always answered "I don't have any memories
-        # about that yet." instead of creating the reminder. Only match
-        # the interrogative "remind me what/who/..." form, which really
-        # is a recall question.
+        # which belong to Chronos's "set_reminder" intent (now caught by
+        # the Tier-1 registry lookup before this tier ever runs). Only
+        # match the interrogative "remind me what/who/..." form, which
+        # really is a recall question.
         "remind me what", "remind me who", "remind me where",
         "remind me when", "remind me why", "remind me how",
         "what have i told you", "forget that",
-        # "what did we talk about" intentionally removed from here — see
-        # _RECENCY_TRIGGERS below. It used to live in this list and route
-        # straight to Mnemosyne's semantic vector recall, but "what did we
-        # talk about yesterday/today/earlier" is a chronological request,
-        # not a topical one: it wants the last N raw interactions in order,
-        # not "whatever weakly matches this embedding". Bare "what did we
-        # talk about" (no time anchor) still falls through Tier 2/3/4 to
-        # the NLU-classified intent, which can legitimately be semantic
-        # recall for a genuinely topical phrasing like "what did we talk
-        # about regarding the Hestia project?".
+        # "what did we talk about" intentionally excluded — see
+        # _RECENCY_TRIGGERS below. Bare "what did we talk about" (no time
+        # anchor) still falls through to Tier 5, which can legitimately be
+        # semantic recall for a genuinely topical phrasing like "what did
+        # we talk about regarding the Hestia project?".
     ]
     # Chronological phrasing — routes to Core's get_history (plain SQL read
     # of the last N interactions, no LLM/embedding involved) instead of
@@ -68,20 +96,6 @@ class HecateEngine(BaseModule):
         "ingest photos", "describe my photos",
     ]
     _ARTEMIS_KEYWORDS = {"habit", "goal", "productivity", "streak", "motivate", "motivation"}
-
-    _CHRONOS_INTENTS  = {"get_time", "get_date", "get_weather", "set_reminder"}
-    # NOTE: the NLU is inconsistent about emitting these with or without the
-    # module prefix (e.g. both "read_email" and "hermes_read_email" have been
-    # observed for the same query, and both "search_web" and
-    # "hephaestus_search_web"). Both spellings are listed here so Tier 1
-    # matches regardless of which form comes back, instead of silently
-    # falling through to Tier 4 -> "core" and relying on the orchestrator's
-    # can_handle() recovery path to bail us out.
-    _HERMES_INTENTS = {
-        "read_email", "send_email", "list_events", "create_event", "delete_events",
-        "hermes_read_email", "hermes_send_email", "hermes_list_events",
-        "hermes_create_event", "hermes_delete_events",
-    }
 
     def can_handle(self, intent: str) -> bool:
         return True  # Hecate is consulted for all routing; it does not handle content
@@ -110,9 +124,8 @@ class HecateEngine(BaseModule):
 
         # Normalise case defensively — the NLU has been observed to emit
         # intents in unexpected casing (e.g. "PLATFORM_ACTION") which would
-        # otherwise silently fail every `intent in {...}` / `.startswith()`
-        # check below and fall through to chat, even though a matching
-        # module exists.
+        # otherwise silently fail every registry/dict lookup below, even
+        # though a matching module exists.
         intent = intent.strip().lower() if isinstance(intent, str) else "chat"
 
         # Some NLU responses wrap the real intent inside a generic envelope
@@ -126,44 +139,30 @@ class HecateEngine(BaseModule):
             if isinstance(inner, str) and inner.strip():
                 intent = inner.strip().lower()
 
-        # --- Tier 1: Hard-wired by intent class (no ambiguity) ---
-        if intent in self._CHRONOS_INTENTS and "chronos" in active_modules:
-            return self._route("chronos", [], 1.0, f"intent '{intent}' → chronos")
-
-        if intent in self._HERMES_INTENTS and "hermes" in active_modules:
-            return self._route("hermes", [], 1.0, f"intent '{intent}' → hermes")
-
-        # Hephaestus has no exact-match set here (unlike Hermes/Chronos) —
-        # every intent it declares is prefixed ("hephaestus_browser_action",
-        # "hephaestus_scrape_page", "hephaestus_open_app", ...), so the
-        # "hephaestus_" prefix check in Tier X below is sufficient and never
-        # needs a manual entry added for new Hephaestus intents.
-        
-
-        # --- Tier 1.5: Direct intent routing (NEW — CRITICAL) ---
-
-        if intent == "athena_search" and "athena" in active_modules:
-            return self._route("athena", [], 1.0, "intent 'athena_search' → athena")
-
-        if intent == "athena_ingest" and "athena" in active_modules:
-            return self._route("athena", [], 1.0, "intent 'athena_ingest' → athena", intent="ingest")
-
-        if intent in {
-            "iris_search",
-            "iris_ingest",
-            "iris_analyse",
-            "iris_query",
-            "iris_status"
-        } and "iris" in active_modules:
-            return self._route("iris", [], 1.0, f"intent '{intent}' → iris")
-
-        # --- Tier 2: Text trigger matching ---
-        # These match on the raw query text specifically because the NLU
-        # intent can't be trusted for these phrasings (often "chat"). Pass
-        # an explicit `intent` override — see `_route()` docstring — so the
-        # orchestrator actually dispatches to the matched module instead of
-        # calling can_handle() with an intent it doesn't declare.
+        # --- Tier 1: Registry-driven direct dispatch ------------------
+        # Replaces the old Tier 1 (Chronos/Hermes exact-match), Tier 1.5
+        # (Athena/Iris exact-match), Tier X (apollo_/ares_/orpheus_/metis_/
+        # dionysus_/pluto_/hephaestus_/hermes_ prefix routing), the
+        # standalone Artemis exact-intent block, and the Mnemosyne
+        # learn_fact/forget_fact block — all of it was doing the same
+        # thing (intent -> module) from data that now lives in one place.
         #
+        # "chat" is deliberately excluded here even though it's registered
+        # to "core": it's the NLU's catch-all/low-confidence intent, not a
+        # genuinely classified one, and it must still fall through to the
+        # Tier 2 text-trigger checks below (e.g. "do you remember..." /
+        # "from my notes..." routinely arrive as intent="chat" but need to
+        # reach Mnemosyne/Athena instead of being short-circuited to core
+        # here).
+        module = INTENT_MODULE_MAP.get(intent)
+        if module and module in active_modules and intent != "chat":
+            return self._route(
+                module, [], max(confidence, 0.9),
+                f"registry: intent '{intent}' -> {module}",
+                intent=strip_module_prefix(intent),
+            )
+
+        # --- Tier 2: Text trigger matching -----------------------------
         # Ingest check comes first: "ingest my documents" would otherwise
         # never be reachable if a broader athena-search trigger happened to
         # overlap it (same ordering Iris uses for its ingest/search split).
@@ -181,7 +180,7 @@ class HecateEngine(BaseModule):
         # get_history before the Mnemosyne trigger check below gets a
         # chance to send it to vector recall instead.
         if "core" in active_modules and self._match(q, self._RECENCY_TRIGGERS):
-            return self._route("core", [], 1.0, "recency trigger → get_history", intent="get_history")
+            return self._route("core", [], 1.0, "recency trigger -> get_history", intent="get_history")
 
         if "mnemosyne" in active_modules and self._match(q, self._MNEMOSYNE_TRIGGERS):
             return self._route("mnemosyne", [], 1.0, "mnemosyne trigger", intent="recall")
@@ -193,82 +192,32 @@ class HecateEngine(BaseModule):
             ) else "search"
             return self._route("iris", [], 1.0, "iris trigger", intent=iris_intent)
 
-        # --- Tier 3: Keyword matching ---
-        if (
-            "artemis" in active_modules
-            and any(k in q for k in self._ARTEMIS_KEYWORDS)
-            and intent not in {
-                "add_goal", "get_goals", "list_goals", "update_goal",
-                "remove_goal", "abandon_goal", "get_at_risk_goals",
-                "add_habit", "complete_habit", "list_habits", "remove_habit",
-                "productivity_summary", "get_motivation",
-            }
-        ):
+        # --- Tier 3: Prefix fallback (defense-in-depth) -----------------
+        # If Tier 1 didn't recognise the intent but it still carries a real
+        # module's prefix (e.g. a provider hallucinated "pluto_rebalance"
+        # instead of the registered "pluto_optimize_portfolio", or a module
+        # gained a new intent before intent_registry.py was updated for
+        # it), give that module a chance via its own can_handle() rather
+        # than silently falling back to chat. One loop replaces what used
+        # to be seven near-identical `if intent.startswith("x_")` blocks.
+        for prefix, prefixed_module in PREFIX_TO_MODULE.items():
+            if intent.startswith(prefix) and prefixed_module in active_modules:
+                return self._route(
+                    prefixed_module, [], 0.75,
+                    f"unregistered intent '{intent}' -> {prefixed_module} (prefix fallback)",
+                )
+
+        # --- Tier 4: Keyword matching ------------------------------------
+        # Tier 1 already routes every real, registered Artemis intent
+        # (add_habit, list_habits, productivity_summary, ...) directly, so
+        # by the time control reaches here `intent` is guaranteed NOT to be
+        # one of those — no exclusion list needed (the old version had to
+        # explicitly exclude Artemis's own intents to avoid this tier
+        # stealing them; that's now structurally impossible).
+        if "artemis" in active_modules and any(k in q for k in self._ARTEMIS_KEYWORDS):
             return self._route("artemis", [], 0.9, "artemis keyword match")
-        
-        # --- Tier X: New module routing ---
 
-        if intent.startswith("apollo_") and "apollo" in active_modules:
-            return self._route("apollo", [], 0.95, f"intent '{intent}' → apollo")
-
-        if intent.startswith("ares_") and "ares" in active_modules:
-            return self._route("ares", [], 0.95, f"intent '{intent}' → ares")
-
-        if intent.startswith("orpheus_") and "orpheus" in active_modules:
-            return self._route("orpheus", [], 0.95, f"intent '{intent}' → orpheus")
-
-        if intent.startswith("metis_") and "metis" in active_modules:
-            return self._route("metis", [], 0.95, f"intent '{intent}' → metis")
-
-        if intent.startswith("dionysus_") and "dionysus" in active_modules:
-            return self._route("dionysus", [], 0.95, f"intent '{intent}' → dionysus")
-
-        if intent.startswith("pluto_") and "pluto" in active_modules:
-            return self._route("pluto", [], 0.95, f"intent '{intent}' → pluto")
-
-        if intent.startswith("hephaestus_") and "hephaestus" in active_modules:
-            return self._route("hephaestus", [], 0.95, f"intent '{intent}' → hephaestus")
-
-        # _HERMES_INTENTS above only covers names the NLU has been
-        # *observed* to emit (e.g. "hermes_read_email"). Any other
-        # "hermes_*" name (e.g. "hermes_gmail" for "check my mail") fell
-        # through every tier to Tier 4 → "core", which doesn't declare it,
-        # and the orchestrator's can_handle() recovery only searches by the
-        # *stripped* intent — so it never tried Hermes at all and silently
-        # fell back to chat. Route by prefix here too, same as the modules
-        # above, and let the orchestrator's own can_handle()/alias handling
-        # sort out the exact intent name once inside the module.
-        if intent.startswith("hermes_") and "hermes" in active_modules:
-            return self._route("hermes", [], 0.9, f"intent '{intent}' → hermes (prefix)")
-        
-
-        if intent in {
-            "add_goal", "get_goals", "list_goals", "update_goal",
-            "remove_goal", "abandon_goal", "get_at_risk_goals",
-            "add_habit", "complete_habit", "list_habits", "remove_habit",
-            "productivity_summary", "get_motivation",
-        } and "artemis" in active_modules:
-            return self._route("artemis", [], 0.95, f"intent '{intent}' → artemis")
-        
-        # --- MNEMOSYNE ROUTING FIX ---
-        # NOTE: "get_user_info" is deliberately NOT included here. Core also
-        # declares "get_user_info" and its handler is a strict superset of
-        # Mnemosyne's: it forwards to the same underlying fact store
-        # (self._memory.db.get_fact) *and* special-cases the NLU's frequent
-        # get_user_info misclassification of "what's today's date"/"what
-        # time is it" (key="current_date"/"current_time") by answering
-        # directly instead of doing a doomed fact lookup. Routing
-        # get_user_info straight to Mnemosyne here bypassed that recovery
-        # logic entirely — Mnemosyne has no such fallback, so those queries
-        # got "I don't have that information yet." instead of the actual
-        # date/time. Only "learn_fact"/"forget_fact" are Mnemosyne-only
-        # (Core never declares them), so only those need a forced route.
-        if intent in {"learn_fact", "forget_fact"} \
-                and "mnemosyne" in active_modules:
-            return self._route("mnemosyne", [], 0.95, f"intent '{intent}' → mnemosyne")
-        
-
-        # --- Tier 3.5: Cross-module queries ---
+        # --- Tier 4.5: Cross-module queries ------------------------------
         cross_triggers = [
             "compare", "combine", "across", "and also",
             "along with", "together with", "as well as"
@@ -287,13 +236,13 @@ class HecateEngine(BaseModule):
                     intent="search",
                 )
 
-        # --- Tier 4: High-confidence NLU non-chat intent ---
+        # --- Tier 5: High-confidence NLU non-chat intent -----------------
         if confidence >= 0.85 and intent != "chat":
             return self._route("core", [], confidence, f"high-confidence intent '{intent}'")
 
-        # --- Tier 5: Low-confidence → force chat ---
+        # --- Tier 6: Low-confidence -> force chat ------------------------
         if confidence < 0.5:
-            return self._route("core", [], 0.4, "low confidence → chat fallback")
+            return self._route("core", [], 0.4, "low confidence -> chat fallback")
 
         return self._route("core", [], confidence, "default core")
 
@@ -310,7 +259,7 @@ class HecateEngine(BaseModule):
         to `primary` with (instead of the NLU's raw intent, stripped of its
         module prefix).
 
-        This matters for text-trigger tiers (Tier 2 / Tier 3.5): those match
+        This matters for text-trigger tiers (Tier 2 / Tier 4.5): those match
         on the raw query string, not on `nlu_result["intent"]`, precisely
         *because* the NLU intent is unreliable or absent for these phrasings
         (e.g. it commonly falls back to "chat"). If Hecate names `primary`
@@ -320,8 +269,8 @@ class HecateEngine(BaseModule):
         happens to declare that intent (usually "core", via its chat
         fallback) — discarding this routing decision entirely even though
         Hecate matched it with full confidence. Tiers whose match already
-        comes from a trustworthy intent (Tier 1 / 1.5 / X) don't need this;
-        they leave `intent` unset and the NLU's own intent is used as-is.
+        comes from a trustworthy intent (Tier 1 / 3) don't need this; they
+        leave `intent` unset and the NLU's own intent is used as-is.
         """
         return {
             "primary":    primary,

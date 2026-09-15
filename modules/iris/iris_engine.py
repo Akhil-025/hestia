@@ -11,6 +11,7 @@ from .config import get_config, IrisConfig
 from pathlib import Path
 from .db import IrisDB
 from .ingestion import FileIngestor
+from .embeddings import ClipEmbedder, ImageVectorIndex
 try:
     from .analyser import IrisAnalyser
 except ImportError:
@@ -22,15 +23,33 @@ logger = logging.getLogger(__name__)
 class IrisEngine(BaseModule):               
     name = "iris"
 
-    def __init__(self, hestia_llm=None):
+    def __init__(self, hestia_llm=None, embedder=None, vector_index=None):
         try:
             self.config: IrisConfig = get_config()
             self.db = IrisDB(self.config.db_path)
             self.ingestor = FileIngestor(self.config, self.db)
             self.hestia_llm = hestia_llm
+
+            # CLIP semantic search (README roadmap item — see embeddings.py).
+            # Both are injectable for tests; default to real implementations
+            # that degrade to unavailable on their own if torch/chromadb
+            # aren't installed, so Iris as a whole never fails to construct
+            # because of this.
+            self.embedder = embedder if embedder is not None else ClipEmbedder()
+            self.vector_index = (
+                vector_index if vector_index is not None
+                else ImageVectorIndex(self.config.chroma_dir)
+            )
+
             ollama_host = "127.0.0.1"
             ollama_port = 11434
-            self.analyser = IrisAnalyser(self.db, ollama_host, ollama_port, "llava:7b") if IrisAnalyser else None
+            self.analyser = (
+                IrisAnalyser(
+                    self.db, ollama_host, ollama_port, "llava:7b",
+                    embedder=self.embedder, vector_index=self.vector_index,
+                )
+                if IrisAnalyser else None
+            )
             logger.info("[Iris] Engine ready")
         except Exception as e:
             logger.error(f"[Iris] Engine init failed: {e}")
@@ -143,15 +162,41 @@ class IrisEngine(BaseModule):
                 "total_size": 0,
             }
 
+    def _semantic_matches(self, query: str, limit: int) -> list[dict]:
+        """
+        CLIP-embedding-based matches, ranked nearest-first. Returns [] (not
+        an error) whenever the embedder/vector_index aren't available or the
+        query can't be embedded — this is a ranking *enhancement* over
+        caption/tag search, never a hard dependency for search() to work.
+        """
+        try:
+            query_vector = self.embedder.embed_text(query)
+            if query_vector is None:
+                return []
+            hits = self.vector_index.query(query_vector, top_k=limit)
+            matches = []
+            for file_id, _distance in hits:
+                record = self.db.get_file(file_id)
+                if record:
+                    matches.append(record)
+            return matches
+        except Exception as e:
+            logger.warning(f"[Iris] Semantic search failed, falling back to caption/tag: {e}")
+            return []
+
     def search(self, query: str, limit: int = 10) -> "str | None":
         try:
+            results_semantic = self._semantic_matches(query, limit)
             results_caption = self.db.search_files_by_caption(query, limit)
             results_tags = self.db.search_files_by_tags(query, limit)
-            # Deduplicate by file_path
+            # Deduplicate by file_path. Semantic hits are listed first so
+            # `dict`-insertion order (preserved by unique_map.values() below)
+            # keeps them ranked ahead of plain substring caption/tag matches,
+            # which have no real relevance ordering of their own.
             combined = []
             unique_map = {}
 
-            for r in results_caption + results_tags:
+            for r in results_semantic + results_caption + results_tags:
                 fp = r.get("file_path")
                 if not fp:
                     continue
@@ -181,7 +226,13 @@ class IrisEngine(BaseModule):
                 try:
                     tags_list = json.loads(raw_tags) if raw_tags else []
                     tags = ", ".join(tags_list)
-                except:
+                # Narrowed from a bare `except:` — raw_tags is a DB column
+                # that's expected to hold either JSON or nothing; the only
+                # realistic failures are malformed JSON or an unexpected
+                # non-string type. A bare except also silently swallows
+                # KeyboardInterrupt/SystemExit, which has no business being
+                # caught while formatting a search result string.
+                except (json.JSONDecodeError, TypeError):
                     tags = raw_tags or ""
                 lines.append(f"{i}. {path} — {caption} [{tags}]")
             return "\n".join(lines)

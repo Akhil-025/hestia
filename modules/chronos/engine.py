@@ -30,6 +30,7 @@ from dateparser.search import search_dates
 import requests
 
 from modules.base import BaseModule
+from core.free_apis import FreeAPIError, is_public_holiday, public_holidays
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ _DEFAULT_LON = 72.8777
 _REQUEST_TIMEOUT = 10  # seconds
 _MIN_TASK_LEN = 3
 _TASK_FALLBACK = "your task"
+_DEFAULT_COUNTRY = "IN"  # ISO 3166-1 alpha-2, matches _DEFAULT_LOCATION (Mumbai)
 
 # WMO weather interpretation codes → human-readable label
 _WMO_CODES: dict[int, str] = {
@@ -156,7 +158,7 @@ class ChronosEngine(BaseModule):
     name = "chronos"
 
     _INTENTS: frozenset[str] = frozenset(
-        {"get_time", "get_date", "get_weather", "set_reminder"}
+        {"get_time", "get_date", "get_weather", "set_reminder", "get_holiday"}
     )
 
     def __init__(
@@ -233,6 +235,8 @@ class ChronosEngine(BaseModule):
             return self._get_weather(entities, context)
         if intent == "set_reminder":
             return self._set_reminder(entities)
+        if intent == "get_holiday":
+            return self._get_holiday(entities)
         return _err(f"Unknown intent: {intent!r}")
 
     # ------------------------------------------------------------------
@@ -344,6 +348,82 @@ class ChronosEngine(BaseModule):
             f"Reminder set: {task!r} on {readable}.",
             data={"task": task, "due": due_iso},
             confidence=0.95,
+        )
+
+    # ------------------------------------------------------------------
+    # Private – holidays (backed by core.free_apis / Nager.Date, no key)
+    # ------------------------------------------------------------------
+
+    def _get_holiday(self, entities: dict) -> dict:
+        """
+        Answer "is <date> a public holiday" or "what holidays are there
+        in <country>". Defaults to today's local date and
+        ``_DEFAULT_COUNTRY`` when not specified in entities.
+        """
+        raw: str = entities.get("raw_query") or ""
+        country = (entities.get("country") or _DEFAULT_COUNTRY).strip().upper()
+
+        date_hint = entities.get("date")
+        settings = {"RELATIVE_BASE": _now(self._tz).replace(tzinfo=None)}
+        iso_date: Optional[str] = None
+        if date_hint:
+            try:
+                parsed = dateparser.parse(date_hint, settings=settings)
+            except Exception:
+                parsed = None
+            if parsed:
+                iso_date = parsed.date().isoformat()
+        elif raw:
+            try:
+                found = search_dates(raw, settings=settings)
+            except Exception:
+                found = None
+            if found:
+                iso_date = found[0][1].date().isoformat()
+
+        # Broad request ("what holidays are there in France this year")
+        # with no specific date resolved -> list the whole year.
+        if not iso_date:
+            year = _now(self._tz).year
+            try:
+                holidays = public_holidays(year, country)
+            except FreeAPIError:
+                logger.warning("_get_holiday: public_holidays(%s, %s) failed.", year, country)
+                return _err(
+                    f"I couldn't reach the holiday calendar for {country} right now."
+                )
+            if not holidays:
+                return _ok(
+                    f"I couldn't find any public holidays for {country} in {year}.",
+                    data={"country": country, "year": year, "holidays": []},
+                    confidence=0.7,
+                )
+            names = ", ".join(h.get("localName") or h.get("name", "") for h in holidays[:5])
+            more = f" and {len(holidays) - 5} more" if len(holidays) > 5 else ""
+            return _ok(
+                f"{country} has {len(holidays)} public holidays in {year}, including {names}{more}.",
+                data={"country": country, "year": year, "holidays": holidays},
+                confidence=0.9,
+            )
+
+        try:
+            name = is_public_holiday(iso_date, country)
+        except FreeAPIError:
+            logger.warning("_get_holiday: is_public_holiday(%s, %s) failed.", iso_date, country)
+            return _err(
+                f"I couldn't reach the holiday calendar for {country} right now."
+            )
+
+        if name:
+            return _ok(
+                f"Yes — {iso_date} is {name} in {country}.",
+                data={"date": iso_date, "country": country, "is_holiday": True, "name": name},
+                confidence=0.95,
+            )
+        return _ok(
+            f"No, {iso_date} is not a public holiday in {country}.",
+            data={"date": iso_date, "country": country, "is_holiday": False},
+            confidence=0.9,
         )
 
 

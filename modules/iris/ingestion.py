@@ -43,8 +43,12 @@ class FileInfo:
 
 # --- Duplicate Detection ---
 class DuplicateDetector:
-    def __init__(self, db: IrisDB):
+    def __init__(self, db: IrisDB, perceptual_hash_threshold: int = 12):
         self.db = db
+        # Combined ahash+phash Hamming distance at/under which two images
+        # count as near-duplicates. See IrisConfig.perceptual_hash_threshold
+        # for the rationale/tuning notes.
+        self.perceptual_hash_threshold = perceptual_hash_threshold
 
     async def compute_file_hash(self, file_path: Path) -> str:
         sha256_hash = hashlib.sha256()
@@ -74,6 +78,27 @@ class DuplicateDetector:
             logger.error(f"Error computing perceptual hash for {file_path}: {e}")
             return None
 
+    @staticmethod
+    def _hash_distance(hash_a: str, hash_b: str) -> Optional[int]:
+        """Combined Hamming distance between two 'ahash:phash' strings, as
+        produced by compute_perceptual_hash. Returns None if either string
+        isn't in that format or imagehash isn't installed (perceptual
+        matching is then skipped rather than raising — matches the "degrade
+        gracefully" behaviour compute_perceptual_hash already uses)."""
+        try:
+            import imagehash
+            a_ahash, a_phash = hash_a.split(":", 1)
+            b_ahash, b_phash = hash_b.split(":", 1)
+            return (
+                (imagehash.hex_to_hash(a_ahash) - imagehash.hex_to_hash(b_ahash))
+                + (imagehash.hex_to_hash(a_phash) - imagehash.hex_to_hash(b_phash))
+            )
+        except ImportError:
+            return None
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Could not compare perceptual hashes {hash_a!r}/{hash_b!r}: {e}")
+            return None
+
     async def find_duplicates(self, file_path: Path, file_hash: str, perceptual_hash: Optional[str] = None) -> List[Tuple[int, str, float]]:
         # 0. If exact path exists, treat as already ingested
         if self.db.file_exists(str(file_path)):
@@ -82,8 +107,32 @@ class DuplicateDetector:
         # 1. Exact hash
         if self.db.file_exists_by_hash(file_hash):
             duplicates.append((0, str(file_path), 1.0))
-        # 2. Perceptual hash (not implemented in DB, stub)
-        # Could be extended to check visually similar files
+            return duplicates
+        # 2. Perceptual hash — catches visually-similar-but-not-identical
+        # files (re-saves, resizes, screenshots of the same photo) that
+        # slip past the exact-hash check above. Linear scan over every
+        # stored perceptual hash: sqlite has no Hamming-distance operator to
+        # index on, and for a personal photo library (thousands, not
+        # millions, of files) this is fast enough to run per ingested file.
+        if perceptual_hash:
+            best_match: Optional[Tuple[int, str]] = None
+            best_distance: Optional[int] = None
+            for row_id, row_path, row_hash in self.db.get_perceptual_hashes():
+                if row_path == str(file_path) or not row_hash:
+                    continue
+                distance = self._hash_distance(perceptual_hash, row_hash)
+                if distance is None:
+                    continue
+                if distance <= self.perceptual_hash_threshold and (
+                    best_distance is None or distance < best_distance
+                ):
+                    best_distance = distance
+                    best_match = (row_id, row_path)
+            if best_match is not None:
+                # 0 distance -> 1.0 similarity; scales down to ~0.5 at the
+                # threshold itself, so "just barely a match" reads as such.
+                similarity = 1.0 - (best_distance / (self.perceptual_hash_threshold * 2))
+                duplicates.append((best_match[0], best_match[1], round(similarity, 3)))
         return duplicates
 
 # --- File Ingestor ---
@@ -91,7 +140,9 @@ class FileIngestor:
     def __init__(self, config: IrisConfig, db: IrisDB):
         self.config = config
         self.db = db
-        self.duplicate_detector = DuplicateDetector(db)
+        self.duplicate_detector = DuplicateDetector(
+            db, perceptual_hash_threshold=getattr(config, "perceptual_hash_threshold", 12)
+        )
         self.stats: Dict[str, int] = {"ingested": 0, "duplicates_skipped": 0, "errors": 0, "total_size": 0}
         self.stats["failed_files"] = []
         self.retry_queue: List[Tuple[Path, int]] = []

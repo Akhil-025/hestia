@@ -1,9 +1,11 @@
 # core/noise_filter.py
 
-import sys
+import logging
 import numpy as np
 import noisereduce as nr
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 class NoiseFilter:
     """
@@ -56,7 +58,7 @@ class NoiseFilter:
             # Ensure output is float32 (noisereduce returns float64 sometimes)
             return filtered.astype(np.float32)
         except Exception as e:
-            print(f"NoiseFilter warning: {e}", file=sys.stderr)
+            logger.warning("NoiseFilter error, returning unfiltered audio: %s", e)
             return audio
 
 

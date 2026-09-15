@@ -5,7 +5,7 @@ Plain sqlite3 DB for Iris image/video/audio management.
 """
 import sqlite3
 import threading
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 class IrisDB:
         def search_files_by_tags(self, query: str, limit: int = 10) -> list:
@@ -48,6 +48,8 @@ class IrisDB:
     );
     CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash);
     CREATE INDEX IF NOT EXISTS idx_files_processed ON files(processed);
+    CREATE INDEX IF NOT EXISTS idx_files_perceptual_hash ON files(perceptual_hash)
+        WHERE perceptual_hash IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +107,18 @@ class IrisDB:
         def file_exists_by_hash(self, file_hash: str) -> bool:
             cur = self._conn.execute("SELECT 1 FROM files WHERE file_hash = ?", (file_hash,))
             return cur.fetchone() is not None
+
+        def get_perceptual_hashes(self) -> List[Tuple[int, str, str]]:
+            """Return (id, file_path, perceptual_hash) for every ingested file
+            that has a stored perceptual hash. Used for near-duplicate (not
+            just exact-hash) detection — sqlite has no native Hamming-distance
+            operator, so the comparison itself happens in Python (see
+            DuplicateDetector.find_duplicates in ingestion.py); this just
+            gives it the candidate set to compare against."""
+            cur = self._conn.execute(
+                "SELECT id, file_path, perceptual_hash FROM files WHERE perceptual_hash IS NOT NULL"
+            )
+            return [(row["id"], row["file_path"], row["perceptual_hash"]) for row in cur.fetchall()]
 
         def insert_file(self, file_path, file_hash, perceptual_hash, file_size, file_type, mime_type) -> int:
             with self._lock, self._conn:

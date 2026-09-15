@@ -68,6 +68,17 @@ class FakeDB:
         return [{"key": k, "value": v, "source": "user", "confidence": 1.0,
                   "created_at": None, "updated_at": None} for k, v in items[:limit]]
 
+    def get_interaction_stats(self):
+        # Mirrors MnemosyneDB.get_interaction_stats()'s shape — used by
+        # _delete_notes()'s confirmation preview to report a count without
+        # touching any rows.
+        notes = len([r for r in self.rows if r["intent"] == "take_note"])
+        return {
+            "total": len(self.rows),
+            "notes": notes,
+            "unique_intents": len({r["intent"] for r in self.rows}),
+        }
+
 
 class FakeMemory:
     def __init__(self):
@@ -269,6 +280,65 @@ def test_get_notes_no_topic_is_unchanged_unfiltered_behaviour():
 
 
 # ---------------------------------------------------------------------------
+# delete_notes: confirmation gating
+#
+# Deleting notes is irreversible and wipes ALL of them in one shot, so the
+# first call must NOT delete anything — it should only report what would
+# happen and ask for confirmation (see HestiaOrchestrator's confirmation
+# mechanism in modules/hestia/orchestrator.py). Only a call carrying
+# entities["_confirmed"] = True — which only the orchestrator sends, after
+# the user's next reply reads as a clear "yes" — actually deletes.
+# ---------------------------------------------------------------------------
+
+def test_delete_notes_with_no_notes_reports_nothing_to_delete():
+    core = make_core()
+    r = core.handle("delete_notes", {}, {})
+    assert "don't have any notes" in r["response"].lower()
+    assert r["data"] == {}
+
+
+def test_delete_notes_first_call_asks_for_confirmation_and_deletes_nothing():
+    mem = FakeMemory()
+    mem.db.rows.append({"query": "note", "response": "Note saved: buy milk", "intent": "take_note"})
+    mem.db.rows.append({"query": "note", "response": "Note saved: buy eggs", "intent": "take_note"})
+    core = make_core(mem)
+
+    r = core.handle("delete_notes", {}, {})
+
+    assert r.get("needs_confirmation") is True
+    assert "2" in r["response"]
+    assert len(mem.db.rows) == 2  # nothing deleted yet
+    assert r["confirm_intent"] == "delete_notes"
+
+
+def test_delete_notes_confirmed_call_actually_deletes():
+    mem = FakeMemory()
+    mem.db.rows.append({"query": "note", "response": "Note saved: buy milk", "intent": "take_note"})
+    core = make_core(mem)
+
+    preview = core.handle("delete_notes", {}, {})
+    assert preview.get("needs_confirmation") is True
+
+    r = core.handle("delete_notes", {"_confirmed": True}, {})
+    assert r["data"]["deleted"] == 1
+    assert len(mem.db.rows) == 0
+
+
+def test_delete_notes_confirmation_preview_survives_db_check_failure_gracefully():
+    class _ExplodingDB(FakeDB):
+        def get_interaction_stats(self):
+            raise RuntimeError("db unavailable")
+
+    mem = FakeMemory()
+    mem.db = _ExplodingDB()
+    core = make_core(mem)
+
+    r = core.handle("delete_notes", {}, {})
+    assert r["confidence"] == 0.0
+    assert r.get("needs_confirmation", False) is False
+
+
+# ---------------------------------------------------------------------------
 # can_handle / unknown intent contract
 # ---------------------------------------------------------------------------
 
@@ -341,6 +411,323 @@ def test_orchestrator_replacing_a_module_updates_active_modules_once():
     orch = _build_orchestrator()
     orch.register(make_core())  # re-register "core"
     assert orch.registered_modules.count("core") == 1
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator: confirmation gating end-to-end
+#
+# CoreModule.delete_notes is one of three handlers (with Hermes.send_email
+# and Mnemosyne.forget_fact) that ask the orchestrator to hold an action as
+# pending instead of performing it immediately. These tests exercise that
+# mechanism through the real orchestrator + real CoreModule + real Hecate,
+# not a mock, since the interesting behaviour lives in how dispatch() reacts
+# to the *next* query after a needs_confirmation response.
+# ---------------------------------------------------------------------------
+
+def _notes_orchestrator(note_count=2):
+    mem = FakeMemory()
+    for i in range(note_count):
+        mem.db.rows.append({"query": "note", "response": f"Note saved: item {i}", "intent": "take_note"})
+    core = make_core(mem)
+    orch = _build_orchestrator(core)
+    return orch, mem
+
+
+def test_orchestrator_holds_delete_notes_pending_until_confirmed():
+    orch, mem = _notes_orchestrator(note_count=3)
+
+    ask = orch.dispatch("delete all my notes", {"intent": "delete_notes", "entities": {}, "confidence": 0.9})
+    assert "3" in ask
+    assert len(mem.db.rows) == 3  # still nothing deleted
+
+    confirm = orch.dispatch("yes", {"intent": "chat", "entities": {}, "confidence": 0.5})
+    assert "3" in confirm or "Deleted" in confirm
+    assert len(mem.db.rows) == 0
+
+
+def test_orchestrator_cancels_pending_delete_notes_on_no():
+    orch, mem = _notes_orchestrator(note_count=1)
+
+    orch.dispatch("delete all my notes", {"intent": "delete_notes", "entities": {}, "confidence": 0.9})
+    cancel = orch.dispatch("no", {"intent": "chat", "entities": {}, "confidence": 0.5})
+
+    assert "won't" in cancel.lower()
+    assert len(mem.db.rows) == 1  # untouched
+
+
+def test_orchestrator_drops_pending_delete_notes_on_unrelated_next_query():
+    # An unrelated follow-up (not a clear yes/no) must abandon the pending
+    # action rather than guessing — a later, unrelated "yes" must never be
+    # able to reach back and trigger it.
+    orch, mem = _notes_orchestrator(note_count=1)
+
+    orch.dispatch("delete all my notes", {"intent": "delete_notes", "entities": {}, "confidence": 0.9})
+    orch.dispatch("what's the weather like", {"intent": "chat", "entities": {}, "confidence": 0.9})
+
+    assert len(mem.db.rows) == 1  # nothing deleted
+
+    # A "yes" now is a fresh, unrelated query, not a confirmation — must
+    # not delete notes either.
+    orch.dispatch("yes", {"intent": "chat", "entities": {}, "confidence": 0.9})
+    assert len(mem.db.rows) == 1
+
+
+def test_orchestrator_pending_confirmation_expires(monkeypatch):
+    orch, mem = _notes_orchestrator(note_count=1)
+
+    orch.dispatch("delete all my notes", {"intent": "delete_notes", "entities": {}, "confidence": 0.9})
+    assert orch._pending is not None
+
+    # Simulate the confirmation window having passed.
+    orch._pending.created_at -= 10_000
+
+    confirm = orch.dispatch("yes", {"intent": "chat", "entities": {}, "confidence": 0.9})
+    assert len(mem.db.rows) == 1  # the stale "yes" did NOT delete anything
+    assert orch._pending is None
+
+
+# ---------------------------------------------------------------------------
+# CoreModule.stream_chat()
+# ---------------------------------------------------------------------------
+
+def test_stream_chat_yields_pieces_from_generate_stream(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    core = make_core()
+
+    def _fake_stream(prompt, model=None, host=None, port=None):
+        assert "hello" in prompt
+        yield "Hi"
+        yield " there"
+
+    monkeypatch.setattr(core_module, "generate_stream", _fake_stream)
+
+    pieces = list(core.stream_chat("hello"))
+    assert pieces == ["Hi", " there"]
+
+
+def test_stream_chat_prefers_llm_instance_generate_stream_when_present(monkeypatch):
+    class _FakeLLM:
+        def generate_stream(self, prompt, options=None):
+            yield "from-llm-instance"
+
+    core = CoreModule(
+        memory=FakeMemory(), ollama_cfg={}, llm=_FakeLLM(), timezone_name=_TZ_NAME
+    )
+    pieces = list(core.stream_chat("hello"))
+    assert pieces == ["from-llm-instance"]
+
+
+def test_stream_chat_falls_back_to_module_level_generate_stream_when_llm_lacks_it(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    class _LLMWithoutStreaming:
+        def generate(self, prompt):
+            return "blocking-only"
+
+    def _fake_stream(prompt, model=None, host=None, port=None):
+        yield "module-level"
+
+    monkeypatch.setattr(core_module, "generate_stream", _fake_stream)
+    core = CoreModule(
+        memory=FakeMemory(), ollama_cfg={}, llm=_LLMWithoutStreaming(), timezone_name=_TZ_NAME
+    )
+    pieces = list(core.stream_chat("hello"))
+    assert pieces == ["module-level"]
+
+
+def test_stream_chat_stops_yielding_without_raising_on_exception(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    def _fake_stream(prompt, model=None, host=None, port=None):
+        yield "partial"
+        raise RuntimeError("connection dropped")
+
+    monkeypatch.setattr(core_module, "generate_stream", _fake_stream)
+    core = make_core()
+
+    pieces = list(core.stream_chat("hello"))  # must not raise
+    assert pieces == ["partial"]
+
+
+def test_stream_chat_empty_when_generate_stream_yields_nothing(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    def _fake_stream(prompt, model=None, host=None, port=None):
+        return
+        yield  # pragma: no cover - makes this a generator function
+
+    monkeypatch.setattr(core_module, "generate_stream", _fake_stream)
+    core = make_core()
+
+    assert list(core.stream_chat("hello")) == []
+
+
+# ---------------------------------------------------------------------------
+# HestiaOrchestrator.try_stream_chat()
+# ---------------------------------------------------------------------------
+
+def test_try_stream_chat_streams_plain_chat_through_core(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    def _fake_stream(prompt, model=None, host=None, port=None):
+        yield "Once"
+        yield " upon a time"
+
+    monkeypatch.setattr(core_module, "generate_stream", _fake_stream)
+    orch = _build_orchestrator()
+
+    gen = orch.try_stream_chat(
+        "tell me something", {"intent": "chat", "entities": {}, "confidence": 0.5}
+    )
+    assert gen is not None
+    assert list(gen) == ["Once", " upon a time"]
+
+
+def test_try_stream_chat_updates_context_after_streaming_completes(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    monkeypatch.setattr(
+        core_module, "generate_stream",
+        lambda prompt, model=None, host=None, port=None: iter(["ok"]),
+    )
+    orch = _build_orchestrator()
+
+    gen = orch.try_stream_chat(
+        "hi there", {"intent": "chat", "entities": {}, "confidence": 0.5}
+    )
+    list(gen)  # drain the generator so the finally-block context push runs
+    assert orch._ctx.active_modules == orch.registered_modules  # sanity: still consistent
+    # The chat intent should now be reflected in recent intent history.
+    assert "chat" in orch._ctx.recent_intents
+
+
+def test_try_stream_chat_streams_with_synthesized_secondary_context(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    seen_prompts = []
+
+    def _fake_stream(prompt, model=None, host=None, port=None):
+        seen_prompts.append(prompt)
+        yield "It'll be sunny"
+
+    monkeypatch.setattr(core_module, "generate_stream", _fake_stream)
+
+    class _Weather(BaseModule):
+        name = "weather"
+
+        def can_handle(self, intent):
+            return False
+
+        def handle(self, intent, entities, context):
+            return {"response": "", "data": {}, "confidence": 0.0}
+
+        def get_context(self):
+            return {"forecast": "sunny, 75F"}
+
+    orch = _build_orchestrator()
+    orch.register(_Weather())
+    monkeypatch.setattr(
+        orch, "_route",
+        lambda raw_query, nlu_result: {
+            "primary": "core", "secondary": ["weather"], "synthesize": True,
+        },
+    )
+
+    gen = orch.try_stream_chat(
+        "should I bring an umbrella", {"intent": "chat", "entities": {}, "confidence": 0.5}
+    )
+    assert gen is not None
+    assert list(gen) == ["It'll be sunny"]
+    # The secondary module's context made it into the single streamed prompt.
+    assert len(seen_prompts) == 1
+    assert "sunny, 75F" in seen_prompts[0]
+
+
+def test_try_stream_chat_streams_plain_when_synthesize_true_but_no_secondary(monkeypatch):
+    import modules.hestia.core_module as core_module
+
+    seen_prompts = []
+
+    def _fake_stream(prompt, model=None, host=None, port=None):
+        seen_prompts.append(prompt)
+        yield "sure"
+
+    monkeypatch.setattr(core_module, "generate_stream", _fake_stream)
+
+    orch = _build_orchestrator()
+    monkeypatch.setattr(
+        orch, "_route",
+        lambda raw_query, nlu_result: {
+            "primary": "core", "secondary": [], "synthesize": True,
+        },
+    )
+
+    gen = orch.try_stream_chat(
+        "tell me a joke", {"intent": "chat", "entities": {}, "confidence": 0.5}
+    )
+    assert gen is not None
+    assert list(gen) == ["sure"]
+    assert "Relevant context" not in seen_prompts[0]
+
+
+def test_try_stream_chat_returns_none_when_a_confirmation_is_pending():
+    orch, mem = _notes_orchestrator(note_count=1)
+    orch.dispatch("delete all my notes", {"intent": "delete_notes", "entities": {}, "confidence": 0.9})
+
+    gen = orch.try_stream_chat(
+        "yes", {"intent": "chat", "entities": {}, "confidence": 0.9}
+    )
+    assert gen is None
+
+
+def test_try_stream_chat_returns_none_for_non_core_module():
+    class _OtherModule(BaseModule):
+        name = "other"
+
+        def can_handle(self, intent):
+            return intent == "chat"
+
+        def handle(self, intent, entities, context):
+            return {"response": "from other", "data": {}, "confidence": 0.9}
+
+    orch = HestiaOrchestrator()
+    orch.register_hecate(HecateEngine())
+    orch.register(make_core())
+    orch.register(_OtherModule())
+
+    gen = orch.try_stream_chat(
+        "hi", {"intent": "other_chat", "entities": {}, "confidence": 0.9}
+    )
+    assert gen is None
+
+
+def test_try_stream_chat_returns_none_for_non_chat_intent():
+    orch = _build_orchestrator()
+    gen = orch.try_stream_chat(
+        "what's my name", {"intent": "get_user_info", "entities": {"key": "name"}, "confidence": 0.9}
+    )
+    assert gen is None
+
+
+def test_try_stream_chat_returns_none_when_core_has_no_stream_chat():
+    class _StreamlessCore(BaseModule):
+        name = "core"
+
+        def can_handle(self, intent):
+            return intent == "chat"
+
+        def handle(self, intent, entities, context):
+            return {"response": "blocking only", "data": {}, "confidence": 0.7}
+
+    orch = HestiaOrchestrator()
+    orch.register_hecate(HecateEngine())
+    orch.register(_StreamlessCore())
+
+    gen = orch.try_stream_chat(
+        "hi", {"intent": "chat", "entities": {}, "confidence": 0.5}
+    )
+    assert gen is None
 
 
 if __name__ == "__main__":

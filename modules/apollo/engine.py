@@ -37,6 +37,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ollama_client import generate
+from core.free_apis import (
+    FreeAPIError,
+    food_lookup as _fa_food_lookup,
+    exercise_lookup as _fa_exercise_lookup,
+)
 from modules.base import BaseModule
 from .db import ApolloDB
 
@@ -290,6 +295,8 @@ class ApolloEngine(BaseModule):
             "log_water",
             "set_health_goal",
             "get_goal_progress",
+            "lookup_food",
+            "suggest_exercise",
         }
     )
 
@@ -371,6 +378,10 @@ class ApolloEngine(BaseModule):
             return self._set_health_goal(entities)
         if intent == "get_goal_progress":
             return self._goal_progress()
+        if intent == "lookup_food":
+            return self._lookup_food(entities)
+        if intent == "suggest_exercise":
+            return self._suggest_exercise(entities)
         return _err(f"Unknown intent: {intent!r}")
 
     # ------------------------------------------------------------------
@@ -895,6 +906,75 @@ class ApolloEngine(BaseModule):
             },
             confidence=0.95,
         )
+
+    def _lookup_food(self, entities: dict) -> dict:
+        """
+        Look up a food item's nutrition facts via Open Food Facts (free,
+        no key). New intent: `lookup_food`. Purely informational — does
+        not write to the DB (use `log_health`/`log_water` etc. for that).
+        """
+        query: str = (
+            entities.get("food") or entities.get("item") or entities.get("raw_query") or ""
+        ).strip()
+        if not query:
+            return _ok("What food would you like nutrition info for?", confidence=0.5)
+
+        try:
+            results = _fa_food_lookup(query, limit=3)
+        except FreeAPIError:
+            logger.exception("_lookup_food: Open Food Facts request failed.")
+            return _err("I couldn't reach the food database right now — try again shortly.")
+
+        if not results:
+            return _ok(f"No nutrition data found for {query!r}.", confidence=0.6)
+
+        lines = [f"Nutrition info for {query!r} (per 100g):"]
+        for r in results:
+            cal = r.get("calories_kcal_100g")
+            protein = r.get("protein_g_100g")
+            sugar = r.get("sugar_g_100g")
+            bits = [r["name"]]
+            if r.get("brand"):
+                bits.append(f"({r['brand']})")
+            lines.append("  " + " ".join(bits))
+            detail = []
+            if cal is not None:
+                detail.append(f"{cal:g} kcal")
+            if protein is not None:
+                detail.append(f"{protein:g}g protein")
+            if sugar is not None:
+                detail.append(f"{sugar:g}g sugar")
+            if detail:
+                lines.append("    " + ", ".join(detail))
+
+        return _ok("\n".join(lines), data={"query": query, "results": results}, confidence=0.85)
+
+    def _suggest_exercise(self, entities: dict) -> dict:
+        """
+        Suggest exercises matching a muscle group / keyword via wger's
+        public exercise database (free, no key). New intent:
+        `suggest_exercise`. Complements `_log_workout`, which records
+        what was already done.
+        """
+        query: str = (
+            entities.get("muscle_group") or entities.get("query")
+            or entities.get("raw_query") or "full body"
+        ).strip()
+
+        try:
+            results = _fa_exercise_lookup(query, limit=5)
+        except FreeAPIError:
+            logger.exception("_suggest_exercise: wger request failed.")
+            return _err("I couldn't reach the exercise database right now — try again shortly.")
+
+        if not results:
+            return _ok(f"No exercises found for {query!r}. Try a broader term like 'legs' or 'back'.",
+                        confidence=0.6)
+
+        lines = [f"Exercises for {query!r}:"]
+        lines.extend(f"  - {r['name']}" for r in results if r.get("name"))
+
+        return _ok("\n".join(lines), data={"query": query, "results": results}, confidence=0.85)
 
 
 # ---------------------------------------------------------------------------

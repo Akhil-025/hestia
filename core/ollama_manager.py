@@ -1,8 +1,13 @@
 # core/ollama_manager.py
 
-import requests
-import time
+import logging
 import subprocess
+import time
+
+import requests
+
+logger = logging.getLogger(__name__)
+
 
 class OllamaManager:
     def __init__(self, host="127.0.0.1", port=11434):
@@ -14,18 +19,23 @@ class OllamaManager:
         try:
             r = requests.get(self.base_url, timeout=3)
             return r.status_code == 200
-        except:
+        # Narrowed from a bare `except:`, which also swallows
+        # KeyboardInterrupt/SystemExit — someone hitting Ctrl+C during
+        # startup while Ollama is unreachable would have had the interrupt
+        # silently eaten here instead of stopping the process.
+        # requests.RequestException covers every network-level failure
+        # mode (connection refused, timeout, DNS, ...) this call can raise.
+        except requests.RequestException as e:
+            logger.debug("Ollama health check failed: %s", e)
             return False
-
-
 
     def ensure_running(self, retries=5, delay=2) -> bool:
         # Step 1: Check if already running
         if self.is_running():
-            print(f"[OllamaManager] Ollama is running at {self.base_url}")
+            logger.info("Ollama is running at %s.", self.base_url)
             return True
 
-        print("[OllamaManager] Ollama not running. Starting it...")
+        logger.info("Ollama not running. Starting it...")
 
         # Step 2: Start Ollama
         try:
@@ -35,16 +45,16 @@ class OllamaManager:
                 stderr=subprocess.DEVNULL
             )
         except Exception as e:
-            print(f"[OllamaManager] Failed to start Ollama: {e}")
+            logger.error("Failed to start Ollama: %s", e)
             return False
 
         # Step 3: Wait for it to come up
         for i in range(retries * 2):  # give more time
             if self.is_running():
-                print(f"[OllamaManager] Ollama started successfully at {self.base_url}")
+                logger.info("Ollama started successfully at %s.", self.base_url)
                 return True
-            print(f"[OllamaManager] Waiting for Ollama startup... ({i+1})")
+            logger.info("Waiting for Ollama startup... (%d)", i + 1)
             time.sleep(1)
 
-        print("[OllamaManager] Ollama failed to start.")
+        logger.error("Ollama failed to start.")
         return False

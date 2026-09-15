@@ -1,7 +1,9 @@
-import sys
+import logging
 import threading
 import time
 from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 class HestiaBrowserAgent:
     """Playwright-powered browser automation with voice confirmation before acting."""
@@ -35,7 +37,7 @@ class HestiaBrowserAgent:
             try:
                 from playwright.sync_api import sync_playwright
             except ImportError:
-                print("[BrowserAgent] playwright not installed. Run: pip install playwright && playwright install chromium", file=sys.stderr)
+                logger.error("playwright not installed. Run: pip install playwright && playwright install chromium")
                 return None
             self._playwright = sync_playwright().__enter__()
             self._browser = self._playwright.chromium.launch(headless=self.headless)
@@ -75,7 +77,7 @@ class HestiaBrowserAgent:
             )
             return context.new_page()
         except Exception as e:
-            print(f"[BrowserAgent] Failed to open page: {e}", file=sys.stderr)
+            logger.warning("Failed to open page: %s", e)
             return None
 
     def search_web(self, query: str) -> str:
@@ -98,7 +100,7 @@ class HestiaBrowserAgent:
         """
         page = self._new_page()
         if not page:
-            print("[BrowserAgent] search_web_results: browser not available.", file=sys.stderr)
+            logger.warning("search_web_results: browser not available.")
             return []
 
         try:
@@ -124,7 +126,7 @@ class HestiaBrowserAgent:
             return out
 
         except Exception as e:
-            print(f"[BrowserAgent] search_web_results error: {e}", file=sys.stderr)
+            logger.warning("search_web_results error: %s", e)
             try:
                 page.close()
             except Exception:
@@ -150,7 +152,7 @@ class HestiaBrowserAgent:
             page.close()
             return f"Opened {title}."
         except Exception as e:
-            print(f"[BrowserAgent] open_url error: {e}", file=sys.stderr)
+            logger.warning("open_url error: %s", e)
             try:
                 page.close()
             except Exception:
@@ -178,7 +180,7 @@ class HestiaBrowserAgent:
                     page.fill(selector, value)
                     time.sleep(0.3)
                 except Exception as e:
-                    print(f"[BrowserAgent] fill_form field error ({selector}): {e}", file=sys.stderr)
+                    logger.warning("fill_form field error (%s): %s", selector, e)
 
             if submit_selector:
                 if not self._confirm("Form filled. Should I submit it now?"):
@@ -192,7 +194,7 @@ class HestiaBrowserAgent:
             page.close()
             return "Form filled but not submitted — no submit button specified."
         except Exception as e:
-            print(f"[BrowserAgent] fill_form error: {e}", file=sys.stderr)
+            logger.warning("fill_form error: %s", e)
             try:
                 page.close()
             except Exception:
@@ -217,7 +219,7 @@ class HestiaBrowserAgent:
             page.close()
             return text or "Page loaded but no readable content found."
         except Exception as e:
-            print(f"[BrowserAgent] get_page_text error: {e}", file=sys.stderr)
+            logger.warning("get_page_text error: %s", e)
             try:
                 page.close()
             except Exception:
@@ -258,7 +260,7 @@ class HestiaBrowserAgent:
             page.close()
             return f"I couldn't find status for flight {flight_number}."
         except Exception as e:
-            print(f"[BrowserAgent] check_flight_status error: {e}", file=sys.stderr)
+            logger.warning("check_flight_status error: %s", e)
             try:
                 page.close()
             except Exception:

@@ -10,6 +10,8 @@ from typing import Optional, List, Dict, Any, Tuple
 import logging
 logger = logging.getLogger(__name__)
 
+from modules.hecate.intent_registry import ALL_INTENTS as _REGISTRY_INTENTS
+
 # Fast-path intents: deterministic, no entities needed, no LLM round trip.
 # Kept intentionally small and conservative — only patterns that are
 # unambiguous regardless of surrounding context.
@@ -19,130 +21,28 @@ _FAST_INTENTS: dict = {
     re.compile(r'^\s*(hi|hello|hey|good morning|good evening|good afternoon)[\s!.]*$', re.I): 'chat',
     # The model has repeatedly returned "weather_forecast"/"weather" (not
     # "get_weather", the actual valid intent) for these phrasings, and does
-    # NOT self-correct even across all 3 corrective retries — it just keeps
-    # re-emitting a variant of the same wrong name. Given how common a
-    # weather question is, this gets a deterministic fast-path rather than
-    # relying on retries that have empirically not worked.
+    # NOT self-correct even across retries — it just keeps re-emitting a
+    # variant of the same wrong name. Given how common a weather question
+    # is, this gets a deterministic fast-path rather than relying on the
+    # (now schema-constrained) LLM path to get it right every time.
     re.compile(r"^\s*(what(\'s| is) the weather( today| like| now)?|weather today|how(\'s| is) the weather)\s*[?.!]*\s*$", re.I): 'get_weather',
 }
 
 # ---------------------------------------------------------------------------
 # Canonical intent whitelist
 # ---------------------------------------------------------------------------
-# This MUST stay in sync with the "Valid intents:" block in
-# config/nlu_prompt.txt. It exists as a hardcoded fallback in case that file
-# is missing/edited/reformatted — see _parse_valid_intents(). The prompt file
-# remains the source of truth whenever it can be parsed successfully.
-_CANONICAL_VALID_INTENTS: frozenset = frozenset({
-    "get_time", "get_date", "get_weather", "set_reminder",
-    "take_note", "get_notes", "delete_notes", "get_history",
-    "save_name", "get_user_info", "set_preference", "get_system_info",
-    "learn_fact", "forget_fact",
-    "chat",
-    "iris_search", "iris_ingest", "iris_status",
-    "athena_search",
-    "add_goal", "get_goals", "update_goal", "remove_goal", "abandon_goal",
-    "add_habit", "complete_habit", "list_habits", "remove_habit",
-    "productivity_summary", "get_at_risk_goals", "get_motivation",
-    "ares_analyse_risk", "ares_swot_analysis", "ares_strategic_plan", "ares_decision_support",
-    "ares_premortem_analysis", "ares_competitive_analysis", "ares_contingency_plan",
-    "ares_war_room_briefing",
-    "apollo_log_workout", "apollo_track_sleep", "apollo_log_mood", "apollo_log_health",
-    "apollo_get_health_summary", "apollo_log_weight", "apollo_log_water",
-    "apollo_set_health_goal", "apollo_get_goal_progress",
-    "orpheus_write_poem", "orpheus_brainstorm", "orpheus_creative_prompt", "orpheus_generate_lyrics",
-    "orpheus_write_story", "orpheus_continue_writing", "orpheus_critique_writing",
-    "orpheus_rewrite_style", "orpheus_generate_names", "orpheus_get_creations",
-    "metis_correct_text", "metis_improve_clarity", "metis_suggest_style", "metis_detect_tone",
-    "metis_rewrite_text", "metis_draft_content", "metis_summarize_text", "metis_expand_text",
-    "metis_shorten_text", "metis_generate_outline", "metis_check_plagiarism",
-    "metis_generate_citation", "metis_check_consistency", "metis_readability_report",
-    "metis_writing_stats",
-    "dionysus_recommend_movie", "dionysus_find_restaurant", "dionysus_recommend_music",
-    "dionysus_plan_outing", "dionysus_dismiss_recommendation", "dionysus_mark_seen",
-    "pluto_log_expense", "pluto_get_budget_summary", "pluto_track_investment", "pluto_spending_report",
-    "hephaestus_browser_action", "hephaestus_search_web", "hephaestus_check_flight",
-    "hephaestus_scrape_page", "hephaestus_open_app",
-    "read_email", "send_email", "list_events", "create_event", "delete_events",
-})
-
-# Module prefixes the orchestrator strips before calling can_handle() on a
-# module (see modules/hestia/orchestrator.py::_MODULE_PREFIXES /
-# _strip_module_prefix). This list MUST mirror that tuple exactly — kept
-# here too so _resolve_intent() can compare intents "prefix-blind" when
-# doing token-set matching. A prefix missing here doesn't break dispatch
-# (the orchestrator has its own copy), it only weakens auto-correction in
-# this file, so keep the two in sync if either changes.
-_KNOWN_PREFIXES: tuple = (
-    "apollo_", "ares_", "orpheus_", "dionysus_", "pluto_", "hermes_",
-    "chronos_", "athena_", "iris_", "artemis_", "hephaestus_", "mnemosyne_", "metis_",
-    # "plutus_" is not one of the app's real module prefixes — Plutus is the
-    # actual Greek god of wealth (Pluto is underworld/riches in the Roman
-    # tradition), and the model reliably "corrects" pluto_* intents to this
-    # mythologically-accurate-but-wrong spelling under this exact prompt.
-    # Aliasing it here means token-set matching still recovers the intent
-    # instead of burning all 3 retries on a name the model won't stop using.
-    "plutus_",
-)
-
-# Exact hallucinated-intent -> canonical-intent aliases. Unlike the
-# prefix/token-set recovery above, these are intent names the model invents
-# whole-cloth that don't token-match any canonical intent at all (so tiers
-# 1 and 2 of _resolve_intent() can't recover them), yet it keeps re-emitting
-# the *same* wrong name across all 3 correction attempts rather than
-# converging on the real one — burning the whole retry budget every time.
-# "get_recent_conversation" is the observed repeat offender: the model asks
-# for it whenever the user says something like "what did we talk about
-# yesterday?", and CoreModule's real equivalent is get_history.
-_INTENT_ALIASES: Dict[str, str] = {
-    "get_recent_conversation": "get_history",
-    "get_conversation_history": "get_history",
-    # Observed for "what did we talk about yesterday?" — doesn't token-match
-    # get_history ("past"/"conversation" vs "history") so it burned all 3
-    # retries before falling through to chat.
-    "get_past_conversation": "get_history",
-    "inform_name": "save_name",
-    "inform_user_name": "save_name",
-    "mail_unread_count": "read_email",
-    "read_unread_email": "read_email",
-    # Observed for "do I have any unread emails?" — "check"/"unread" don't
-    # token-match "read_email" even with synonym buckets, so both got
-    # rejected for all 3 attempts and the model free-formed generic
-    # "log into your email account" advice instead of calling Hermes.
-    "check_unread_emails": "read_email",
-    "check_email": "read_email",
-    "list_calendar_events": "list_events",
-    "athena_search_documents": "athena_search",
-    "athena_query_notes": "get_notes",
-    "iris_search_photos": "iris_search",
-    "iris_image_indexing_status": "iris_status",
-    # Observed for "give me my budget summary" — token-set match needs a
-    # "get" token that "budget_summary" doesn't have, and it's missing the
-    # pluto_ prefix entirely, so it never resolves to the canonical
-    # "pluto_get_budget_summary" and the model fabricates numbers instead.
-    "budget_summary": "pluto_get_budget_summary",
-}
-
-# Synonym buckets used during token-set matching so near-miss verbs don't
-# block an otherwise-correct auto-correction (e.g. the model saying
-# "get_habits" when the canonical intent is "list_habits" — same meaning,
-# different verb). Every token is mapped to its bucket's first member
-# before comparison. Only include buckets that are safe project-wide: i.e.
-# no two DISTINCT valid intents differ only by a word in the same bucket
-# (that would make the match ambiguous and _resolve_intent already refuses
-# to guess in that case, but keeping the buckets conservative avoids
-# relying on that safety net more than necessary).
-_SYNONYM_BUCKETS: tuple = (
-    frozenset({"get", "list", "show", "fetch", "view"}),
-    frozenset({"add", "create", "new", "set"}),
-    frozenset({"delete", "remove", "clear", "cancel"}),
-    frozenset({"update", "edit", "modify", "change"}),
-)
-_SYNONYM_MAP: Dict[str, str] = {
-    word: next(iter(bucket))
-    for bucket in _SYNONYM_BUCKETS
-    for word in bucket
-}
+# Sourced from modules/hecate/intent_registry.py — the single source of
+# truth for "what intents exist and which module owns them", shared with
+# Hecate's router and the orchestrator's prefix-stripping. This file used
+# to keep its own independent copy (_CANONICAL_VALID_INTENTS) that had
+# already drifted from both the registry-equivalent data in hecate/engine.py
+# AND from what several modules actually declare in their own _INTENTS sets
+# (e.g. modules/pluto/engine.py's "optimize_portfolio"/"backtest_strategy"/
+# "forecast_spending"/"financial_advisor_chat" were real, tested, working
+# intents that were never reachable via NLU classification because they
+# were missing from this file's old whitelist). See intent_registry.py's
+# module docstring for the full account.
+_CANONICAL_VALID_INTENTS: frozenset = _REGISTRY_INTENTS
 
 # Deterministic fast-path for saving the user's name. This bypasses the LLM
 # entirely for the most common phrasings, because in practice the model has
@@ -151,7 +51,7 @@ _SYNONYM_MAP: Dict[str, str] = {
 # with a matching few-shot example in the prompt. Getting this one wrong is
 # unusually costly (it silently fails to save the name, and/or pollutes the
 # stored user_name fact with garbage), so it gets the same fast-path
-# treatment as get_time/get_date/chat above rather than relying on retries.
+# treatment as get_time/get_date/chat above rather than relying on the LLM.
 _SAVE_NAME_PATTERN = re.compile(
     r"^\s*(?:my name is|call me|you can call me|i am|i'm)\s+"
     r"([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3})\s*[.!]*\s*$",
@@ -163,11 +63,15 @@ _SAVE_NAME_PATTERN = re.compile(
 # ---------------------------------------------------------------------------
 # The LLM frequently gets the *intent* right but names an entity key that
 # isn't what the target module actually reads (e.g. emits {"content": "..."}
-# for add_habit when Artemis reads entities["name"]). Rather than trying to
-# force the model to be perfectly consistent via prompting alone, normalize
-# known alias keys onto the canonical key each module expects. A rename only
-# happens when the canonical key is NOT already present, so a correctly
-# emitted entity is never overwritten by a mis-named one.
+# for add_habit when Artemis reads entities["name"]). This is a separate
+# problem from intent hallucination (which the JSON-schema constraint below
+# now prevents structurally) — entity *values* are free-form text, so a
+# schema can constrain the key names but not guarantee the model actually
+# uses them. Rather than trying to force perfect consistency via prompting
+# alone, normalize known alias keys onto the canonical key each module
+# expects. A rename only happens when the canonical key is NOT already
+# present, so a correctly emitted entity is never overwritten by a
+# mis-named one.
 _ENTITY_ALIASES: Dict[str, Dict[str, str]] = {
     "add_habit":          {"content": "name", "habit": "name", "task": "name", "title": "name"},
     "complete_habit":     {"content": "name", "habit": "name", "task": "name", "title": "name"},
@@ -204,13 +108,36 @@ _AMOUNT_FIELDS: Dict[str, str] = {
 
 
 class HestiaNLU:
-    """Natural language understanding using Ollama with structured JSON output.
+    """Natural language understanding using Ollama with schema-constrained
+    structured output.
 
-    In addition to calling the LLM and parsing its JSON response, this class
-    is responsible for making sure the *intent* the LLM emits is actually one
-    Hestia's modules can act on, and that common entity-key drift (e.g.
-    "content" vs "name") doesn't silently break downstream modules. See
-    _resolve_intent() and _normalize_entities().
+    Design note — how this differs from the previous version
+    ----------------------------------------------------------
+    Previously, the Ollama call used `format="json"` (Ollama's legacy mode,
+    which only guarantees *syntactically valid JSON* — it says nothing
+    about which values appear in it). That meant the model was free to
+    invent an intent name that isn't one Hestia's modules can act on (e.g.
+    "get_habits" instead of the real "list_habits", or "plutus_optimize"
+    for the real "pluto_optimize_portfolio"), and this file used to carry
+    ~150 lines of retry logic, a hardcoded alias table for specific
+    hallucinated names it had been observed to repeat, and prefix/synonym
+    "token-set" fuzzy matching to recover from that after the fact.
+
+    `_build_schema()` below instead passes Ollama a real JSON Schema (not
+    just the string "json") with `intent` constrained to an `enum` of every
+    valid intent from the shared registry. Ollama (>= 0.5) enforces this via
+    grammar-constrained decoding: the model is structurally incapable of
+    emitting an intent outside that list, in the same way it's structurally
+    incapable of emitting invalid JSON under `format="json"`. This doesn't
+    fix *semantic* misclassification (the model can still confidently pick
+    the wrong valid intent for an ambiguous phrasing — that's what Hecate's
+    text-trigger fallback tier exists for), but it eliminates the
+    hallucinated-name class of failure entirely, so the alias table,
+    synonym buckets, and multi-attempt "your last answer wasn't in the
+    list, try again" correction loop are no longer needed for the Ollama
+    path. A much smaller exact-match check remains for the non-Ollama
+    fallback providers (Anthropic/Gemini), which aren't grammar-constrained
+    here and so can still emit free text.
     """
 
     def __init__(self, model: str = "mistral", host: str = "localhost",
@@ -221,7 +148,9 @@ class HestiaNLU:
         self.temperature = 0.1
         self.max_tokens = 150
         self.system_prompt = self._load_prompt(prompt_path)
-        self.valid_intents = self._parse_valid_intents(self.system_prompt)
+        self.valid_intents = _CANONICAL_VALID_INTENTS
+        self._warn_if_prompt_intents_drifted(self.system_prompt)
+        self._schema = self._build_schema(self.valid_intents)
         self.providers = providers or [
             {"name": "ollama", "model": self.model, "host": host, "port": port}
         ]
@@ -240,39 +169,61 @@ class HestiaNLU:
             return (
                 "You are Hestia, a warm, playful, affectionate personal assistant.\n"
                 "Always respond with valid JSON: {\"intent\": \"chat\", \"entities\": {}, \"response\": \"...\", \"confidence\": 0.9}\n"
-                "Valid intents: chat, get_time, get_date, get_weather, set_reminder, open_app, take_note, save_name, get_user_info, get_history, get_notes, set_preference\n"
             )
 
-    def _parse_valid_intents(self, prompt_text: str) -> frozenset:
+    def _warn_if_prompt_intents_drifted(self, prompt_text: str) -> None:
         """
-        Extract the canonical intent list from the "Valid intents:" block in
-        the prompt file, falling back to the hardcoded _CANONICAL_VALID_INTENTS
-        if the block is missing, empty, or the prompt file itself failed to
-        load. Keeping this data-driven (rather than only hardcoded) means an
-        edit to config/nlu_prompt.txt's intent list is automatically picked
-        up without also having to touch this file — but we never crash or
-        run with an empty whitelist if that parse fails.
+        config/nlu_prompt.txt is plain text fed to the LLM, so it can't
+        import the registry directly — it keeps its own human-maintained
+        "Valid intents:" listing for the model to read. This just checks
+        that listing against the registry (the actual source of truth used
+        for validation/schema-building) and logs a warning on any mismatch,
+        so drift between the prompt file and the registry is caught in logs
+        instead of silently producing an intent the schema will then reject
+        or a documented intent the schema won't allow.
         """
         match = re.search(r"Valid intents:(.*?)---", prompt_text, re.S)
         if not match:
+            return
+        prompt_intents = {t.strip() for t in re.split(r"[,\n]", match.group(1)) if t.strip()}
+        if not prompt_intents:
+            return
+
+        missing_from_prompt = self.valid_intents - prompt_intents
+        missing_from_registry = prompt_intents - self.valid_intents
+        if missing_from_prompt:
             logger.warning(
-                "[NLU] Could not find a 'Valid intents:' block in the prompt "
-                "file; falling back to the hardcoded intent whitelist."
+                "[NLU] config/nlu_prompt.txt's 'Valid intents:' block is "
+                "missing %d intent(s) present in the registry (the model "
+                "will never be told about, and thus won't emit, these): %s",
+                len(missing_from_prompt), sorted(missing_from_prompt),
             )
-            return _CANONICAL_VALID_INTENTS
-
-        block = match.group(1)
-        raw_tokens = re.split(r"[,\n]", block)
-        intents = {t.strip() for t in raw_tokens if t.strip()}
-
-        if not intents:
+        if missing_from_registry:
             logger.warning(
-                "[NLU] 'Valid intents:' block parsed but was empty; falling "
-                "back to the hardcoded intent whitelist."
+                "[NLU] config/nlu_prompt.txt's 'Valid intents:' block lists "
+                "%d intent(s) not present in modules/hecate/intent_registry.py "
+                "(these will be rejected even if the model emits them): %s",
+                len(missing_from_registry), sorted(missing_from_registry),
             )
-            return _CANONICAL_VALID_INTENTS
 
-        return frozenset(intents)
+    @staticmethod
+    def _build_schema(valid_intents: frozenset) -> dict:
+        """
+        JSON Schema passed to Ollama as `format` (see _call_ollama_provider).
+        Constrains `intent` to exactly the registry's intents via `enum` —
+        grammar-constrained decoding makes this a structural guarantee, not
+        a request the model can ignore.
+        """
+        return {
+            "type": "object",
+            "properties": {
+                "intent": {"type": "string", "enum": sorted(valid_intents)},
+                "entities": {"type": "object"},
+                "response": {"type": "string"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+            "required": ["intent", "entities", "response", "confidence"],
+        }
 
     def set_memory(self, memory) -> None:
         """Inject memory reference so NLU can include user facts in prompts."""
@@ -328,10 +279,13 @@ class HestiaNLU:
 
     def _correction_note(self, bad_intent: str) -> str:
         """
-        Appended to the prompt on a retry after the model emitted an intent
-        that isn't in self.valid_intents. Naming the exact offending value
-        and re-stating the constraint gets a meaningfully higher fix rate on
-        the next attempt than just resubmitting the same prompt unchanged.
+        Appended to the prompt on a retry after a *non-schema-constrained*
+        provider (Anthropic/Gemini) emitted an intent that isn't in
+        self.valid_intents. Naming the exact offending value and re-stating
+        the constraint gets a meaningfully higher fix rate on the next
+        attempt than just resubmitting the same prompt unchanged. The
+        Ollama path never needs this — its output is schema-constrained and
+        cannot contain an invalid intent in the first place.
         """
         return (
             "\n\n--- CORRECTION REQUIRED ---\n"
@@ -418,15 +372,14 @@ class HestiaNLU:
                 time.sleep(0.25)
                 continue
 
-            # JSON parsed successfully — now validate/resolve the intent
-            # against the whitelist before trusting it. Previously any
-            # string here was accepted as-is, which let a hallucinated
-            # intent like "get_habits" or "mood_log" silently sail past
-            # every module's can_handle() check and fall back to generic
-            # chat, discarding the user's actual request without any
-            # retry ever being attempted.
+            # JSON parsed successfully — now validate the intent against the
+            # whitelist. On the Ollama path this should always pass (the
+            # schema's enum makes an invalid value structurally impossible);
+            # this check mainly guards the non-constrained fallback
+            # providers (Anthropic/Gemini) and any future provider added
+            # without native structured-output support.
             raw_intent = parsed.get("intent", "")
-            resolved_intent = self._resolve_intent(raw_intent)
+            resolved_intent = self._validate_intent(raw_intent)
 
             if resolved_intent is None:
                 invalid_intent_failures += 1
@@ -439,15 +392,6 @@ class HestiaNLU:
                 time.sleep(0.25)
                 continue
 
-            if resolved_intent != raw_intent:
-                # Recovered via token-set matching (e.g. "mood_log" ->
-                # "apollo_log_mood"); log it so drift like this is visible
-                # instead of silently masked.
-                print(
-                    f"[NLU] Auto-corrected intent {raw_intent!r} -> "
-                    f"{resolved_intent!r}", file=sys.stderr,
-                )
-
             parsed["intent"] = resolved_intent
             parsed["entities"] = self._normalize_entities(resolved_intent, parsed.get("entities") or {})
             parsed["entities"] = self._clean_amount_entities(resolved_intent, parsed["entities"])
@@ -458,74 +402,30 @@ class HestiaNLU:
         return {"intent": "chat", "entities": {}, "response": "Sorry, I had trouble understanding that.", "confidence": 0.5}
 
     # ------------------------------------------------------------------
-    # Intent resolution
+    # Intent validation
     # ------------------------------------------------------------------
 
-    def _strip_known_prefix(self, s: str) -> str:
-        for p in _KNOWN_PREFIXES:
-            if s.startswith(p):
-                return s[len(p):]
-        return s
-
-    def _token_set(self, s: str) -> frozenset:
-        stripped = self._strip_known_prefix(s)
-        return frozenset(
-            _SYNONYM_MAP.get(t, t) for t in stripped.split("_") if t
-        )
-
-    def _resolve_intent(self, raw_intent: str) -> Optional[str]:
+    def _validate_intent(self, raw_intent: str) -> Optional[str]:
         """
-        Map a possibly-malformed intent string from the LLM onto one of the
-        canonical intents in self.valid_intents. Returns the canonical
-        intent name, or None if no confident match exists.
+        Confirm *raw_intent* is one of the registry's canonical intents.
 
-        Three levels are tried:
-          1. Exact match (the common, well-behaved case).
-          1.5. Exact match against a small hardcoded table of known
-               hallucinated intent names (_INTENT_ALIASES) that don't
-               token-match any canonical intent.
-          2. Token-set match ignoring known module prefixes, word order, and
-             a small set of safe verb synonyms (get/list/show/fetch/view,
-             add/create/new, delete/remove/clear/cancel, update/edit/modify/
-             change — see _SYNONYM_BUCKETS). This recovers cases like
-             "mood_log" for "apollo_log_mood" (reordering) and "get_habits"
-             for "list_habits" (synonymous verb) without ever guessing
-             across genuinely different words — if the token sets don't
-             match even after synonym normalization, this returns None
-             rather than picking the "closest" intent.
-
-        A None return means the caller should treat this turn as failed and
-        either retry or fall back to chat — never dispatch on an unresolved
-        intent.
+        Unlike the previous multi-level fuzzy resolver (exact match ->
+        hardcoded hallucination aliases -> prefix/order/synonym-blind
+        token-set matching), this only does an exact match after light
+        normalisation (case, surrounding whitespace, spaces/dashes ->
+        underscores). That fuzzier recovery existed specifically to paper
+        over free-text hallucination; on the Ollama path the JSON-schema
+        `enum` constraint (see _build_schema) already guarantees the raw
+        value is a real intent, so there is nothing left to "recover" from.
+        For the non-constrained fallback providers, guessing at a
+        near-miss intent risks silently misrouting a genuine, differently-
+        named request; failing closed and letting the correction-note
+        retry (or the final chat fallback) handle it is the safer default.
         """
         if not raw_intent or not isinstance(raw_intent, str):
             return None
-
         candidate = raw_intent.strip().lower().replace(" ", "_").replace("-", "_")
-        if not candidate:
-            return None
-
-        # 1. Exact match.
-        if candidate in self.valid_intents:
-            return candidate
-
-        # 1.5. Known hallucinated-intent alias (see _INTENT_ALIASES) — exact
-        # wrong names the model repeats verbatim across retries instead of
-        # drifting close enough for token-set matching to catch.
-        aliased = _INTENT_ALIASES.get(candidate)
-        if aliased and aliased in self.valid_intents:
-            return aliased
-
-        # 2. Token-set match (prefix- and order-blind), only if unambiguous.
-        candidate_tokens = self._token_set(candidate)
-        if candidate_tokens:
-            matches = [v for v in self.valid_intents if self._token_set(v) == candidate_tokens]
-            if len(matches) == 1:
-                return matches[0]
-            # 0 matches -> genuinely unknown intent, don't guess.
-            # >1 matches -> ambiguous, don't guess.
-
-        return None
+        return candidate if candidate in self.valid_intents else None
 
     # ------------------------------------------------------------------
     # Entity normalization
@@ -638,9 +538,9 @@ class HestiaNLU:
 
     def _clean_amount_entities(self, intent: str, entities: dict) -> dict:
         """
-        Strip currency symbols/commas/whitespace out of amount-like entities
-        (e.g. "₹500" -> 500) so downstream modules that expect a numeric
-        amount don't reject a value the user clearly did provide.
+        Strip currency symbols/commas/whitespace out of amount-like
+        entities (e.g. "₹500" -> 500) so downstream modules that expect a
+        numeric amount don't reject a value the user clearly did provide.
 
         The field holding the numeric value varies by intent (most use
         "amount", but apollo_log_weight uses "weight") — see _AMOUNT_FIELDS.
@@ -694,7 +594,27 @@ class HestiaNLU:
         host  = provider.get("host", "127.0.0.1")
         port  = provider.get("port", 11434)
         try:
-            result = generate(prompt, model=model, host=host, port=port, fmt="json")
+            # Passing self._schema (a real JSON Schema with intent's enum)
+            # rather than the bare string "json" is what makes this
+            # structured-tool-calling rather than just "ask nicely for
+            # JSON": Ollama (>= 0.5) grammar-constrains generation so the
+            # model cannot emit an intent outside the registry, the same
+            # way format="json" alone constrains it to emit syntactically
+            # valid JSON. Requires an Ollama version with structured-output
+            # support; on an older Ollama this still degrades gracefully to
+            # best-effort JSON since the extra schema fields are ignored,
+            # falling back to _validate_intent()'s exact-match check below.
+            #
+            # Without an explicit options.temperature, Ollama falls back to
+            # its own chat-tuned default (~0.8). That's fine for open-ended
+            # chat but actively harmful here: this is a structured
+            # classification prompt, and a high temperature just makes the
+            # model more likely to invent a plausible-sounding but wrong
+            # entity value on every retry instead of converging.
+            result = generate(
+                prompt, model=model, host=host, port=port, fmt=self._schema,
+                options={"temperature": self.temperature},
+            )
             return result if result else None
         except Exception as e:
             print(f"[NLU ERROR] ollama_client failed: {e}", file=sys.stderr)
@@ -779,7 +699,7 @@ class HestiaNLU:
         as a successful result.
 
         Note: this method intentionally does NOT validate ``intent`` against
-        the whitelist — that's handled by ``_resolve_intent()`` in
+        the whitelist — that's handled by ``_validate_intent()`` in
         ``understand()``, which needs to distinguish "not valid JSON" from
         "valid JSON but an unrecognised intent" so it can log/retry each
         differently.

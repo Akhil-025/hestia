@@ -2,7 +2,7 @@
 
 import logging
 from modules.base import BaseModule
-from core.ollama_client import generate
+from core.ollama_client import generate, generate_stream
 import platform, datetime, re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -71,7 +71,7 @@ class CoreModule(BaseModule):
             return self._get_notes(entities)
 
         if intent == "delete_notes":
-            return self._delete_notes()
+            return self._delete_notes(entities)
 
         if intent == "get_history":
             return self._get_history(entities)
@@ -101,10 +101,90 @@ class CoreModule(BaseModule):
                     host=self._ollama.get("host", "127.0.0.1"),
                     port=self._ollama.get("port", 11434),
                 )
+
+            # core.ollama_client.generate() never raises — every failure
+            # (Ollama unreachable, timed out, bad response, ...) is caught
+            # there, logged to the "hestia.llm_latency" logger, and returned
+            # as "". Without this check that silently became a normal-
+            # looking chat reply: {"response": "", "confidence": 0.7} — an
+            # empty message asserted with 70% confidence, with nothing to
+            # tell the user (or the orchestrator) anything had gone wrong.
+            # This is the exact "chat responses ... have no way to
+            # distinguish 'model said nothing' from 'Ollama was
+            # unreachable'" gap from review item 4. Matches the empty-
+            # response check already used by Apollo/Orpheus/Metis/Artemis's
+            # own `_llm()`/`_llm_text()` helpers — core chat was the one
+            # call site still missing it.
+            if not text or not text.strip():
+                logger.warning(
+                    "CoreModule._chat(): LLM returned an empty response "
+                    "for query=%r (see hestia.llm_latency log for cause).",
+                    query[:80],
+                )
+                return {
+                    "response": (
+                        "I couldn't reach my language model just now — "
+                        "mind trying that again in a moment?"
+                    ),
+                    "data": {},
+                    "confidence": 0.0,
+                }
+
             return {"response": text, "data": {}, "confidence": 0.7}
         except Exception:
             logger.exception("CoreModule._chat() failed for query=%r", query[:80])
             return {"response": "I'm not sure about that.", "data": {}, "confidence": 0.3}
+
+    def stream_chat(self, query: str, context_block: str = ""):
+        """
+        Generator counterpart to _chat(), used by the voice loop's
+        streaming path (see HestiaOrchestrator.try_stream_chat and
+        Hestia.process_voice_turn in main.py) so TTS can start speaking
+        the first sentence of the reply while Ollama is still generating
+        the rest, instead of waiting for the whole thing.
+
+        *context_block*, when given, is pre-formatted secondary-module
+        context (see HestiaOrchestrator._build_context_block) folded
+        straight into the prompt. This lets a chat turn that Hecate
+        flagged for synthesis with other modules' context (e.g. "should I
+        bring an umbrella" pulling in Ares's weather context) still stream
+        as a single LLM generation, instead of streaming a plain chat
+        reply and only *then* re-synthesizing it with a second, fully
+        blocking LLM call the way dispatch()/_synthesize() does — see
+        try_stream_chat's docstring for why that second call is what
+        synthesis normally costs streaming. Omitted (the default), the
+        prompt is identical to the plain-chat case.
+
+        Not used by process_text()'s normal blocking dispatch() path —
+        that one calls _chat() as before, since only the voice loop has
+        anywhere to send partial output as it arrives (streaming TTS).
+        The web UI, Telegram, and heartbeat callers all just want one
+        finished string back, same as always.
+
+        Same never-raise contract as _chat(): any failure mid-stream
+        (Ollama unreachable, connection dropped) simply stops yielding
+        further text rather than raising — the caller is left with
+        whatever was spoken/queued so far, the same way a truncated
+        network response would look.
+        """
+        extra = f"Relevant context:\n{context_block}\n\n" if context_block else ""
+        prompt = (
+            f"You are Hestia. {extra}"
+            f"Answer concisely in 1-2 sentences.\n\nQuestion: {query}"
+        )
+        try:
+            if self._llm_instance is not None and hasattr(self._llm_instance, "generate_stream"):
+                yield from self._llm_instance.generate_stream(prompt)
+            else:
+                yield from generate_stream(
+                    prompt,
+                    model=self._ollama.get("model", "mistral"),
+                    host=self._ollama.get("host", "127.0.0.1"),
+                    port=self._ollama.get("port", 11434),
+                )
+        except Exception:
+            logger.exception("CoreModule.stream_chat() failed for query=%r", query[:80])
+            return
 
     def _sys_info(self) -> dict:
         return {
@@ -211,7 +291,37 @@ class CoreModule(BaseModule):
         body = "Your notes:\n" + "\n".join(f"- {c}" for c in contents[:10])
         return {"response": body, "data": {"notes": contents[:10]}, "confidence": 0.9}
 
-    def _delete_notes(self) -> dict:
+    def _delete_notes(self, entities: dict) -> dict:
+        """
+        Delete every saved note.
+
+        Gated by the orchestrator's confirmation mechanism (see
+        HestiaOrchestrator._resolve_pending): this wipes ALL notes in one
+        shot with no undo, so the first call only reports how many notes
+        would be deleted and asks for confirmation. Only a confirmed
+        second call actually deletes anything.
+        """
+        try:
+            note_count = self._memory.db.get_interaction_stats().get("notes", 0)
+        except Exception:
+            logger.exception("_delete_notes: failed to count notes.")
+            return {"response": "I couldn't check your notes right now.", "data": {}, "confidence": 0.0}
+
+        if not note_count:
+            return {"response": "You don't have any notes to delete.", "data": {}, "confidence": 0.9}
+
+        if not entities.get("_confirmed"):
+            plural = "note" if note_count == 1 else "notes"
+            return {
+                "response": f"Delete all {note_count} saved {plural}? This can't be undone. Say yes to confirm.",
+                "data": {"note_count": note_count},
+                "confidence": 0.9,
+                "needs_confirmation": True,
+                "confirm_intent": "delete_notes",
+                "confirm_entities": {},
+                "confirm_label": f"delete your {note_count} saved {plural}",
+            }
+
         try:
             deleted = self._memory.db.delete_by_intent("take_note")
         except Exception:
