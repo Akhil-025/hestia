@@ -10,7 +10,10 @@
     /* Palette drawn from illustrated-Greek-mythology editorial decks:
        parchment/cream ground, deep teal-navy ink, terracotta + dusty
        rose accents. Hestia = hearth goddess, so warm terracotta stands
-       in for the old violet "glow" as the primary accent. */
+       in as the primary accent, with a small gold accent for
+       "achievement" surfaces (skills/crown). Every figure/icon below is
+       a cropped photo of real deck illustrations — nothing here is a
+       generated vector. */
     :root {
       --bg:        #f1e6d3;
       --surface:   #faf3e6;
@@ -24,11 +27,13 @@
       --accent3:   #b85c38;
       --green:     #6b7f3f;
       --yellow:    #c9962f;
+      --gold:      #b8862f;
       --red:       #a63f28;
       --blue:      #2f5f66;
       --teal:      #3c7169;
       --glow:      rgba(193,80,46,0.08);
       --glow2:     rgba(193,80,46,0.16);
+      --shadow:    0 10px 28px rgba(31,59,61,0.10);
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -42,17 +47,39 @@
       overflow: hidden;
     }
 
-    body { display: flex; height: 100vh; }
+    body {
+      display: flex;
+      height: 100vh;
+      opacity: 0;
+      animation: appIn 0.5s cubic-bezier(.16,1,.3,1) forwards;
+    }
+    @keyframes appIn { from { opacity: 0; } to { opacity: 1; } }
+
+    /* Parchment grain — a tiled crop of real ink-splatter deck art,
+       not a generated noise texture. */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("/static/img/motifs/tex_tan.png");
+      background-size: 340px auto;
+      background-repeat: repeat;
+      opacity: 0.35;
+      mix-blend-mode: multiply;
+      pointer-events: none;
+      z-index: 0;
+    }
 
     /* ── Scrollbar ───────────────────────────── */
-    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent3); }
 
     /* ── Sidebar ─────────────────────────────── */
     .sidebar {
-      width: 240px;
-      min-width: 240px;
+      width: 252px;
+      min-width: 252px;
       background: var(--surface);
       border-right: 1px solid var(--border);
       display: flex;
@@ -70,42 +97,64 @@
     }
 
     .brand {
-      padding: 32px 24px 20px;
+      padding: 28px 24px 18px;
       display: flex;
       align-items: center;
       gap: 12px;
+      position: relative;
     }
 
     .brand-icon {
-      width: 36px;
-      height: 36px;
+      width: 40px;
+      height: 40px;
       border-radius: 50%;
       background: linear-gradient(135deg, var(--accent3), var(--accent));
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 17px;
       flex-shrink: 0;
-      box-shadow: 0 0 16px rgba(193,80,46,0.35);
-      border: 2px solid var(--surface2);
-      outline: 1px solid var(--border2);
+      box-shadow: 0 0 0 3px var(--surface), 0 0 0 4px var(--border2), 0 0 18px rgba(193,80,46,0.4);
+      position: relative;
+      animation: flamePulse 3.4s ease-in-out infinite;
+    }
+
+    @keyframes flamePulse {
+      0%, 100% { box-shadow: 0 0 0 3px var(--surface), 0 0 0 4px var(--border2), 0 0 14px rgba(193,80,46,0.32); }
+      50%      { box-shadow: 0 0 0 3px var(--surface), 0 0 0 4px var(--border2), 0 0 22px rgba(193,80,46,0.5); }
     }
 
     .brand-icon img {
-      width: 19px;
+      width: 20px;
       height: auto;
       display: block;
+      filter: drop-shadow(0 1px 1px rgba(0,0,0,0.25));
     }
 
-    /* Greek-key meander, in place of the old straight rule */
-    .meander {
-      height: 12px;
-      margin: 0 24px 20px;
-      opacity: 0.6;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='12' viewBox='0 0 24 12'%3E%3Cpath d='M0 9 H6 V3 H12 V9 H18 V3 H24' fill='none' stroke='%23d3bd93' stroke-width='1.6'/%3E%3C/svg%3E");
-      background-repeat: repeat-x;
-      background-position: left center;
+    /* Embers drifting off the hearth flame — the one bit of ambient,
+       non-interactive motion in the app, kept small and tied to the
+       one thing it's actually about (Hestia = the hearth fire). */
+    .ember {
+      position: absolute;
+      width: 3px; height: 3px;
+      border-radius: 50%;
+      background: var(--accent2);
+      box-shadow: 0 0 4px 1px rgba(193,80,46,0.65);
+      opacity: 0;
+      pointer-events: none;
+      animation: emberRise 3.6s ease-in infinite;
     }
+    .ember.e1 { bottom: 8px; left: 13px; animation-delay: 0s; }
+    .ember.e2 { bottom: 6px; left: 22px; animation-delay: 1.3s; }
+    .ember.e3 { bottom: 10px; left: 18px; width: 2px; height: 2px; animation-delay: 2.5s; }
+    @keyframes emberRise {
+      0%   { opacity: 0; transform: translate(0, 0) scale(0.7); }
+      12%  { opacity: 0.9; }
+      70%  { opacity: 0.4; }
+      100% { opacity: 0; transform: translate(5px, -36px) scale(0.25); }
+    }
+    @media (prefers-reduced-motion: reduce) { .ember { animation: none; display: none; } }
+
+    .brand-text { min-width: 0; }
 
     .brand-name {
       font-family: 'DM Serif Display', serif;
@@ -113,7 +162,20 @@
       letter-spacing: 0.5px;
       color: var(--text);
       line-height: 1;
+      display: flex;
+      align-items: center;
+      gap: 7px;
     }
+
+    .status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgba(107,127,63,0.18);
+      animation: dotBeat 2.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    @keyframes dotBeat { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 
     .brand-name span {
       display: block;
@@ -126,9 +188,21 @@
       margin-top: 3px;
     }
 
+    /* Greek-key meander, in place of a plain rule */
+    .meander {
+      height: 12px;
+      margin: 0 24px 18px;
+      opacity: 0.6;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='12' viewBox='0 0 24 12'%3E%3Cpath d='M0 9 H6 V3 H12 V9 H18 V3 H24' fill='none' stroke='%23d3bd93' stroke-width='1.6'/%3E%3C/svg%3E");
+      background-repeat: repeat-x;
+      background-position: left center;
+    }
+
     .nav {
       flex: 1;
       padding: 0 12px;
+      overflow-y: auto;
+      perspective: 500px;
     }
 
     .nav-label {
@@ -145,35 +219,53 @@
     .nav a {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
-      border-radius: 8px;
+      gap: 11px;
+      padding: 9px 12px;
+      border-radius: 9px;
       color: var(--muted);
       text-decoration: none;
       font-size: 14px;
       font-weight: 400;
-      transition: all 0.15s;
+      transition: color 0.18s, background 0.18s, transform 0.22s cubic-bezier(.16,1,.3,1), box-shadow 0.22s;
+      transform-style: preserve-3d;
       margin-bottom: 2px;
       position: relative;
     }
 
     .nav a .nav-icon {
-      font-size: 15px;
-      width: 20px;
-      text-align: center;
+      width: 24px;
+      height: 24px;
       flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform: translateZ(6px);
     }
 
-    .nav a:hover {
-      color: var(--text);
-      background: var(--glow);
+    .nav a .nav-icon img {
+      max-width: 22px;
+      max-height: 22px;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      filter: grayscale(1) opacity(0.55);
+      transition: filter 0.2s, transform 0.2s;
     }
+
+    .nav a:hover { color: var(--text); background: var(--glow); transform: translateX(4px) rotateY(-8deg); box-shadow: -6px 4px 14px -10px rgba(31,59,61,0.35); }
+    .nav a:hover .nav-icon img { filter: grayscale(0.3) opacity(0.85); transform: scale(1.1); }
 
     .nav a.active {
       color: var(--accent2);
       background: var(--glow2);
       font-weight: 500;
     }
+
+    .nav a.active .nav-icon img {
+      filter: grayscale(0) opacity(1);
+      transform: scale(1.1);
+    }
+    .nav a.active:hover { transform: translateX(4px) rotateY(-8deg); }
 
     .nav a.active::before {
       content: '';
@@ -186,9 +278,23 @@
 
     /* ── Sidebar stats ───────────────────────── */
     .sidebar-stats {
-      padding: 20px 16px;
+      padding: 16px 16px 14px;
       border-top: 1px solid var(--border);
-      margin: 0 0 8px;
+      margin: 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .sidebar-stats .arcade-band {
+      position: absolute;
+      left: 0; right: 0; top: -2px;
+      height: 46px;
+      background-image: url("/static/img/motifs/arcade.png");
+      background-size: auto 100%;
+      background-repeat: repeat-x;
+      opacity: 0.16;
+      filter: grayscale(0.4);
+      pointer-events: none;
     }
 
     .stat-row {
@@ -196,6 +302,7 @@
       justify-content: space-between;
       align-items: center;
       padding: 5px 0;
+      position: relative;
     }
 
     .stat-key {
@@ -224,11 +331,99 @@
     }
 
     /* ── Main area ───────────────────────────── */
+    .main-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Sticky top bar */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 44px;
+      background: rgba(250,243,230,0.82);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .topbar-greet {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .topbar-greet strong { color: var(--text); font-weight: 500; }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .topbar-clock {
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 0.4px;
+      white-space: nowrap;
+    }
+
+    .topbar-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: 'DM Mono', monospace;
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--green);
+      background: rgba(107,127,63,0.12);
+      border: 1px solid rgba(107,127,63,0.28);
+      border-radius: 20px;
+      padding: 4px 10px 4px 8px;
+    }
+
+    .cmdk-hint {
+      font-family: 'DM Sans', sans-serif;
+      font-size: 12.5px;
+      color: var(--muted);
+      background: none;
+      border: 1px solid var(--border2);
+      border-radius: 20px;
+      padding: 5px 12px 5px 12px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .cmdk-hint kbd {
+      font-family: 'DM Mono', monospace;
+      font-size: 10.5px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: 1px 5px;
+      margin-left: 2px;
+    }
+    .cmdk-hint:hover { color: var(--text); border-color: var(--accent3); background: var(--glow); }
+    @media (max-width: 700px) { .cmdk-hint { display: none; } }
+
+    @media (max-width: 700px) {
+      .topbar { padding: 12px 18px; }
+      .topbar-greet { display: none; }
+    }
+
     .main {
       flex: 1;
       overflow-y: auto;
       background: var(--bg);
       position: relative;
+      perspective: 1600px;
     }
 
     /* Ambient gradient */
@@ -244,23 +439,25 @@
 
     .section {
       display: none;
-      padding: 40px 44px;
-      max-width: 1000px;
+      padding: 36px 44px 48px;
+      max-width: 1040px;
       position: relative;
       z-index: 1;
       opacity: 0;
-      transform: translateY(10px);
-      transition: opacity 0.28s cubic-bezier(.16,1,.3,1), transform 0.28s cubic-bezier(.16,1,.3,1);
+      transform: translateY(14px) rotateX(-5deg) scale(0.99);
+      transform-origin: top center;
+      transition: opacity 0.36s cubic-bezier(.16,1,.3,1), transform 0.36s cubic-bezier(.16,1,.3,1);
+      backface-visibility: hidden;
     }
     .section.active { display: block; }
-    .section.active.show { opacity: 1; transform: translateY(0); }
+    .section.active.show { opacity: 1; transform: translateY(0) rotateX(0deg) scale(1); }
 
     /* Staggered entrance for grid/list children each time a section shows */
     .section.show .metric-card,
     .section.show .activity-item,
     .section.show .history-item,
     .section.show .note-card,
-    .section.show .skill-card,
+    .section.show .skill-flip,
     .section.show .mood-row {
       animation: itemIn 0.35s cubic-bezier(.16,1,.3,1) both;
     }
@@ -274,9 +471,143 @@
       to   { opacity: 1; transform: translateY(0); }
     }
 
+    /* ── Hero banner (Overview only) ─────────── */
+    .hero {
+      position: relative;
+      border-radius: 20px;
+      background: linear-gradient(120deg, #23434a 0%, #2f5f66 55%, #3c7169 100%);
+      color: #f5ead6;
+      padding: 34px 40px;
+      margin-bottom: 30px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 190px;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: url("/static/img/motifs/tex_blue.png");
+      background-size: 420px auto;
+      opacity: 0.25;
+      mix-blend-mode: overlay;
+    }
+
+    .hero-text { position: relative; z-index: 1; max-width: 60%; }
+    .hero-eyebrow {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2.5px;
+      color: rgba(245,234,214,0.65);
+      margin-bottom: 10px;
+    }
+    .hero-title {
+      font-family: 'DM Serif Display', serif;
+      font-size: 2.5rem;
+      line-height: 1.12;
+      font-weight: 400;
+    }
+    .hero-title em { font-style: italic; color: #f0b28f; }
+    .hero-sub {
+      margin-top: 10px;
+      font-size: 13.5px;
+      color: rgba(245,234,214,0.72);
+      max-width: 420px;
+      line-height: 1.6;
+    }
+
+    .hero-figure {
+      position: relative;
+      z-index: 1;
+      flex-shrink: 0;
+      height: 210px;
+      display: flex;
+      align-items: flex-end;
+      margin-bottom: -34px;
+    }
+    .hero-figure img {
+      height: 100%;
+      width: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 18px 20px rgba(0,0,0,0.35));
+    }
+
+    /* ── Flower morph-reveal widget (replaces the static hero figure) ── */
+    .flower-widget {
+      position: relative;
+      height: 100%;
+      cursor: default;
+    }
+    .flower-widget__sizer { visibility: hidden; }
+    .flower-widget__layer {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+    }
+    .flower-widget__layer--top {
+      mask-image: linear-gradient(#0000, #0000);
+      -webkit-mask-image: linear-gradient(#0000, #0000);
+      mask-size: 100% 100%;
+      -webkit-mask-size: 100% 100%;
+      mask-repeat: no-repeat;
+      -webkit-mask-repeat: no-repeat;
+    }
+    /* Same figure in both layers — the reveal layer gets a warm ember
+       treatment so the mouse trail reads as "catching the flame" rather
+       than a flat duplicate. */
+    .flower-widget__layer--bg img { filter: brightness(0.92) saturate(0.9); }
+    .flower-widget__layer--top img {
+      filter: brightness(1.4) saturate(1.55) sepia(0.18)
+              drop-shadow(0 0 16px rgba(240,178,143,0.6));
+    }
+
+    .hero-star {
+      position: absolute;
+      width: 34px; height: 34px;
+      opacity: 0.5;
+      filter: brightness(2.4) saturate(0);
+    }
+    .hero-star.s1 { top: 22px; right: 190px; animation: twinkle 3s ease-in-out infinite; }
+    .hero-star.s2 { top: 58px; right: 130px; width: 20px; height: 20px; animation: twinkle 3s ease-in-out infinite 1.1s; }
+    @keyframes twinkle { 0%,100% { opacity: 0.2; transform: scale(0.85) rotate(0deg); } 50% { opacity: 0.65; transform: scale(1) rotate(8deg); } }
+
+    /* Floating contact-sheet figures — mouse-parallax depth layers behind
+       the hero copy. Each layer drifts a different amount (data-depth) so
+       the banner reads as several planes stacked in space rather than a
+       flat gradient. */
+    .hero-parallax {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .hp-figure {
+      position: absolute;
+      object-fit: contain;
+      will-change: transform;
+      transition: transform 0.35s cubic-bezier(.16,1,.3,1);
+    }
+    .hp-1 { top: -18px; left: 6%; width: 108px; opacity: 0.16; filter: brightness(1.5) saturate(0.5) drop-shadow(0 10px 16px rgba(0,0,0,0.3)); }
+    .hp-2 { bottom: -26px; left: 30%; width: 76px; opacity: 0.14; filter: brightness(1.6) saturate(0.4) drop-shadow(0 10px 16px rgba(0,0,0,0.3)); }
+    .hp-3 { top: 30%; left: 15%; width: 60px; opacity: 0.12; filter: brightness(1.7) saturate(0.35) drop-shadow(0 8px 12px rgba(0,0,0,0.3)); }
+    @media (max-width: 760px) { .hero-parallax { display: none; } }
+
+    @media (max-width: 760px) {
+      .hero { flex-direction: column; align-items: flex-start; }
+      .hero-text { max-width: 100%; }
+      .hero-figure { margin: 10px 0 0; height: 140px; }
+    }
+
     /* ── Section header ──────────────────────── */
     .page-header {
-      margin-bottom: 32px;
+      margin-bottom: 30px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -286,40 +617,57 @@
 
     .page-header-text { min-width: 240px; }
 
-    /* Torn-paper edge, echoing the illustrated decks' color-block breaks */
+    /* Colonnade divider — real cropped arcade illustration, tiled */
     .page-header::after {
       content: '';
       display: block;
       width: 100%;
       margin-top: 18px;
-      height: 9px;
-      background:
-        linear-gradient(135deg, var(--border2) 25%, transparent 25%) 0 0,
-        linear-gradient(225deg, var(--border2) 25%, transparent 25%) 0 0;
-      background-size: 14px 14px;
-      opacity: 0.6;
+      height: 16px;
+      background-image: url("/static/img/motifs/arcade.png");
+      background-size: auto 100%;
+      background-repeat: repeat-x;
+      background-position: left center;
+      opacity: 0.5;
     }
 
     /* ── Section emblem — illustrated figures from the mythology deck ── */
     .page-figure {
       height: 116px;
       width: auto;
-      max-width: 160px;
+      max-width: 170px;
       flex-shrink: 0;
       display: flex;
       align-items: flex-end;
       justify-content: center;
+      position: relative;
+    }
+    .page-figure::before {
+      content: '';
+      position: absolute;
+      bottom: -6px; left: 50%;
+      transform: translateX(-50%);
+      width: 92px; height: 92px;
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--glow2) 0%, transparent 72%);
+      z-index: 0;
+    }
+    .page-figure {
+      perspective: 500px;
     }
     .page-figure img {
       height: 100%;
       width: auto;
-      max-width: 160px;
+      max-width: 170px;
       object-fit: contain;
       display: block;
+      position: relative;
+      z-index: 1;
       filter: drop-shadow(0 12px 16px rgba(31,59,61,0.16));
-      transition: transform 0.25s ease;
+      transition: transform 0.3s cubic-bezier(.16,1,.3,1);
+      transform-style: preserve-3d;
     }
-    .page-figure:hover img { transform: translateY(-3px); }
+    .page-figure:hover img { transform: translateY(-4px) rotateY(-10deg) rotateX(4deg); }
 
     @media (max-width: 560px) {
       .page-figure { display: none; }
@@ -332,7 +680,10 @@
       letter-spacing: 2px;
       color: var(--accent);
       margin-bottom: 8px;
-      opacity: 0.8;
+      opacity: 0.85;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
 
     .page-title {
@@ -354,17 +705,23 @@
       grid-template-columns: repeat(4, 1fr);
       gap: 14px;
       margin-bottom: 36px;
+      perspective: 900px;
     }
 
     .metric-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px 16px;
+      border-radius: 14px;
+      padding: 18px 16px;
       position: relative;
       overflow: hidden;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: border-color 0.2s, box-shadow 0.25s, transform 0.15s ease-out;
       box-shadow: 0 2px 0 rgba(122,106,85,0.08);
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      transform-style: preserve-3d;
+      will-change: transform;
     }
 
     .metric-card::before {
@@ -377,8 +734,22 @@
       transition: opacity 0.2s;
     }
 
-    .metric-card:hover { border-color: var(--border2); }
+    .metric-card:hover { border-color: var(--border2); box-shadow: 0 22px 34px -18px rgba(31,59,61,0.32); }
     .metric-card:hover::before { opacity: 1; }
+    .metric-card .metric-icon,
+    .metric-card > div { transform: translateZ(18px); }
+
+    .metric-icon {
+      width: 38px; height: 38px;
+      border-radius: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .metric-icon img { width: 20px; height: 20px; object-fit: contain; }
 
     .metric-label {
       font-family: 'DM Mono', monospace;
@@ -386,12 +757,12 @@
       text-transform: uppercase;
       letter-spacing: 1.5px;
       color: var(--muted);
-      margin-bottom: 10px;
+      margin-bottom: 6px;
     }
 
     .metric-value {
       font-family: 'DM Serif Display', serif;
-      font-size: 2rem;
+      font-size: 1.8rem;
       color: var(--accent2);
       line-height: 1;
     }
@@ -404,13 +775,18 @@
       letter-spacing: 2px;
       color: var(--muted);
       margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
+    .section-subtitle .rule { flex: 1; height: 1px; background: var(--border2); opacity: 0.7; }
 
     .activity-list {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 14px;
       overflow: hidden;
+      perspective: 900px;
     }
 
     .activity-item {
@@ -420,11 +796,14 @@
       gap: 14px;
       padding: 14px 20px;
       border-bottom: 1px solid var(--border);
-      transition: background 0.1s;
+      transition: background 0.15s, transform 0.15s ease-out, box-shadow 0.2s;
+      transform-style: preserve-3d;
+      will-change: transform;
+      position: relative;
     }
 
     .activity-item:last-child { border-bottom: none; }
-    .activity-item:hover { background: var(--glow); }
+    .activity-item:hover { background: var(--glow); box-shadow: inset 0 0 0 1px var(--border2); z-index: 2; }
 
     .activity-query {
       font-size: 14px;
@@ -473,16 +852,16 @@
       max-width: 360px;
       background: var(--surface);
       border: 1px solid var(--border2);
-      border-radius: 8px;
+      border-radius: 9px;
       color: var(--text);
       font-size: 14px;
       font-family: 'DM Sans', sans-serif;
       padding: 10px 14px 10px 38px;
       outline: none;
-      transition: border-color 0.15s;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
 
-    .search-wrap input:focus { border-color: var(--accent3); }
+    .search-wrap input:focus { border-color: var(--accent3); box-shadow: 0 0 0 3px var(--glow); }
     .search-wrap input::placeholder { color: var(--muted); }
 
     .search-icon {
@@ -497,19 +876,23 @@
     .history-list {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 14px;
       overflow: hidden;
-      max-height: calc(100vh - 260px);
+      max-height: calc(100vh - 320px);
       overflow-y: auto;
+      perspective: 900px;
     }
 
     .history-item {
       padding: 16px 20px;
       border-bottom: 1px solid var(--border);
-      transition: background 0.1s;
+      transition: background 0.15s, transform 0.15s ease-out, box-shadow 0.2s;
+      transform-style: preserve-3d;
+      will-change: transform;
+      position: relative;
     }
     .history-item:last-child { border-bottom: none; }
-    .history-item:hover { background: var(--glow); }
+    .history-item:hover { background: var(--glow); box-shadow: inset 0 0 0 1px var(--border2); z-index: 2; }
 
     .history-header {
       display: flex;
@@ -536,30 +919,37 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 14px;
+      perspective: 1000px;
     }
 
     .note-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 14px;
       padding: 20px;
       display: flex;
       flex-direction: column;
       min-height: 100px;
       position: relative;
       overflow: hidden;
-      transition: border-color 0.2s, transform 0.15s;
+      transition: border-color 0.2s, transform 0.15s ease-out, box-shadow 0.25s;
+      transform-style: preserve-3d;
+      will-change: transform;
     }
 
     .note-card::after {
-      content: '✎';
+      content: '';
       position: absolute;
-      bottom: 16px; right: 18px;
-      font-size: 18px;
-      color: var(--border2);
+      bottom: -8px; right: -10px;
+      width: 64px; height: 64px;
+      background-image: url("/static/img/motifs/vase.png");
+      background-size: contain;
+      background-repeat: no-repeat;
+      opacity: 0.10;
+      pointer-events: none;
     }
 
-    .note-card:hover { border-color: var(--border2); transform: translateY(-2px); }
+    .note-card:hover { border-color: var(--border2); box-shadow: 0 24px 36px -18px rgba(31,59,61,0.3); }
 
     .note-body {
       font-size: 14px;
@@ -567,12 +957,16 @@
       line-height: 1.6;
       flex: 1;
       margin-bottom: 12px;
+      position: relative;
+      z-index: 1;
     }
 
     .note-ts {
       font-family: 'DM Mono', monospace;
       font-size: 11px;
       color: var(--muted);
+      position: relative;
+      z-index: 1;
     }
 
     /* ── Facts table ─────────────────────────── */
@@ -581,7 +975,7 @@
       border-collapse: collapse;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 14px;
       overflow: hidden;
     }
 
@@ -605,9 +999,47 @@
       vertical-align: middle;
     }
 
+    .facts-table tr.fact-row:nth-of-type(4n+3) td { background: rgba(228,211,179,0.16); }
     .facts-table tr:last-child td { border-bottom: none; }
 
     .facts-table tr:hover td { background: var(--glow); }
+    .fact-row { cursor: pointer; }
+    .fact-row.open td { background: var(--glow2); }
+
+    .fact-detail-row td {
+      padding: 0;
+      background: var(--surface2) !important;
+    }
+    .fact-detail {
+      overflow: hidden;
+      max-height: 0;
+      opacity: 0;
+      transform: perspective(700px) rotateX(-10deg);
+      transform-origin: top center;
+      transition: max-height 0.38s cubic-bezier(.16,1,.3,1), opacity 0.3s ease, transform 0.38s cubic-bezier(.16,1,.3,1);
+    }
+    .fact-detail.open {
+      max-height: 140px;
+      opacity: 1;
+      transform: perspective(700px) rotateX(0deg);
+    }
+    .fact-detail-inner {
+      display: flex;
+      gap: 28px;
+      flex-wrap: wrap;
+      padding: 16px 20px 20px;
+    }
+    .fact-detail-block { min-width: 140px; }
+    .fact-detail-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+    .fact-detail-value { font-size: 13.5px; color: var(--text); }
+    @media (prefers-reduced-motion: reduce) { .fact-detail { transition: none; } }
 
     .fact-key { color: var(--accent2); font-weight: 500; }
     .fact-value { color: var(--text); }
@@ -641,7 +1073,7 @@
       gap: 0;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 14px;
       overflow: hidden;
     }
 
@@ -677,69 +1109,129 @@
       gap: 14px;
     }
 
+    /* Flip container — perspective lives here, fixed height so both faces
+       (which are absolutely positioned to sit back to back) line up. */
+    .skill-flip {
+      position: relative;
+      height: 172px;
+      perspective: 1300px;
+    }
+    .skill-flip.flippable { cursor: pointer; }
+
     .skill-card {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      transition: transform 0.6s cubic-bezier(.4,.2,.2,1);
+      transform-style: preserve-3d;
+    }
+    .skill-flip.flipped .skill-card { transform: rotateY(180deg); }
+
+    .skill-face {
+      position: absolute;
+      inset: 0;
+      backface-visibility: hidden;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
+      border-radius: 14px;
+      padding: 18px 20px;
       display: flex;
       flex-direction: column;
       gap: 6px;
-      transition: border-color 0.2s;
+      overflow: hidden;
+      transition: border-color 0.2s, box-shadow 0.25s;
+    }
+    .skill-flip:hover .skill-face { border-color: var(--accent3); box-shadow: 0 20px 30px -18px rgba(31,59,61,0.3); }
+
+    .skill-face--front::after {
+      content: '';
+      position: absolute;
+      top: -14px; right: -14px;
+      width: 56px; height: 56px;
+      background-image: url("/static/img/motifs/crown.png");
+      background-size: contain;
+      background-repeat: no-repeat;
+      opacity: 0.08;
+      pointer-events: none;
     }
 
-    .skill-card:hover { border-color: var(--accent3); }
+    .skill-face--back {
+      transform: rotateY(180deg);
+      background: var(--surface2);
+      overflow-y: auto;
+    }
 
     .skill-intent {
       font-family: 'DM Mono', monospace;
       font-size: 13px;
       font-weight: 500;
       color: var(--accent);
+      position: relative; z-index: 1;
     }
 
-    .skill-desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
+    .skill-desc { font-size: 13px; color: var(--muted); line-height: 1.5; position: relative; z-index: 1; overflow-y: auto; }
 
     .skill-source {
       font-family: 'DM Mono', monospace;
       font-size: 11px;
       color: var(--border2);
+      position: relative; z-index: 1;
     }
 
     .skill-toggle {
       font-size: 12px;
       color: var(--accent);
-      cursor: pointer;
       user-select: none;
-      margin-top: 4px;
+      margin-top: auto;
+      padding-top: 4px;
       opacity: 0.7;
-      transition: opacity 0.1s;
+      position: relative; z-index: 1;
     }
-    .skill-toggle:hover { opacity: 1; }
+    .skill-flip:hover .skill-toggle { opacity: 1; }
+
+    .skill-back-title {
+      font-family: 'DM Mono', monospace;
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--accent2);
+      margin-bottom: 2px;
+    }
 
     .skill-examples {
-      display: none;
-      background: var(--surface2);
-      border-radius: 7px;
-      padding: 10px 12px;
       font-size: 12px;
       color: var(--muted);
       line-height: 1.8;
       font-family: 'DM Mono', monospace;
-      margin-top: 4px;
     }
 
-    .skill-examples.open { display: block; }
+    @media (prefers-reduced-motion: reduce) {
+      .skill-card { transition: none; }
+    }
 
     /* ── Chat ────────────────────────────────── */
     .chat-wrap {
       display: flex;
       flex-direction: column;
-      height: calc(100vh - 180px);
-      max-height: 680px;
+      height: calc(100vh - 260px);
+      max-height: 660px;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 16px;
       overflow: hidden;
+      position: relative;
+    }
+
+    .chat-wrap::before {
+      content: '';
+      position: absolute;
+      bottom: -20px; right: -20px;
+      width: 160px; height: 160px;
+      background-image: url("/static/img/motifs/wings_boat.png");
+      background-size: contain;
+      background-repeat: no-repeat;
+      opacity: 0.05;
+      pointer-events: none;
     }
 
     .chat-messages {
@@ -749,18 +1241,55 @@
       display: flex;
       flex-direction: column;
       gap: 14px;
+      position: relative;
+      z-index: 1;
     }
 
     .bubble-wrap {
       display: flex;
       flex-direction: column;
+      animation: bubbleSettle 0.4s cubic-bezier(.2,.9,.3,1.15) both;
     }
+    @keyframes bubbleSettle {
+      0%   { opacity: 0; transform: translateY(10px) scale(0.97); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) { .bubble-wrap { animation: none; } }
 
     .bubble-wrap.user { align-items: flex-end; }
     .bubble-wrap.hestia { align-items: flex-start; }
 
+    .bubble-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+    }
+    .bubble-wrap.user .bubble-row { flex-direction: row-reverse; }
+
+    .bubble-avatar {
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .bubble-avatar img { width: 15px; height: 15px; object-fit: contain; }
+
+    #thinking-indicator .bubble-avatar {
+      animation: emberGlow 1.5s ease-in-out infinite;
+    }
+    @keyframes emberGlow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(193,80,46,0); border-color: var(--border2); }
+      50%      { box-shadow: 0 0 10px 1px rgba(193,80,46,0.45); border-color: var(--accent3); }
+    }
+    @media (prefers-reduced-motion: reduce) { #thinking-indicator .bubble-avatar { animation: none; } }
+
     .bubble {
-      max-width: 72%;
+      max-width: 68%;
       padding: 12px 16px;
       border-radius: 14px;
       font-size: 14px;
@@ -821,28 +1350,30 @@
       display: flex;
       gap: 10px;
       background: var(--surface);
+      position: relative;
+      z-index: 1;
     }
 
     .chat-input {
       flex: 1;
       background: var(--surface2);
       border: 1px solid var(--border2);
-      border-radius: 9px;
+      border-radius: 10px;
       color: var(--text);
       font-size: 14px;
       font-family: 'DM Sans', sans-serif;
       padding: 11px 14px;
       outline: none;
-      transition: border-color 0.15s;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
 
-    .chat-input:focus { border-color: var(--accent3); }
+    .chat-input:focus { border-color: var(--accent3); box-shadow: 0 0 0 3px var(--glow); }
     .chat-input::placeholder { color: var(--muted); }
 
     .send-btn {
       background: linear-gradient(135deg, var(--accent3), var(--accent));
       border: none;
-      border-radius: 9px;
+      border-radius: 10px;
       color: #faf3e6;
       font-size: 14px;
       font-family: 'DM Sans', sans-serif;
@@ -861,28 +1392,103 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 60px 20px;
+      padding: 56px 20px;
       color: var(--muted);
-      gap: 10px;
+      gap: 12px;
     }
 
-    .empty-icon { font-size: 32px; opacity: 0.4; }
-    .empty-text { font-size: 14px; opacity: 0.6; }
+    .empty-icon {
+      width: 44px; height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.55;
+    }
+    .empty-icon img { max-width: 40px; max-height: 40px; object-fit: contain; filter: grayscale(0.5); }
+    .empty-icon.spin img { animation: spinSlow 5s linear infinite; }
+    @keyframes spinSlow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .empty-text { font-size: 14px; opacity: 0.75; }
+
+    /* ── Command palette ──────────────────────── */
+    .cmdk-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(31,59,61,0.32);
+      backdrop-filter: blur(3px);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 14vh;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+    }
+    .cmdk-overlay.open { opacity: 1; pointer-events: auto; }
+
+    .cmdk-panel {
+      width: 100%;
+      max-width: 440px;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 16px;
+      box-shadow: 0 40px 70px -20px rgba(20,20,10,0.45);
+      overflow: hidden;
+      transform: perspective(900px) translateY(-10px) rotateX(6deg);
+      opacity: 0;
+      transition: transform 0.24s cubic-bezier(.16,1,.3,1), opacity 0.2s ease;
+    }
+    .cmdk-overlay.open .cmdk-panel { transform: perspective(900px) translateY(0) rotateX(0deg); opacity: 1; }
+
+    .cmdk-input-wrap { position: relative; border-bottom: 1px solid var(--border); }
+    .cmdk-input-wrap .search-icon { left: 16px; }
+    .cmdk-input-wrap input {
+      width: 100%;
+      background: none;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 15px;
+      padding: 16px 16px 16px 42px;
+    }
+    .cmdk-input-wrap input::placeholder { color: var(--muted); }
+
+    .cmdk-list { max-height: 320px; overflow-y: auto; padding: 8px; }
+    .cmdk-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 9px;
+      cursor: pointer;
+      color: var(--text);
+      font-size: 14px;
+    }
+    .cmdk-item .nav-icon { width: 22px; height: 22px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+    .cmdk-item .nav-icon img { max-width: 20px; max-height: 20px; filter: grayscale(0.4) opacity(0.85); }
+    .cmdk-item .cmdk-desc { color: var(--muted); font-size: 12px; margin-left: auto; }
+    .cmdk-item.active { background: var(--glow2); }
+    .cmdk-item.active .cmdk-desc { color: var(--accent2); }
+    .cmdk-empty { padding: 20px; text-align: center; color: var(--muted); font-size: 13px; }
 
     /* ── Responsive ──────────────────────────── */
     @media (max-width: 900px) {
-      .section { padding: 28px 24px; }
+      .section { padding: 26px 24px 40px; }
       .metric-grid { grid-template-columns: 1fr 1fr; }
+      .hero-title { font-size: 2rem; }
     }
 
     @media (max-width: 700px) {
       .sidebar { display: none; }
-      .section { padding: 20px 16px; }
+      .section { padding: 18px 16px 32px; }
     }
 
     @media (max-width: 580px) {
       .metric-grid { grid-template-columns: 1fr; }
       .notes-grid, .skills-grid { grid-template-columns: 1fr; }
+      .hero-figure { display: none; }
     }
   </style>
 </head>
@@ -891,9 +1497,14 @@
 <!-- ── Sidebar ──────────────────────────────────────────── -->
 <aside class="sidebar">
   <div class="brand">
-    <div class="brand-icon"><img src="/static/img/gods/flame-icon.png" alt=""></div>
-    <div class="brand-name">
-      Hestia
+    <div class="brand-icon">
+      <img src="/static/img/gods/flame-icon.png" alt="">
+      <span class="ember e1"></span>
+      <span class="ember e2"></span>
+      <span class="ember e3"></span>
+    </div>
+    <div class="brand-text">
+      <div class="brand-name">Hestia <span class="status-dot" title="Online"></span></div>
       <span>personal ai</span>
     </div>
   </div>
@@ -903,29 +1514,30 @@
   <nav class="nav">
     <div class="nav-label">Navigate</div>
     <a href="#" class="active" data-section="overview">
-      <span class="nav-icon">◈</span> Overview
+      <span class="nav-icon"><img src="/static/img/motifs/torch_alt.png" alt=""></span> Overview
     </a>
     <a href="#" data-section="history">
-      <span class="nav-icon">◷</span> History
+      <span class="nav-icon"><img src="/static/img/motifs/sun.png" alt=""></span> History
     </a>
     <a href="#" data-section="notes">
-      <span class="nav-icon">◻</span> Notes
+      <span class="nav-icon"><img src="/static/img/motifs/book_man.png" alt=""></span> Notes
     </a>
     <a href="#" data-section="facts">
-      <span class="nav-icon">◆</span> Facts
+      <span class="nav-icon"><img src="/static/img/motifs/warrior_diamond.png" alt=""></span> Facts
     </a>
     <a href="#" data-section="moods">
-      <span class="nav-icon">◉</span> Moods
+      <span class="nav-icon"><img src="/static/img/motifs/apple.png" alt=""></span> Moods
     </a>
     <a href="#" data-section="skills">
-      <span class="nav-icon">◈</span> Skills
+      <span class="nav-icon"><img src="/static/img/motifs/crown.png" alt=""></span> Skills
     </a>
     <a href="#" data-section="chat">
-      <span class="nav-icon">◎</span> Chat
+      <span class="nav-icon"><img src="/static/img/motifs/lyre_alt.png" alt=""></span> Chat
     </a>
   </nav>
 
   <div class="sidebar-stats">
+    <div class="arcade-band"></div>
     <div class="stat-row">
       <span class="stat-key">interactions</span>
       <span class="stat-val" id="stat-interactions">—</span>
@@ -942,170 +1554,219 @@
       <span class="stat-key">intents</span>
       <span class="stat-val" id="stat-intents">—</span>
     </div>
-    <div class="uptime-tag" id="stat-uptime">—</div>
   </div>
 </aside>
 
 <!-- ── Main ─────────────────────────────────────────────── -->
-<main class="main">
-
-  <!-- Overview -->
-  <section id="overview" class="section active show">
-    <div class="page-header">
-      <div class="page-header-text">
-        <div class="page-eyebrow">Dashboard</div>
-        <h1 class="page-title">Hestia is <em>running.</em></h1>
-      </div>
-      <div class="page-figure" aria-hidden="true">
-        <img src="/static/img/gods/hearth.png" alt="">
-      </div>
+<div class="main-wrap">
+  <div class="topbar">
+    <div class="topbar-greet" id="topbar-greet">Welcome back.</div>
+    <div class="topbar-right">
+      <div class="topbar-pill"><span class="status-dot"></span> Online</div>
+      <button class="cmdk-hint" id="cmdkHint" type="button" title="Jump to a section">Jump to <kbd>⌘K</kbd></button>
+      <div class="topbar-clock" id="topbar-clock">—</div>
     </div>
+  </div>
 
-    <div class="metric-grid">
-      <div class="metric-card">
-        <div class="metric-label">Interactions</div>
-        <div class="metric-value" id="metric-interactions">—</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Notes Saved</div>
-        <div class="metric-value" id="metric-notes">—</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Facts Known</div>
-        <div class="metric-value" id="metric-facts">—</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Unique Intents</div>
-        <div class="metric-value" id="metric-intents">—</div>
-      </div>
-    </div>
+  <main class="main">
 
-    <div class="section-subtitle">Recent Activity</div>
-    <div class="activity-list" id="recent-list">
-      <div class="empty"><div class="empty-icon">◷</div><div class="empty-text">Loading…</div></div>
-    </div>
-  </section>
+    <!-- Overview -->
+    <section id="overview" class="section active show">
+      <div class="hero" id="heroBanner">
+        <div class="hero-parallax" id="heroParallax" aria-hidden="true">
+          <img class="hp-figure hp-1" data-depth="14" src="/static/figures/brown_blue/r0c4.png" alt="">
+          <img class="hp-figure hp-2" data-depth="26" src="/static/figures/purple_orange/r0c6.png" alt="">
+          <img class="hp-figure hp-3" data-depth="9"  src="/static/figures/brown_blue/r1c0.png" alt="">
+        </div>
+        <img class="hero-star s1" src="/static/img/motifs/star8.png" alt="">
+        <img class="hero-star s2" src="/static/img/motifs/star_small.png" alt="">
+        <div class="hero-text">
+          <div class="hero-eyebrow">Dashboard</div>
+          <h1 class="hero-title" id="hero-title">Hestia is <em>running.</em></h1>
+          <p class="hero-sub">Keeper of the hearth — quietly watching over your notes, facts, moods and skills so nothing gets lost.</p>
+        </div>
+        <div class="hero-figure">
+          <div class="flower-widget" id="heroFlower">
+            <img class="flower-widget__sizer" src="/static/img/gods/hearth.png" alt="" aria-hidden="true">
+            <div class="flower-widget__layer flower-widget__layer--bg" id="flowerLayerBg">
+              <img id="flowerImgFront" src="/static/img/gods/hearth.png" alt="Hestia, goddess of the hearth">
+            </div>
+            <div class="flower-widget__layer flower-widget__layer--top" id="flowerLayerTop" aria-hidden="true">
+              <img id="flowerImgReveal" src="/static/img/gods/hearth.png" alt="">
+            </div>
+          </div>
+        </div>
+      </div>
 
-  <!-- History -->
-  <section id="history" class="section">
-    <div class="page-header">
-      <div class="page-header-text">
-        <div class="page-eyebrow">Memory</div>
-        <h1 class="page-title"><em>Interaction</em> History</h1>
+      <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-icon"><img src="/static/img/motifs/torch_alt.png" alt=""></div>
+          <div>
+            <div class="metric-label">Interactions</div>
+            <div class="metric-value" id="metric-interactions">—</div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-icon"><img src="/static/img/motifs/book_man.png" alt=""></div>
+          <div>
+            <div class="metric-label">Notes Saved</div>
+            <div class="metric-value" id="metric-notes">—</div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-icon"><img src="/static/img/motifs/warrior_diamond.png" alt=""></div>
+          <div>
+            <div class="metric-label">Facts Known</div>
+            <div class="metric-value" id="metric-facts">—</div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-icon"><img src="/static/img/motifs/crown.png" alt=""></div>
+          <div>
+            <div class="metric-label">Unique Intents</div>
+            <div class="metric-value" id="metric-intents">—</div>
+          </div>
+        </div>
       </div>
-      <div class="page-figure" aria-hidden="true">
-        <img src="/static/img/gods/underworld.png" alt="">
+
+      <div class="section-subtitle">Recent Activity <span class="rule"></span></div>
+      <div class="activity-list" id="recent-list">
+        <div class="empty"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
       </div>
-    </div>
-    <div class="search-wrap">
+    </section>
+
+    <!-- History -->
+    <section id="history" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Memory</div>
+          <h1 class="page-title"><em>Interaction</em> History</h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/underworld.png" alt="">
+        </div>
+      </div>
+      <div class="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input type="text" id="history-search" placeholder="Search conversations…">
+      </div>
+      <div class="history-list" id="history-list">
+        <div class="empty"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
+      </div>
+    </section>
+
+    <!-- Notes -->
+    <section id="notes" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Mnemosyne</div>
+          <h1 class="page-title">Your <em>Notes</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/muse.png" alt="">
+        </div>
+      </div>
+      <div class="notes-grid" id="notes-grid">
+        <div class="empty" style="grid-column:1/-1">
+          <div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Facts -->
+    <section id="facts" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Mnemosyne</div>
+          <h1 class="page-title">Known <em>Facts</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/athena.png" alt="">
+        </div>
+      </div>
+      <table class="facts-table" id="facts-table">
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Value</th>
+            <th>Confidence</th>
+            <th>Source</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="5"><div class="empty"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Moods -->
+    <section id="moods" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Wellbeing</div>
+          <h1 class="page-title">Mood <em>Log</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/dionysus.png" alt="">
+        </div>
+      </div>
+      <div class="mood-timeline" id="mood-list">
+        <div class="empty"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
+      </div>
+    </section>
+
+    <!-- Skills -->
+    <section id="skills" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Capabilities</div>
+          <h1 class="page-title">Loaded <em>Skills</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/zeus.png" alt="">
+        </div>
+      </div>
+      <div class="skills-grid" id="skills-grid">
+        <div class="empty" style="grid-column:1/-1">
+          <div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Chat -->
+    <section id="chat" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Interface</div>
+          <h1 class="page-title">Talk to <em>Hestia</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/orpheus.png" alt="">
+        </div>
+      </div>
+      <div class="chat-wrap">
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-footer">
+          <input type="text" class="chat-input" id="chat-input" placeholder="Ask Hestia anything…">
+          <button class="send-btn" id="chat-send">Send ↑</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ── Command palette ──────────────────────────────────── -->
+<div class="cmdk-overlay" id="cmdkOverlay">
+  <div class="cmdk-panel">
+    <div class="cmdk-input-wrap">
       <span class="search-icon">⌕</span>
-      <input type="text" id="history-search" placeholder="Search conversations…">
+      <input type="text" id="cmdkInput" placeholder="Jump to a section…" autocomplete="off">
     </div>
-    <div class="history-list" id="history-list">
-      <div class="empty"><div class="empty-icon">◷</div><div class="empty-text">Loading…</div></div>
-    </div>
-  </section>
-
-  <!-- Notes -->
-  <section id="notes" class="section">
-    <div class="page-header">
-      <div class="page-header-text">
-        <div class="page-eyebrow">Mnemosyne</div>
-        <h1 class="page-title">Your <em>Notes</em></h1>
-      </div>
-      <div class="page-figure" aria-hidden="true">
-        <img src="/static/img/gods/muse.png" alt="">
-      </div>
-    </div>
-    <div class="notes-grid" id="notes-grid">
-      <div class="empty" style="grid-column:1/-1">
-        <div class="empty-icon">◻</div><div class="empty-text">Loading…</div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Facts -->
-  <section id="facts" class="section">
-    <div class="page-header">
-      <div class="page-header-text">
-        <div class="page-eyebrow">Mnemosyne</div>
-        <h1 class="page-title">Known <em>Facts</em></h1>
-      </div>
-      <div class="page-figure" aria-hidden="true">
-        <img src="/static/img/gods/athena.png" alt="">
-      </div>
-    </div>
-    <table class="facts-table" id="facts-table">
-      <thead>
-        <tr>
-          <th>Key</th>
-          <th>Value</th>
-          <th>Confidence</th>
-          <th>Source</th>
-          <th>Updated</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td colspan="5"><div class="empty"><div class="empty-icon">◆</div><div class="empty-text">Loading…</div></div></td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <!-- Moods -->
-  <section id="moods" class="section">
-    <div class="page-header">
-      <div class="page-header-text">
-        <div class="page-eyebrow">Wellbeing</div>
-        <h1 class="page-title">Mood <em>Log</em></h1>
-      </div>
-      <div class="page-figure" aria-hidden="true">
-        <img src="/static/img/gods/dionysus.png" alt="">
-      </div>
-    </div>
-    <div class="mood-timeline" id="mood-list">
-      <div class="empty"><div class="empty-icon">◉</div><div class="empty-text">Loading…</div></div>
-    </div>
-  </section>
-
-  <!-- Skills -->
-  <section id="skills" class="section">
-    <div class="page-header">
-      <div class="page-header-text">
-        <div class="page-eyebrow">Capabilities</div>
-        <h1 class="page-title">Loaded <em>Skills</em></h1>
-      </div>
-      <div class="page-figure" aria-hidden="true">
-        <img src="/static/img/gods/zeus.png" alt="">
-      </div>
-    </div>
-    <div class="skills-grid" id="skills-grid">
-      <div class="empty" style="grid-column:1/-1">
-        <div class="empty-icon">◈</div><div class="empty-text">Loading…</div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Chat -->
-  <section id="chat" class="section">
-    <div class="page-header">
-      <div class="page-header-text">
-        <div class="page-eyebrow">Interface</div>
-        <h1 class="page-title">Talk to <em>Hestia</em></h1>
-      </div>
-      <div class="page-figure" aria-hidden="true">
-        <img src="/static/img/gods/orpheus.png" alt="">
-      </div>
-    </div>
-    <div class="chat-wrap">
-      <div class="chat-messages" id="chat-messages"></div>
-      <div class="chat-footer">
-        <input type="text" class="chat-input" id="chat-input" placeholder="Ask Hestia anything…">
-        <button class="send-btn" id="chat-send">Send ↑</button>
-      </div>
-    </div>
-  </section>
-
-</main>
+    <div class="cmdk-list" id="cmdkList"></div>
+  </div>
+</div>
 
 <script>
   // ── Utility ─────────────────────────────────────────
@@ -1135,11 +1796,31 @@
     return `<span class="badge ${badgeClass(intent)}">${intent || 'other'}</span>`;
   }
 
-  function emptyState(icon, msg) {
-    return `<div class="empty"><div class="empty-icon">${icon}</div><div class="empty-text">${msg}</div></div>`;
+  // icon: path under /static/img/motifs/, e.g. 'sun.png'. spin: true for loading states.
+  function emptyState(icon, msg, spin) {
+    return `<div class="empty"><div class="empty-icon${spin ? ' spin' : ''}"><img src="/static/img/motifs/${icon}" alt=""></div><div class="empty-text">${msg}</div></div>`;
   }
 
   // ── Stats ────────────────────────────────────────────
+  // Numbers count up from 0 the first time real data arrives — a single
+  // reveal on load, not a repeating tic.
+  function animateCount(el, target) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      el.textContent = target;
+      return;
+    }
+    const dur = 900;
+    const t0 = performance.now();
+    function step(now) {
+      const p = Math.min(1, (now - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(target * eased);
+      if (p < 1) requestAnimationFrame(step);
+      else el.textContent = target;
+    }
+    requestAnimationFrame(step);
+  }
+
   function updateStats(s) {
     const map = {
       interactions: 'total_interactions',
@@ -1149,14 +1830,42 @@
     };
     for (const [k, v] of Object.entries(map)) {
       const val = s[v] ?? '—';
+      const num = Number(val);
+      const isNum = val !== '—' && val !== '' && !isNaN(num);
       const sid = document.getElementById('stat-' + k);
       const mid = document.getElementById('metric-' + k);
-      if (sid) sid.textContent = val;
-      if (mid) mid.textContent = val;
+      if (sid) isNum ? animateCount(sid, num) : (sid.textContent = val);
+      if (mid) isNum ? animateCount(mid, num) : (mid.textContent = val);
     }
     const up = document.getElementById('stat-uptime');
-    if (up) up.textContent = s.uptime || '';
+    if (up && s.uptime) up.textContent = s.uptime;
   }
+
+  // ── Greeting + live clock ─────────────────────────────
+  function updateGreeting() {
+    const now = new Date();
+    const h = now.getHours();
+    const word = h < 5 ? 'Burning quietly through the night'
+               : h < 12 ? 'Good morning'
+               : h < 17 ? 'Good afternoon'
+               : h < 22 ? 'Good evening'
+               : 'Burning quietly through the night';
+    const greetEl = document.getElementById('topbar-greet');
+    if (greetEl) greetEl.innerHTML = `<strong>${word}.</strong> The hearth is lit.`;
+    const heroEl = document.getElementById('hero-title');
+    if (heroEl && h < 5 || h >= 22) {
+      // keep default hero copy; topbar carries the time-of-day greeting
+    }
+    const clockEl = document.getElementById('topbar-clock');
+    if (clockEl) {
+      clockEl.textContent = now.toLocaleString([], {
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    }
+  }
+  updateGreeting();
+  setInterval(updateGreeting, 30000);
 
   // ── Navigation (fade/slide crossfade between sections) ───────
   const loaded = {};
@@ -1199,7 +1908,7 @@
     if (section === 'overview') {
       fetchJSON('/api/history?limit=10').then(data => {
         const el = document.getElementById('recent-list');
-        if (!data.length) { el.innerHTML = emptyState('◷', 'No recent activity.'); return; }
+        if (!data.length) { el.innerHTML = emptyState('sun.png', 'No recent activity.'); return; }
         el.innerHTML = data.map(item => `
           <div class="activity-item">
             ${badge(item.intent)}
@@ -1208,7 +1917,7 @@
           </div>
         `).join('');
       }).catch(() => {
-        document.getElementById('recent-list').innerHTML = emptyState('!', 'Could not load activity.');
+        document.getElementById('recent-list').innerHTML = emptyState('sun.png', 'Could not load activity.');
       });
     }
 
@@ -1217,14 +1926,14 @@
         window._historyData = data;
         renderHistory(data);
       }).catch(() => {
-        document.getElementById('history-list').innerHTML = emptyState('!', 'Could not load history.');
+        document.getElementById('history-list').innerHTML = emptyState('sun.png', 'Could not load history.');
       });
     }
 
     if (section === 'notes') {
       fetchJSON('/api/notes').then(data => {
         const el = document.getElementById('notes-grid');
-        if (!data.length) { el.innerHTML = emptyState('◻', 'No notes found.'); return; }
+        if (!data.length) { el.innerHTML = emptyState('book_man.png', 'No notes found.'); return; }
         el.innerHTML = data.map(n => `
           <div class="note-card">
             <div class="note-body">${esc(n.entities?.content || n.query || '(No content)')}</div>
@@ -1232,22 +1941,23 @@
           </div>
         `).join('');
       }).catch(() => {
-        document.getElementById('notes-grid').innerHTML = emptyState('!', 'Could not load notes.');
+        document.getElementById('notes-grid').innerHTML = emptyState('book_man.png', 'Could not load notes.');
       });
     }
 
     if (section === 'facts') {
       fetchJSON('/api/facts').then(data => {
+        window._factsData = data;
         const tbody = document.querySelector('#facts-table tbody');
         if (!data.length) {
-          tbody.innerHTML = `<tr><td colspan="5">${emptyState('◆', 'No facts found.')}</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="5">${emptyState('warrior_diamond.png', 'No facts found.')}</td></tr>`;
           return;
         }
-        tbody.innerHTML = data.map(f => {
+        tbody.innerHTML = data.map((f, i) => {
           const conf = parseFloat(f.confidence ?? 1);
           const pct = Math.round(conf * 100);
           const cls = conf > 0.8 ? 'conf-high' : conf > 0.5 ? 'conf-mid' : 'conf-low';
-          return `<tr>
+          return `<tr class="fact-row" data-idx="${i}" onclick="toggleFact(${i})">
             <td class="fact-key">${esc(f.key || '')}</td>
             <td class="fact-value">${esc(f.value || '')}</td>
             <td>
@@ -1258,18 +1968,36 @@
             </td>
             <td class="fact-source">${esc(f.source || '')}</td>
             <td class="ts">${fmt(f.updated)}</td>
-          </tr>`;
+          </tr>
+          <tr class="fact-detail-row"><td colspan="5">
+            <div class="fact-detail" id="fact-detail-${i}">
+              <div class="fact-detail-inner">
+                <div class="fact-detail-block">
+                  <div class="fact-detail-label">Source</div>
+                  <div class="fact-detail-value">${esc(f.source || '—')}</div>
+                </div>
+                <div class="fact-detail-block">
+                  <div class="fact-detail-label">Confidence</div>
+                  <div class="fact-detail-value">${pct}%</div>
+                </div>
+                <div class="fact-detail-block">
+                  <div class="fact-detail-label">Last updated</div>
+                  <div class="fact-detail-value">${f.updated ? new Date(f.updated).toLocaleString() : '—'}</div>
+                </div>
+              </div>
+            </div>
+          </td></tr>`;
         }).join('');
       }).catch(() => {
         document.querySelector('#facts-table tbody').innerHTML =
-          `<tr><td colspan="5">${emptyState('!', 'Could not load facts.')}</td></tr>`;
+          `<tr><td colspan="5">${emptyState('warrior_diamond.png', 'Could not load facts.')}</td></tr>`;
       });
     }
 
     if (section === 'moods') {
       fetchJSON('/api/moods').then(data => {
         const el = document.getElementById('mood-list');
-        if (!data.length) { el.innerHTML = emptyState('◉', 'No moods logged yet.'); return; }
+        if (!data.length) { el.innerHTML = emptyState('apple.png', 'No moods logged yet.'); return; }
         el.innerHTML = data.map(m => {
           const v = (m.valence || '').toLowerCase();
           const pip = v.includes('pos') || v.includes('happy') ? 'pip-pos'
@@ -1282,27 +2010,36 @@
           </div>`;
         }).join('');
       }).catch(() => {
-        document.getElementById('mood-list').innerHTML = emptyState('!', 'Could not load moods.');
+        document.getElementById('mood-list').innerHTML = emptyState('apple.png', 'Could not load moods.');
       });
     }
 
     if (section === 'skills') {
       fetchJSON('/api/skills').then(data => {
         const el = document.getElementById('skills-grid');
-        if (!data.length) { el.innerHTML = emptyState('◈', 'No skills loaded.'); return; }
-        el.innerHTML = data.map((sk, i) => `
-          <div class="skill-card">
-            <div class="skill-intent">${esc(sk.intent)}</div>
-            <div class="skill-desc">${esc(sk.description || '')}</div>
-            ${sk.source ? `<div class="skill-source">${esc(sk.source)}</div>` : ''}
-            ${sk.examples?.length
-              ? `<div class="skill-toggle" onclick="toggleExamples(${i})">Show examples ↓</div>
-                 <div class="skill-examples" id="skill-ex-${i}">${sk.examples.map(e => `<div>→ ${esc(e)}</div>`).join('')}</div>`
-              : ''}
-          </div>
-        `).join('');
+        if (!data.length) { el.innerHTML = emptyState('crown.png', 'No skills loaded.'); return; }
+        el.innerHTML = data.map((sk, i) => {
+          const hasEx = sk.examples?.length;
+          return `
+          <div class="skill-flip${hasEx ? ' flippable' : ''}" ${hasEx ? `onclick="flipSkill(this)"` : ''}>
+            <div class="skill-card">
+              <div class="skill-face skill-face--front">
+                <div class="skill-intent">${esc(sk.intent)}</div>
+                <div class="skill-desc">${esc(sk.description || '')}</div>
+                ${sk.source ? `<div class="skill-source">${esc(sk.source)}</div>` : ''}
+                ${hasEx ? `<div class="skill-toggle">Examples ↻</div>` : ''}
+              </div>
+              ${hasEx ? `
+              <div class="skill-face skill-face--back">
+                <div class="skill-back-title">Example phrases</div>
+                <div class="skill-examples">${sk.examples.map(e => `<div>→ ${esc(e)}</div>`).join('')}</div>
+                <div class="skill-toggle">↺ Back</div>
+              </div>` : ''}
+            </div>
+          </div>`;
+        }).join('');
       }).catch(() => {
-        document.getElementById('skills-grid').innerHTML = emptyState('!', 'Could not load skills.');
+        document.getElementById('skills-grid').innerHTML = emptyState('crown.png', 'Could not load skills.');
       });
     }
   }
@@ -1310,7 +2047,7 @@
   // ── History render + search ──────────────────────────
   function renderHistory(data) {
     const el = document.getElementById('history-list');
-    if (!data.length) { el.innerHTML = emptyState('◷', 'Nothing found.'); return; }
+    if (!data.length) { el.innerHTML = emptyState('sun.png', 'Nothing found.'); return; }
     el.innerHTML = data.map(item => `
       <div class="history-item">
         <div class="history-header">${badge(item.intent)} <span class="ts">${fmt(item.timestamp)}</span></div>
@@ -1328,13 +2065,19 @@
     ));
   });
 
-  // ── Skills toggle ────────────────────────────────────
-  function toggleExamples(i) {
-    const el = document.getElementById('skill-ex-' + i);
-    if (!el) return;
-    el.classList.toggle('open');
-    el.previousElementSibling.textContent = el.classList.contains('open')
-      ? 'Hide examples ↑' : 'Show examples ↓';
+  // ── Skills flip ──────────────────────────────────────
+  function flipSkill(el) {
+    el.classList.toggle('flipped');
+  }
+
+  // ── Facts expand ─────────────────────────────────────
+  function toggleFact(i) {
+    const row = document.querySelector(`.fact-row[data-idx="${i}"]`);
+    const detail = document.getElementById('fact-detail-' + i);
+    if (!row || !detail) return;
+    const opening = !detail.classList.contains('open');
+    detail.classList.toggle('open', opening);
+    row.classList.toggle('open', opening);
   }
 
   // ── Chat ─────────────────────────────────────────────
@@ -1346,13 +2089,27 @@
   function addBubble(text, who, ts) {
     const wrap = document.createElement('div');
     wrap.className = 'bubble-wrap ' + who;
+
+    const row = document.createElement('div');
+    row.className = 'bubble-row';
+
+    if (who === 'hestia') {
+      const av = document.createElement('div');
+      av.className = 'bubble-avatar';
+      av.innerHTML = '<img src="/static/img/motifs/torch_alt.png" alt="">';
+      row.appendChild(av);
+    }
+
     const b = document.createElement('div');
     b.className = 'bubble ' + who;
     b.textContent = text;
+    row.appendChild(b);
+
     const t = document.createElement('div');
     t.className = 'bubble-ts';
     t.textContent = fmt(ts || new Date());
-    wrap.appendChild(b);
+
+    wrap.appendChild(row);
     wrap.appendChild(t);
     chatMsgs.appendChild(wrap);
     chatMsgs.scrollTop = chatMsgs.scrollHeight;
@@ -1365,7 +2122,10 @@
         el = document.createElement('div');
         el.id = 'thinking-indicator';
         el.className = 'bubble-wrap hestia';
-        el.innerHTML = `<div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>`;
+        el.innerHTML = `<div class="bubble-row">
+            <div class="bubble-avatar"><img src="/static/img/motifs/torch_alt.png" alt=""></div>
+            <div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+          </div>`;
         chatMsgs.appendChild(el);
       }
     } else if (el) el.remove();
@@ -1434,11 +2194,294 @@
     );
   }
 
+  // ── 3D card tilt ─────────────────────────────────────
+  // Delegated on document (rather than bound per-card) so it keeps working
+  // on cards that get re-rendered into the DOM by loadSection() above.
+  // Skipped entirely under prefers-reduced-motion.
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const TILT_SELECTOR = '.metric-card, .note-card, .history-item, .activity-item';
+  let tiltEl = null;
+
+  if (!reduceMotion) {
+    document.addEventListener('mousemove', (e) => {
+      const el = e.target.closest(TILT_SELECTOR);
+      if (el !== tiltEl) {
+        if (tiltEl) tiltEl.style.transform = '';
+        tiltEl = el;
+      }
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width - 0.5;
+      const py = (e.clientY - r.top) / r.height - 0.5;
+      const isMetric = el.classList.contains('metric-card');
+      const max = isMetric ? 9 : 3.5;
+      const lift = isMetric ? -3 : -1;
+      el.style.transform =
+        `perspective(800px) rotateY(${(px * max).toFixed(2)}deg) rotateX(${(-py * max).toFixed(2)}deg) translateY(${lift}px)`;
+    });
+    document.addEventListener('mouseleave', () => {
+      if (tiltEl) { tiltEl.style.transform = ''; tiltEl = null; }
+    }, true);
+  }
+
+  // ── Hero parallax ────────────────────────────────────
+  // The three cropped figures behind the hero copy drift at different
+  // rates (data-depth) so the banner reads as layered planes.
+  if (!reduceMotion) (function initHeroParallax() {
+    const hero = document.getElementById('heroBanner');
+    const layers = document.querySelectorAll('#heroParallax .hp-figure');
+    if (!hero || !layers.length) return;
+    hero.addEventListener('mousemove', (e) => {
+      const r = hero.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width - 0.5;
+      const py = (e.clientY - r.top) / r.height - 0.5;
+      layers.forEach(l => {
+        const depth = parseFloat(l.dataset.depth) || 12;
+        l.style.transform = `translate(${(px * depth).toFixed(1)}px, ${(py * depth).toFixed(1)}px)`;
+      });
+    });
+    hero.addEventListener('mouseleave', () => {
+      layers.forEach(l => { l.style.transform = ''; });
+    });
+  })();
+
+
+  // ── Command palette ──────────────────────────────────
+  const CMDK_ITEMS = [
+    { section: 'overview', label: 'Overview',  desc: 'Dashboard',    icon: 'torch_alt.png' },
+    { section: 'history',  label: 'History',   desc: 'Memory',       icon: 'sun.png' },
+    { section: 'notes',    label: 'Notes',     desc: 'Mnemosyne',    icon: 'book_man.png' },
+    { section: 'facts',    label: 'Facts',     desc: 'Mnemosyne',    icon: 'warrior_diamond.png' },
+    { section: 'moods',    label: 'Moods',     desc: 'Wellbeing',    icon: 'apple.png' },
+    { section: 'skills',   label: 'Skills',    desc: 'Capabilities', icon: 'crown.png' },
+    { section: 'chat',     label: 'Chat',      desc: 'Interface',    icon: 'lyre_alt.png' },
+  ];
+
+  const cmdkOverlay = document.getElementById('cmdkOverlay');
+  const cmdkInput = document.getElementById('cmdkInput');
+  const cmdkList = document.getElementById('cmdkList');
+  let cmdkActive = 0;
+  let cmdkFiltered = CMDK_ITEMS.slice();
+
+  function renderCmdkList() {
+    if (!cmdkFiltered.length) {
+      cmdkList.innerHTML = '<div class="cmdk-empty">No matching section.</div>';
+      return;
+    }
+    cmdkList.innerHTML = cmdkFiltered.map((item, i) => `
+      <div class="cmdk-item${i === cmdkActive ? ' active' : ''}" data-section="${item.section}">
+        <span class="nav-icon"><img src="/static/img/motifs/${item.icon}" alt=""></span>
+        <span>${item.label}</span>
+        <span class="cmdk-desc">${item.desc}</span>
+      </div>
+    `).join('');
+  }
+
+  function filterCmdk(q) {
+    const query = q.trim().toLowerCase();
+    cmdkFiltered = !query ? CMDK_ITEMS.slice()
+      : CMDK_ITEMS.filter(i => i.label.toLowerCase().includes(query) || i.desc.toLowerCase().includes(query));
+    cmdkActive = 0;
+    renderCmdkList();
+  }
+
+  function openCmdk() {
+    cmdkOverlay.classList.add('open');
+    cmdkInput.value = '';
+    filterCmdk('');
+    setTimeout(() => cmdkInput.focus(), 10);
+  }
+  function closeCmdk() { cmdkOverlay.classList.remove('open'); }
+  function toggleCmdk() { cmdkOverlay.classList.contains('open') ? closeCmdk() : openCmdk(); }
+
+  function jumpTo(section) {
+    const link = document.querySelector(`.nav a[data-section="${section}"]`);
+    if (link) {
+      document.querySelectorAll('.nav a').forEach(l => l.classList.remove('active'));
+      link.classList.add('active');
+    }
+    switchSection(section);
+  }
+
+  document.getElementById('cmdkHint').addEventListener('click', openCmdk);
+  cmdkOverlay.addEventListener('mousedown', (e) => { if (e.target === cmdkOverlay) closeCmdk(); });
+  cmdkInput.addEventListener('input', () => filterCmdk(cmdkInput.value));
+  cmdkList.addEventListener('click', (e) => {
+    const item = e.target.closest('.cmdk-item');
+    if (!item) return;
+    jumpTo(item.dataset.section);
+    closeCmdk();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      toggleCmdk();
+      return;
+    }
+    if (!cmdkOverlay.classList.contains('open')) return;
+    if (e.key === 'Escape') { closeCmdk(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); cmdkActive = Math.min(cmdkActive + 1, cmdkFiltered.length - 1); renderCmdkList(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); cmdkActive = Math.max(cmdkActive - 1, 0); renderCmdkList(); }
+    if (e.key === 'Enter' && cmdkFiltered[cmdkActive]) { jumpTo(cmdkFiltered[cmdkActive].section); closeCmdk(); }
+  });
+
   // ── Boot ─────────────────────────────────────────────
   fetchJSON('/api/stats').then(updateStats).catch(() => {});
   loadSection('overview');
   loaded['overview'] = true;
   reportLocation();
+</script>
+
+<!-- ── Hero flower: mouse morph-reveal widget ─────────────────────── -->
+<script>
+(function(){
+  "use strict";
+
+  var TRAIL_MAX_POINTS  = 60;
+  var TRAIL_HEAD_R      = 60;   // scaled down for the smaller hero-figure box
+  var TRAIL_NOISE_AMP   = 18;
+  var TRAIL_BLOB_PTS    = 24;
+  var TRAIL_FADE_SPEED  = 0.92;
+  var TRAIL_SAMPLE_DIST = 5;
+
+  function drawMorphBlob(ctx, cx, cy, r, t, seed){
+    if (r < 1) return;
+    var pts = [];
+    for (var i = 0; i < TRAIL_BLOB_PTS; i++) {
+      var angle = (i / TRAIL_BLOB_PTS) * Math.PI * 2;
+      var n1 = Math.sin(angle * 3 + t * 1.4 + seed) * 0.45;
+      var n2 = Math.sin(angle * 5 - t * 0.9 + seed * 2.3) * 0.3;
+      var n3 = Math.cos(angle * 2 + t * 1.8 + seed * 0.7) * 0.25;
+      var noise = (n1 + n2 + n3) * TRAIL_NOISE_AMP * (r / TRAIL_HEAD_R);
+      var rr = r + noise;
+      pts.push([cx + Math.cos(angle) * rr, cy + Math.sin(angle) * rr]);
+    }
+    ctx.beginPath();
+    var mid0 = [(pts[0][0] + pts[pts.length - 1][0]) / 2, (pts[0][1] + pts[pts.length - 1][1]) / 2];
+    ctx.moveTo(mid0[0], mid0[1]);
+    for (var j = 0; j < pts.length; j++) {
+      var cur = pts[j];
+      var next = pts[(j + 1) % pts.length];
+      var mid = [(cur[0] + next[0]) / 2, (cur[1] + next[1]) / 2];
+      ctx.quadraticCurveTo(cur[0], cur[1], mid[0], mid[1]);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function MorphTrailLayer(layerEl, invert){
+    this.layerEl = layerEl;
+    this.invert = invert;
+    this.canvas = document.createElement('canvas');
+    this.canvas.style.display = 'none';
+    document.body.appendChild(this.canvas);
+    this.ctx = this.canvas.getContext('2d');
+    this.w = 0; this.h = 0;
+  }
+  MorphTrailLayer.prototype.resize = function(w, h){
+    this.w = w; this.h = h;
+    this.canvas.width = w; this.canvas.height = h;
+  };
+  MorphTrailLayer.prototype.render = function(points, t){
+    var ctx = this.ctx, w = this.w, h = this.h;
+    if (!w || !h) return;
+    ctx.clearRect(0, 0, w, h);
+    if (!this.invert) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = 'destination-out';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      ctx.globalAlpha = p.alpha;
+      ctx.fillStyle = '#fff';
+      drawMorphBlob(ctx, p.x, p.y, p.r, t, p.seed);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    var url = 'url(' + this.canvas.toDataURL() + ')';
+    this.layerEl.style.maskImage = url;
+    this.layerEl.style.webkitMaskImage = url;
+  };
+
+  function initHeroFlower(){
+    var widget = document.getElementById('heroFlower');
+    var layerBg = document.getElementById('flowerLayerBg');
+    var layerTop = document.getElementById('flowerLayerTop');
+    if (!widget || !layerBg || !layerTop) return;
+
+    var frontLayer = new MorphTrailLayer(layerBg, false);
+    var topLayer = new MorphTrailLayer(layerTop, true);
+
+    var points = [];
+    var hovering = false;
+    var mouseX = 0, mouseY = 0;
+    var headRadius = 0;
+    var lastSample = null;
+    var time = 0;
+
+    function toCanvasSpace(clientX, clientY){
+      var rect = widget.getBoundingClientRect();
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    }
+    function resizeCanvases(){
+      var rect = widget.getBoundingClientRect();
+      var w = Math.max(1, Math.round(rect.width));
+      var h = Math.max(1, Math.round(rect.height));
+      frontLayer.resize(w, h);
+      topLayer.resize(w, h);
+    }
+
+    widget.addEventListener('mouseenter', function(){ hovering = true; });
+    widget.addEventListener('mousemove', function(e){
+      hovering = true;
+      var pt = toCanvasSpace(e.clientX, e.clientY);
+      mouseX = pt.x; mouseY = pt.y;
+    });
+    widget.addEventListener('mouseleave', function(){ hovering = false; });
+    window.addEventListener('resize', resizeCanvases);
+    resizeCanvases();
+
+    function frame(){
+      time += 0.016;
+
+      var targetR = hovering ? TRAIL_HEAD_R : 0;
+      headRadius += (targetR - headRadius) * (hovering ? 0.14 : 0.04);
+
+      if (hovering && headRadius > 2) {
+        var dist = lastSample ? Math.hypot(mouseX - lastSample.x, mouseY - lastSample.y) : Infinity;
+        if (dist > TRAIL_SAMPLE_DIST) {
+          points.push({ x: mouseX, y: mouseY, r: headRadius, alpha: 1, seed: Math.random() * 100 });
+          if (points.length > TRAIL_MAX_POINTS) points.shift();
+          lastSample = { x: mouseX, y: mouseY };
+        }
+      }
+
+      for (var i = points.length - 1; i >= 0; i--) {
+        points[i].alpha *= TRAIL_FADE_SPEED;
+        points[i].r *= 0.995;
+        if (points[i].alpha < 0.01) points.splice(i, 1);
+      }
+
+      frontLayer.render(points, time);
+      topLayer.render(points, time);
+
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    initHeroFlower();
+  } else {
+    document.addEventListener('DOMContentLoaded', initHeroFlower);
+  }
+})();
 </script>
 </body>
 </html>
