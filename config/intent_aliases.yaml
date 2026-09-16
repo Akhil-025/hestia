@@ -1,0 +1,152 @@
+# config/intent_aliases.yaml
+#
+# Phrase -> intent aliases, resolved BEFORE the LLM is called (see
+# core/intent_aliases.py). A match here short-circuits classification
+# entirely: no Ollama round-trip, no retry loop, no dependence on JSON-mode
+# reliability for phrasings you already know the answer to.
+#
+# Use this instead of adding yet another few-shot example to
+# config/nlu_prompt.txt when:
+#   - the phrasing is unambiguous to you, and
+#   - the intent is the same every single time, and
+#   - the model keeps getting it wrong anyway.
+#
+# Format — two accepted shapes per intent:
+#
+#   apollo_track_sleep:
+#     - "log my sleep"                # string = prefix match (the default)
+#     - phrase: "i slept"
+#       match: prefix                 # exact | prefix | contains
+#
+# Match modes:
+#   exact     the whole query equals the phrase
+#   prefix    the query starts with the phrase  <- default, safest for logging
+#   contains  the phrase appears anywhere as whole words (use sparingly:
+#             this is the mode most likely to fire when you didn't mean it)
+#
+# Every intent name here MUST exist in modules/hecate/intent_registry.py.
+# Unknown intents are dropped with a warning at startup rather than
+# silently producing something Hecate can't route — the registry stays the
+# single source of truth. tests/test_intent_aliases.py enforces this.
+#
+# Entities are NOT extracted here; an alias sets the intent only. Modules
+# already parse amounts/durations out of `raw_query` themselves, which is
+# why "log my sleep for 7 hours" still works with an empty entity dict.
+
+# --- Apollo: health logging -----------------------------------------------
+apollo_track_sleep:
+  - "log my sleep"
+  - "track my sleep"
+  - "i slept"
+  - "slept for"
+
+apollo_log_workout:
+  - "log my workout"
+  - "log a workout"
+  - "i worked out"
+  - "i just did"
+  - "record my workout"
+
+apollo_log_mood:
+  - "log my mood"
+  - "i'm feeling"
+  - "im feeling"
+  - "feeling pretty"
+
+apollo_log_water:
+  - "log my water"
+  - "i drank"
+  - "had a glass of water"
+
+apollo_log_weight:
+  - "log my weight"
+  - "i weigh"
+  - "weighed myself"
+
+apollo_get_health_summary:
+  - "health summary"
+  - "how's my health"
+  - "hows my health"
+
+# --- Pluto: expenses -------------------------------------------------------
+pluto_log_expense:
+  - "log an expense"
+  - "log expense"
+  - "i spent"
+  - "i paid"
+  - "add an expense"
+
+pluto_get_budget_summary:
+  - "budget summary"
+  - "how's my budget"
+  - "hows my budget"
+  - "where's my money going"
+
+pluto_spending_report:
+  - "spending report"
+  - "what did i spend"
+  - "how much did i spend"
+
+# --- Artemis: habits & goals ----------------------------------------------
+complete_habit:
+  - "mark done"
+  - "i did my"
+  - "done with my"
+  - "completed my habit"
+
+list_habits:
+  - "list my habits"
+  - "what are my habits"
+  - "show my habits"
+
+get_goals:
+  - "list my goals"
+  - "what are my goals"
+  - "show my goals"
+
+productivity_summary:
+  - "how productive"
+  - "productivity summary"
+
+# --- Chronos: reminders ----------------------------------------------------
+set_reminder:
+  - "remind me to"
+  - "set a reminder"
+  - "don't let me forget"
+  - "dont let me forget"
+
+# --- Mnemosyne: facts ------------------------------------------------------
+learn_fact:
+  - "remember that"
+  - "make a note that i"
+  - "keep in mind that"
+
+forget_fact:
+  - "forget that i"
+  - "stop remembering"
+
+# --- Diagnostics (see modules/hestia/core_module.py) -----------------------
+modules_status:
+  - phrase: "module status"
+    match: exact
+  - phrase: "modules status"
+    match: exact
+  - "what's your module status"
+  - "are all your modules working"
+  - "system status"
+
+explain_routing:
+  - "why did you route"
+  - "why did that go to"
+  - "explain that routing"
+  - phrase: "explain your routing"
+    match: exact
+
+report_mistake:
+  - phrase: "that was wrong"
+    match: exact
+  - phrase: "that's wrong"
+    match: exact
+  - "that was the wrong"
+  - "you got that wrong"
+  - "wrong answer"
