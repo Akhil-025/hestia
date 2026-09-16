@@ -34,10 +34,13 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-if "modules.pluto" not in sys.modules:
-    _pluto_stub = types.ModuleType("modules.pluto")
-    _pluto_stub.PlutoEngine = type("PlutoEngine", (), {})
-    sys.modules["modules.pluto"] = _pluto_stub
+# The `modules.pluto` stub that used to live here was removed: it was a
+# plain module object with no __path__, so after this file imported it,
+# every `modules.pluto.<submodule>` import in the same pytest session
+# failed with "'modules.pluto' is not a package" and tests/test_pluto.py
+# errored at collection depending on file ordering. tests/conftest.py now
+# fakes psycopg2 (the dependency that was actually missing) instead, so
+# modules.pluto imports for real here and stays a package for everyone.
 
 import main
 

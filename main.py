@@ -47,17 +47,56 @@ _NOISY_LOGGERS = (
     "torch", "urllib3", "httpx", "httpcore", "asyncio", "werkzeug",
 )
 
-def _configure_logging() -> logging.Logger:
+import signal  # noqa: E402
+
+from core.observability import (  # noqa: E402  (must precede _configure_logging)
+    Diagnostics,
+    RequestIdFilter,
+    Timer,
+    current_request_id,
+    new_request_id,
+)
+
+
+def _configure_logging(verbosity: str = "normal") -> logging.Logger:
+    """
+    Configure logging once, at import time, and again if --verbose/--quiet
+    is passed (backlog #275).
+
+    `verbosity` is one of:
+      "quiet"   WARNING on Hestia's own logger  — daily use; only problems
+      "normal"  INFO                            — the previous behaviour
+      "verbose" DEBUG everywhere, including the routing/dispatch traces
+                Hecate and the orchestrator already emit at debug level
+
+    Every record also carries the in-flight request id (backlog #17) via
+    RequestIdFilter, so one query's full trace across core/, modules/ and
+    api.py can be grepped with a single `grep req=<id>`. The filter is
+    attached to the root handler rather than to individual loggers so
+    module-level `logging.getLogger(__name__)` calls anywhere in the tree
+    pick it up without changes.
+    """
     warnings.filterwarnings("ignore")
     for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.ERROR)
+        logging.getLogger(name).setLevel(
+            logging.DEBUG if verbosity == "verbose" else logging.ERROR
+        )
     logging.basicConfig(
-        level=logging.WARNING,
-        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        level=logging.DEBUG if verbosity == "verbose" else logging.WARNING,
+        format="%(asctime)s  %(levelname)-8s  req=%(request_id)s  %(name)s  %(message)s",
         datefmt="%H:%M:%S",
+        force=True,
     )
+    request_id_filter = RequestIdFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(request_id_filter)
+
     logger = logging.getLogger("hestia")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(
+        {"quiet": logging.WARNING, "verbose": logging.DEBUG}.get(
+            verbosity, logging.INFO
+        )
+    )
     return logger
 
 logger = _configure_logging()
@@ -69,6 +108,7 @@ logger = _configure_logging()
 import yaml
 
 from core.barge_in import BargeInListener
+from core.config_validation import ConfigError, validate_config, validate_or_raise
 from core.browser_agent import HestiaBrowserAgent
 from core.event_bus import bus
 from core.heartbeat import HestiaHeartbeat
@@ -84,6 +124,11 @@ from modules.artemis import ArtemisEngine
 from modules.chronos.engine import ChronosEngine
 from modules.dionysus import DionysusEngine
 from modules.hecate import HecateEngine
+from modules.hecate.intent_registry import (
+    module_for_intent,
+    registry_info,
+    strip_module_prefix,
+)
 from modules.hephaestus.engine import HephaestusEngine
 from modules.hermes.engine import HermesEngine
 from modules.hestia.core_module import CoreModule
@@ -254,7 +299,10 @@ class HestiaBuilder:
     # -- Orchestrator + module registration -----------------------------------
 
     def build_orchestrator(
-        self, mnemosyne: MnemosyneEngine, optional_modules: dict[str, Any]
+        self,
+        mnemosyne: MnemosyneEngine,
+        optional_modules: dict[str, Any],
+        diagnostics: Any = None,
     ) -> tuple[HestiaOrchestrator, ApolloEngine]:
         """
         Build the orchestrator and register every module in priority order.
@@ -283,6 +331,9 @@ class HestiaBuilder:
                 memory=mnemosyne,
                 ollama_cfg=self.ollama_cfg,
                 timezone_name=self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
+                # Backs the modules_status / explain_routing /
+                # report_mistake intents (backlog #3, #8, #259).
+                diagnostics=diagnostics,
             )
         )
 
@@ -494,7 +545,12 @@ class HestiaBuilder:
     # same constant/contract in web_ui.py's _register_auth_guard.
     _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
-    def start_sync_api(self, mnemosyne: MnemosyneEngine) -> None:
+    def start_sync_api(
+        self,
+        mnemosyne: MnemosyneEngine,
+        diagnostics: Any = None,
+        nlu: Any = None,
+    ) -> None:
         if not self.sync_cfg.get("enabled", False):
             return
 
@@ -526,7 +582,10 @@ class HestiaBuilder:
             import uvicorn
             from api import create_app
 
-            sync_app = create_app(api_key=api_key)
+            # diagnostics/nlu power /health/modules (backlog #19); both
+            # are optional there, so passing None degrades the endpoint to
+            # status="unknown" rather than breaking the sync API.
+            sync_app = create_app(api_key=api_key, diagnostics=diagnostics, nlu=nlu)
             sync_app.state.memory = mnemosyne
 
             def _run() -> None:
@@ -585,6 +644,13 @@ class Hestia:
             name="IPLocationFallback",
         ).start()
 
+        # Observability first: the routing log has to be ready before the
+        # very first query, and Diagnostics is injected into CoreModule
+        # during orchestrator construction below. The orchestrator itself
+        # is bound afterwards (chicken-and-egg: modules_status needs the
+        # orchestrator, the orchestrator's CoreModule needs Diagnostics).
+        self.diagnostics = Diagnostics()
+
         optional_modules = builder.build_optional_modules(self.llm)
         self.athena        = optional_modules["athena"]
         self.iris           = optional_modules["iris"]
@@ -592,8 +658,11 @@ class Hestia:
         self.browser_agent: Optional[HestiaBrowserAgent] = optional_modules["browser_agent"]
 
         self.orchestrator, self.apollo, self.pluto, self.artemis, self.chronos = (
-            builder.build_orchestrator(self.mnemosyne, optional_modules)
+            builder.build_orchestrator(
+                self.mnemosyne, optional_modules, diagnostics=self.diagnostics
+            )
         )
+        self.diagnostics.bind_orchestrator(self.orchestrator)
 
         self.stt, self.tts, self.wake_detector, self.barge_in = builder.build_io()
         self._barge_in_enabled: bool = self.config.get("barge_in", {}).get("enabled", True)
@@ -619,7 +688,9 @@ class Hestia:
 
         self.telegram_bot = builder.build_telegram_bot(self.process_text, self.stt, self.mnemosyne)
 
-        builder.start_sync_api(self.mnemosyne)
+        builder.start_sync_api(
+            self.mnemosyne, diagnostics=self.diagnostics, nlu=self.nlu
+        )
 
         logger.info("Hestia is ready.")
 
@@ -702,22 +773,34 @@ class Hestia:
         if not cleaned:
             return ""
 
+        # One id per query, attached to a contextvar and stamped onto every
+        # log record emitted while this query is in flight (backlog #17).
+        new_request_id()
         logger.info("You: %s", cleaned)
 
-        try:
-            context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
-            nlu_result = self.nlu.understand(cleaned, context)
-        except Exception:
-            logger.exception("NLU failed for input=%r.", cleaned[:80])
-            nlu_result = {"intent": "chat", "entities": {}, "response": ""}
+        with Timer() as turn_timer:
+            try:
+                context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
+                nlu_result = self.nlu.understand(cleaned, context)
+            except Exception:
+                logger.exception("NLU failed for input=%r.", cleaned[:80])
+                nlu_result = {"intent": "chat", "entities": {}, "response": ""}
 
-        try:
-            response = self.orchestrator.dispatch(cleaned, nlu_result)
-        except Exception:
-            logger.exception("Orchestrator dispatch failed.")
-            response = "I'm sorry, something went wrong."
+            try:
+                response = self.orchestrator.dispatch(cleaned, nlu_result)
+            except Exception:
+                logger.exception("Orchestrator dispatch failed.")
+                response = "I'm sorry, something went wrong."
 
         response = _postprocess(response)
+
+        # Every classification + routing decision, one JSON line each
+        # (backlog #5). Best-effort: observability must never be the
+        # reason a query fails.
+        try:
+            self._log_routing(cleaned, nlu_result, turn_timer.ms)
+        except Exception:
+            logger.debug("Routing log failed; continuing.")
 
         logger.info("Hestia: %s", response)
 
@@ -741,6 +824,172 @@ class Hestia:
         )
 
         return response
+
+    # ------------------------------------------------------------------
+    # Observability helpers (backlog #1, #3, #5)
+    # ------------------------------------------------------------------
+
+    def _log_routing(self, query: str, nlu_result: dict, latency_ms: float) -> dict:
+        """
+        Record one classification + routing decision.
+
+        Reads the module actually chosen from the orchestrator's
+        last_decision rather than re-running Hecate, so the log reflects
+        what really happened (including fallback tiers and the
+        can_handle()-mismatch recovery path) instead of a second, possibly
+        different, routing guess.
+        """
+        decision = self.orchestrator.last_decision or {}
+        return self.diagnostics.record_classification(
+            query=query,
+            intent=nlu_result.get("intent", "chat"),
+            confidence=nlu_result.get("confidence", 0.0),
+            module=decision.get("primary", "unknown"),
+            reason=decision.get("reason", ""),
+            latency_ms=latency_ms,
+            source=nlu_result.get("source", "nlu"),
+        )
+
+    def resolve_only(self, text: str) -> dict:
+        """
+        Run the full routing pipeline WITHOUT executing the handler
+        (backlog #1 — this is what `--dry-run` calls).
+
+        NLU classification and Hecate's decision both run for real, so the
+        answer is the genuine routing decision, not a re-implementation of
+        it. What is skipped is `handle()`: no side effects, nothing written
+        to any module's database, no LLM generation, no TTS. The resolved
+        intent is also NOT recorded to the routing log, since a dry run
+        isn't a real interaction and would otherwise pollute the very
+        dataset the log exists to build.
+        """
+        cleaned = _clean_input(text)
+        if not cleaned:
+            return {"error": "empty query"}
+
+        new_request_id()
+        with Timer() as timer:
+            try:
+                context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
+                nlu_result = self.nlu.understand(cleaned, context)
+            except Exception as exc:
+                logger.exception("Dry run: NLU failed.")
+                return {"error": f"NLU failed: {exc}"}
+
+        intent = nlu_result.get("intent", "chat")
+        active = list(self.orchestrator.registered_modules)
+        try:
+            decision = self.orchestrator._route(cleaned, nlu_result)
+        except Exception as exc:  # pragma: no cover - _route never raises
+            return {"error": f"routing failed: {exc}"}
+
+        primary = decision.get("primary", "core")
+        dispatch_intent = decision.get("intent") or strip_module_prefix(intent)
+        target = self.orchestrator._modules.get(primary)
+        can_handle = None
+        if target is not None:
+            try:
+                can_handle = bool(target.can_handle(dispatch_intent))
+            except Exception:
+                can_handle = None
+
+        return {
+            "query": cleaned,
+            "request_id": current_request_id(),
+            "intent": intent,
+            "entities": nlu_result.get("entities", {}),
+            "confidence": float(nlu_result.get("confidence", 0.0) or 0.0),
+            "nlu_source": nlu_result.get("source", "nlu"),
+            "nlu_latency_ms": round(timer.ms, 1),
+            "registry_module": module_for_intent(intent),
+            "primary": primary,
+            "secondary": decision.get("secondary", []),
+            "reason": decision.get("reason", ""),
+            "dispatch_intent": dispatch_intent,
+            "primary_can_handle": can_handle,
+            "synthesize": bool(decision.get("synthesize", False)),
+            "active_modules": active,
+            "executed": False,
+        }
+
+    @staticmethod
+    def format_dry_run(result: dict) -> str:
+        """Render resolve_only() output as an aligned, readable block."""
+        if "error" in result:
+            return f"dry-run failed: {result['error']}"
+
+        order = [
+            ("query", "query"),
+            ("request_id", "request id"),
+            ("intent", "NLU intent"),
+            ("confidence", "confidence"),
+            ("nlu_source", "classified by"),
+            ("nlu_latency_ms", "NLU latency (ms)"),
+            ("entities", "entities"),
+            ("registry_module", "registry says"),
+            ("primary", "routed to"),
+            ("dispatch_intent", "dispatched as"),
+            ("primary_can_handle", "target can_handle"),
+            ("secondary", "secondary"),
+            ("synthesize", "synthesise"),
+            ("reason", "Hecate reason"),
+        ]
+        width = max(len(label) for _, label in order)
+        lines = ["", "--- dry run (no handler executed) ---"]
+        for key, label in order:
+            lines.append(f"  {label.rjust(width)} : {result.get(key)}")
+
+        # A registry/routing disagreement is the single most useful thing
+        # a dry run can surface, so call it out rather than leaving it to
+        # be spotted by eye in the two adjacent lines above.
+        registry_module = result.get("registry_module")
+        if registry_module and registry_module != result.get("primary"):
+            lines.append(
+                f"  NOTE: registry maps this intent to {registry_module!r} but "
+                f"Hecate chose {result.get('primary')!r} — check the tier in "
+                f"'Hecate reason' above."
+            )
+        if result.get("primary_can_handle") is False:
+            lines.append(
+                "  NOTE: the target module's can_handle() rejects this intent, "
+                "so a real run would fall back to another module (usually core "
+                "chat)."
+            )
+        lines.append("-------------------------------------")
+        return "\n".join(lines)
+
+    def install_signal_handlers(self) -> None:
+        """
+        Shut down cleanly on SIGTERM/SIGINT (backlog #18).
+
+        Without this, a `kill` (or a systemd stop, or the OS closing the
+        process) skipped _shutdown() entirely: the barge-in listener kept
+        the microphone open, the heartbeat thread was killed mid-write, and
+        the event bus's executor never drained. Registering here rather
+        than at import time keeps `import main` side-effect-free for the
+        tests.
+
+        Only installs when called from the main thread — Python only
+        permits signal registration there, and Hestia is also imported by
+        the web UI and test suite from worker threads.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            logger.debug("Not the main thread; skipping signal handlers.")
+            return
+
+        def _handle(signum, _frame) -> None:
+            name = signal.Signals(signum).name
+            logger.info("Received %s — shutting down gracefully.", name)
+            self._shutdown()
+            raise SystemExit(0)
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _handle)
+            except (ValueError, OSError, AttributeError):
+                # Not available on this platform (SIGTERM on some Windows
+                # builds) — the finally: block in the run loops still runs.
+                logger.debug("Could not install handler for %s.", sig)
 
     # ------------------------------------------------------------------
     # Voice-only query entry point (streaming + barge-in)
@@ -1006,6 +1255,15 @@ def _load_config(path: Path) -> dict[str, Any]:
         cfg = yaml.safe_load(fh)
     if not isinstance(cfg, dict):
         raise ValueError(f"Configuration file {path} must be a YAML mapping.")
+
+    # Fail fast with every problem named at once (backlog #14). Without
+    # this, a wrong type or a missing required key surfaced much later,
+    # deep inside whichever module happened to read it first, in a form
+    # that never mentioned the config key responsible. Warnings (unknown
+    # top-level sections — usually typos) are logged, not fatal.
+    report = validate_or_raise(cfg, source=str(path))
+    for warning in report.warnings:
+        logger.warning("Config: %s", warning)
     return cfg
 
 
@@ -1052,8 +1310,26 @@ def _postprocess(response: str) -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Hestia personal AI assistant")
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """
+    Parse CLI arguments.
+
+    Takes `argv` so the parser itself is unit-testable without
+    monkeypatching sys.argv (tests/test_main_cli.py).
+    """
+    parser = argparse.ArgumentParser(
+        description="Hestia personal AI assistant",
+        epilog=(
+            "Examples:\n"
+            "  python main.py                              # interactive CLI\n"
+            "  python main.py --voice                      # wake word + STT\n"
+            '  python main.py --dry-run "log my sleep"     # show routing, run nothing\n'
+            "  python main.py --check-config               # validate config and exit\n"
+            "  python main.py --quiet                      # warnings only\n"
+            "  python main.py --verbose                    # full debug trace\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--config",
         default=str(_DEFAULT_CONFIG),
@@ -1064,14 +1340,115 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run in voice mode (wake word + STT).",
     )
-    return parser.parse_args()
+    # Backlog #1. Nargs="+" so the query needn't be quoted, though quoting
+    # is still clearer for anything containing shell metacharacters.
+    parser.add_argument(
+        "--dry-run",
+        nargs="+",
+        metavar="QUERY",
+        help=(
+            "Classify and route QUERY, print the resolved routing decision, "
+            "and exit without executing the handler (no side effects)."
+        ),
+    )
+    # Backlog #14. Useful in CI and after editing the YAML by hand.
+    parser.add_argument(
+        "--check-config",
+        action="store_true",
+        help=(
+            "Validate the configuration file and exit. Exit code 0 if valid, "
+            "1 if not. Does not start any subsystem."
+        ),
+    )
+    # Backlog #275.
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Debug-level logging, including Hecate's routing traces.",
+    )
+    verbosity.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Warnings and errors only — the sane default for daily use.",
+    )
+    return parser.parse_args(argv)
 
 
-if __name__ == "__main__":
-    args = _parse_args()
-    hestia = Hestia(config_path=args.config)
+def _verbosity_from_args(args: argparse.Namespace) -> str:
+    """Map the mutually exclusive --verbose/--quiet flags onto a level name."""
+    if getattr(args, "verbose", False):
+        return "verbose"
+    if getattr(args, "quiet", False):
+        return "quiet"
+    return "normal"
+
+
+def _run_check_config(path: str) -> int:
+    """
+    Implement --check-config: validate and report, without booting Hestia.
+
+    Deliberately does NOT use validate_or_raise: the point here is to show
+    the user every problem at once in a readable form, not to raise on the
+    first one.
+    """
+    config_path = Path(path)
+    if not config_path.exists():
+        print(f"Config file not found: {config_path}", file=sys.stderr)
+        return 1
+    try:
+        with config_path.open("r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        print(f"{config_path} is not valid YAML:\n{exc}", file=sys.stderr)
+        return 1
+
+    report = validate_config(cfg)
+    print(f"{config_path}:")
+    print(report.format())
+    registry = registry_info()
+    print(
+        f"Intent registry v{registry['version']} "
+        f"({registry['intent_count']} intents across "
+        f"{registry['module_count']} modules, "
+        f"fingerprint {registry['fingerprint']})."
+    )
+    return 0 if report.ok else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+
+    global logger
+    logger = _configure_logging(_verbosity_from_args(args))
+
+    # --check-config must not construct Hestia — it's the thing you run
+    # precisely when Hestia won't start.
+    if args.check_config:
+        return _run_check_config(args.config)
+
+    try:
+        hestia = Hestia(config_path=args.config)
+    except ConfigError as exc:
+        # Already fully formatted by the validator; a traceback here would
+        # bury the one thing the user needs to read.
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    hestia.install_signal_handlers()
+
+    if args.dry_run:
+        query = " ".join(args.dry_run)
+        print(hestia.format_dry_run(hestia.resolve_only(query)))
+        hestia._shutdown()
+        return 0
 
     if args.voice:
         hestia.run_voice_loop()
     else:
         hestia.run_cli_loop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
