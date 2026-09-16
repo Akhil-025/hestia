@@ -96,6 +96,14 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "get_user_info": "core",
     "set_preference": "core",
     "get_system_info": "core",
+    # Diagnostics (backlog #3, #8, #259). Owned by core because they
+    # report on the *assistant itself*, not on any one module's domain —
+    # and because CoreModule is the only module guaranteed to be
+    # registered, so "are your modules up?" is answerable even when the
+    # module being asked about failed to load.
+    "modules_status": "core",
+    "explain_routing": "core",
+    "report_mistake": "core",
 
     # --- Mnemosyne (long-term memory) ---
     # "recall"/"remember"/"get_facts" are internal intent names Hecate
@@ -238,6 +246,65 @@ INTENT_MODULE_MAP: dict[str, str] = {
 # JSON-schema enum constraint sent to Ollama (see HestiaNLU._build_schema())
 # and as the fallback whitelist if config/nlu_prompt.txt can't be parsed.
 ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
+
+
+# ---------------------------------------------------------------------------
+# Versioning (backlog #11)
+# ---------------------------------------------------------------------------
+# Clients that integrate against the intent set — the Telegram bot, the web
+# UI's command palette, any future mobile/PWA client, the sync API — cached
+# their own copy of "what intents exist" with no way to tell that the
+# server's copy had changed underneath them. The symptom is a client
+# offering a button for an intent the server no longer routes, or missing
+# one it now does, with no error anywhere.
+#
+# Two values, deliberately separate:
+#
+#   REGISTRY_VERSION   Hand-bumped, semantic. MAJOR when an intent is
+#                      REMOVED or REASSIGNED to a different module (a
+#                      breaking change for any client that hardcoded it);
+#                      MINOR when intents are added (backwards compatible).
+#                      Clients compare major versions to decide whether to
+#                      refuse to start or merely refresh.
+#
+#   registry_fingerprint()  Derived, exact. Changes on ANY edit to the map,
+#                      including ones a human forgot to bump the version
+#                      for. Clients cache it and re-fetch the intent list
+#                      when it differs — no judgement call required.
+#
+# Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
+# tests/test_registry_contract.py asserts the version is well-formed and
+# that the fingerprint is stable across imports.
+REGISTRY_VERSION: str = "2.1.0"
+
+
+def registry_fingerprint() -> str:
+    """
+    Short, stable hash of the full intent->module mapping.
+
+    Order-independent (the map is sorted before hashing) so reordering
+    entries for readability doesn't look like a breaking change, while any
+    real addition, removal or reassignment does.
+    """
+    import hashlib
+
+    payload = ";".join(f"{k}={v}" for k, v in sorted(INTENT_MODULE_MAP.items()))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def registry_info() -> dict:
+    """
+    Version metadata for clients and the /health endpoints.
+
+    Kept as a plain dict (no dataclass) so it can be returned straight
+    from FastAPI and the sync API without a serialiser.
+    """
+    return {
+        "version": REGISTRY_VERSION,
+        "fingerprint": registry_fingerprint(),
+        "intent_count": len(INTENT_MODULE_MAP),
+        "module_count": len(set(INTENT_MODULE_MAP.values())),
+    }
 
 
 def module_for_intent(intent: str) -> str | None:

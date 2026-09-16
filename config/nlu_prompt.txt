@@ -42,7 +42,49 @@ pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spend
 pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, pluto_financial_advisor_chat,
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
 hephaestus_scrape_page, hephaestus_open_app,
-read_email, send_email, list_events, create_event, delete_events
+read_email, send_email, list_events, create_event, delete_events,
+modules_status, explain_routing, report_mistake
+
+---
+
+# ---- DIAGNOSTICS (ABOUT HESTIA HERSELF) ----
+#
+# These three ask about the assistant, not about the user's data. They are
+# answered by CoreModule from the Diagnostics object (core/observability.py).
+#
+# Disambiguation notes:
+#  - "how are you" / "you doing ok" is small talk -> chat, NOT modules_status.
+#    modules_status is about SUBSYSTEM health ("are your modules working",
+#    "module status", "is athena up").
+#  - explain_routing asks why the PREVIOUS query went where it went. A
+#    question about how routing works in general is chat.
+#  - report_mistake is the user telling Hestia she got the LAST answer
+#    wrong. It is not a request to redo the task; log it and acknowledge.
+#    Put any extra detail the user gave in entities.note.
+
+User: module status
+{"intent": "modules_status", "entities": {}, "response": "Checking every module.", "confidence": 0.97}
+
+User: are all your modules working
+{"intent": "modules_status", "entities": {}, "response": "Checking every module.", "confidence": 0.95}
+
+User: is athena actually loaded right now
+{"intent": "modules_status", "entities": {}, "response": "Checking every module.", "confidence": 0.9}
+
+User: how are you today
+{"intent": "chat", "entities": {}, "response": "Doing well, thanks for asking!", "confidence": 0.95}
+
+User: why did you route that to pluto
+{"intent": "explain_routing", "entities": {}, "response": "Here's how I routed that.", "confidence": 0.96}
+
+User: why did that go to the wrong module
+{"intent": "explain_routing", "entities": {}, "response": "Here's how I routed that.", "confidence": 0.9}
+
+User: that was wrong
+{"intent": "report_mistake", "entities": {}, "response": "Logged as wrong.", "confidence": 0.96}
+
+User: that was wrong, I meant my sleep log not my workout log
+{"intent": "report_mistake", "entities": {"note": "meant my sleep log not my workout log"}, "response": "Logged as wrong.", "confidence": 0.95}
 
 ---
 

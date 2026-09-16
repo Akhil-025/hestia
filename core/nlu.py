@@ -11,6 +11,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 from modules.hecate.intent_registry import ALL_INTENTS as _REGISTRY_INTENTS
+from core.intent_aliases import IntentAliasResolver
+from core.nlu_cache import NLUCache
 
 # Fast-path intents: deterministic, no entities needed, no LLM round trip.
 # Kept intentionally small and conservative — only patterns that are
@@ -141,8 +143,19 @@ class HestiaNLU:
     """
 
     def __init__(self, model: str = "mistral", host: str = "localhost",
-                 port: int = 11434, prompt_path: str = "config/nlu_prompt.txt", providers: list = None):
-        """Initialize LLM providers and load system prompt from file."""
+                 port: int = 11434, prompt_path: str = "config/nlu_prompt.txt", providers: list = None,
+                 alias_path: str | None = "config/intent_aliases.yaml",
+                 cache_ttl_seconds: float = 90.0):
+        """
+        Initialize LLM providers and load system prompt from file.
+
+        `alias_path` / `cache_ttl_seconds` control the two pre-LLM
+        shortcuts added for backlog #22 and #28 (see core/intent_aliases.py
+        and core/nlu_cache.py). Both default to on; pass
+        ``alias_path=None`` / ``cache_ttl_seconds=0`` to disable either and
+        send every query to the model, which is what the eval script does
+        so cached/aliased hits can't inflate measured accuracy.
+        """
         self.model = model
         self.base_url = f"http://{host}:{port}"
         self.temperature = 0.1
@@ -155,6 +168,20 @@ class HestiaNLU:
             {"name": "ollama", "model": self.model, "host": host, "port": port}
         ]
         self._memory = None
+
+        # Pre-LLM shortcut layers. Neither can produce an intent outside
+        # the registry: the alias resolver validates its targets against
+        # ALL_INTENTS at load time, and the cache only ever stores results
+        # that already passed _validate_intent() below.
+        self._aliases = IntentAliasResolver(
+            path=alias_path, valid_intents=self.valid_intents
+        )
+        if self._aliases.count:
+            logger.info(
+                "[NLU] %d intent alias phrase(s) loaded from %s.",
+                self._aliases.count, alias_path,
+            )
+        self._cache = NLUCache(ttl_seconds=cache_ttl_seconds)
 
     def _load_prompt(self, path: str) -> str:
         """Load system prompt and few-shot examples from file."""
@@ -224,6 +251,20 @@ class HestiaNLU:
             },
             "required": ["intent", "entities", "response", "confidence"],
         }
+
+    def cache_stats(self) -> dict:
+        """
+        Cache/alias counters, surfaced by ``modules_status`` and
+        ``/health/modules`` so the shortcut layers are observable rather
+        than invisible optimisations.
+        """
+        stats = self._cache.stats()
+        stats["alias_phrases"] = self._aliases.count
+        return stats
+
+    def invalidate_cache(self) -> None:
+        """Drop all cached classifications (used after a prompt reload)."""
+        self._cache.invalidate()
 
     def set_memory(self, memory) -> None:
         """Inject memory reference so NLU can include user facts in prompts."""
@@ -320,6 +361,27 @@ class HestiaNLU:
                 "confidence": 0.98,
             }
 
+        # --- Pre-LLM shortcut 1: repeated-query cache (backlog #28) -----
+        # Keyed on (normalised text + context fingerprint), short TTL, and
+        # failures are never stored — see core/nlu_cache.py. Checked before
+        # the health check so a cached answer still works during a brief
+        # Ollama outage.
+        cached = self._cache.get(text, context)
+        if cached is not None:
+            cached["source"] = "cache"
+            print(f"[NLU] Cache hit -> {cached.get('intent')!r}", file=sys.stderr)
+            return cached
+
+        # --- Pre-LLM shortcut 2: configured phrase aliases (#22) --------
+        # Unambiguous phrasings the small local model keeps getting wrong,
+        # resolved from config/intent_aliases.yaml instead of by growing
+        # the 41 KB prompt file further.
+        aliased = self._aliases.resolve_result(text)
+        if aliased is not None:
+            print(f"[NLU] Alias match -> {aliased['intent']!r}", file=sys.stderr)
+            self._cache.put(text, aliased, context)
+            return aliased
+
         if not self._health_check():
             print("[NLU] Ollama unreachable", file=sys.stderr)
             return {"intent": "chat", "entities": {}, "response": "My backend isn't responding right now.", "confidence": 0.0}
@@ -397,6 +459,10 @@ class HestiaNLU:
             parsed["entities"] = self._clean_amount_entities(resolved_intent, parsed["entities"])
             if resolved_intent == "learn_fact":
                 parsed["entities"] = self._repair_learn_fact(text or "", parsed["entities"])
+            # Only fully-validated results reach here, so nothing the cache
+            # returns later can be an intent the registry doesn't know.
+            parsed.setdefault("source", "nlu")
+            self._cache.put(text, parsed, context)
             return parsed
 
         return {"intent": "chat", "entities": {}, "response": "Sorry, I had trouble understanding that.", "confidence": 0.5}
