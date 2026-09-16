@@ -25,10 +25,16 @@ class CoreModule(BaseModule):
     _INTENTS = {
         "save_name", "take_note", "get_notes", "delete_notes",
         "get_history", "set_preference",
-        "get_system_info", "get_user_info", "chat"
+        "get_system_info", "get_user_info", "chat",
+        # Diagnostics (backlog #3, #8, #259). Answered from the injected
+        # Diagnostics object (core/observability.py) rather than from any
+        # module-specific state, so "are your modules up?" still works
+        # when the module being asked about is the broken one.
+        "modules_status", "explain_routing", "report_mistake",
     }
 
-    def __init__(self, memory, ollama_cfg: dict, llm=None, timezone_name: str = "UTC"):
+    def __init__(self, memory, ollama_cfg: dict, llm=None, timezone_name: str = "UTC",
+                 diagnostics=None):
         self._memory = memory
         self._ollama = ollama_cfg
         self._llm_instance = llm  # HestiaLLM | None — preferred path
@@ -41,6 +47,12 @@ class CoreModule(BaseModule):
         # (see _get_user_info below), so answering with server-local time
         # instead of the user's local time would silently disagree with
         # what Chronos would have said for the exact same question.
+        # Injected by main.Hestia after the orchestrator exists (see
+        # core/observability.Diagnostics). Optional: when absent, the three
+        # diagnostic intents degrade to an honest "diagnostics aren't
+        # wired up" reply instead of raising — CoreModule is constructed
+        # in tests without it.
+        self._diagnostics = diagnostics
         try:
             self._tz = ZoneInfo(timezone_name)
         except (ZoneInfoNotFoundError, KeyError):
@@ -82,12 +94,89 @@ class CoreModule(BaseModule):
         if intent == "set_preference":
             return self._set_preference(entities)
 
+        if intent == "modules_status":
+            return self._modules_status()
+
+        if intent == "explain_routing":
+            return self._explain_routing()
+
+        if intent == "report_mistake":
+            return self._report_mistake(entities, raw)
+
         return {"response": "", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:
         return {}
 
     # ───── handlers ─────
+
+    # -- Diagnostics (backlog #3, #8, #259) --------------------------------
+    #
+    # All three read from the injected Diagnostics object and touch no
+    # other module. They exist as intents (rather than as CLI flags only)
+    # because the moment you actually want them is mid-conversation, when
+    # something just went to the wrong place — including in voice mode,
+    # where there is no CLI to drop to.
+
+    _NO_DIAGNOSTICS = (
+        "Diagnostics aren't wired up in this session, so I can't answer that."
+    )
+
+    def _modules_status(self) -> dict:
+        """One-shot health report across every registered module (#8)."""
+        if self._diagnostics is None:
+            return {"response": self._NO_DIAGNOSTICS, "data": {}, "confidence": 0.3}
+        try:
+            summary = self._diagnostics.status_summary()
+            data = self._diagnostics.module_status()
+        except Exception:
+            logger.exception("modules_status failed.")
+            return {
+                "response": "I couldn't read the module registry just now.",
+                "data": {},
+                "confidence": 0.2,
+            }
+        return {"response": summary, "data": {"modules": data}, "confidence": 0.95}
+
+    def _explain_routing(self) -> dict:
+        """Explain where the *previous* query was routed, and why (#3)."""
+        if self._diagnostics is None:
+            return {"response": self._NO_DIAGNOSTICS, "data": {}, "confidence": 0.3}
+        try:
+            explanation = self._diagnostics.explain_last()
+            data = self._diagnostics.last_decision() or {}
+        except Exception:
+            logger.exception("explain_routing failed.")
+            return {
+                "response": "I couldn't reconstruct that routing decision.",
+                "data": {},
+                "confidence": 0.2,
+            }
+        return {"response": explanation, "data": data, "confidence": 0.95}
+
+    def _report_mistake(self, entities: dict, raw: str) -> dict:
+        """
+        Log an explicit correction against the previous turn (#259).
+
+        The note is whatever the user said beyond the trigger phrase, so
+        "that was wrong, I meant my sleep log" keeps the useful half. The
+        record is a labelled data point for the eval set, not just a
+        logged complaint — see scripts/eval_intents.py.
+        """
+        if self._diagnostics is None:
+            return {"response": self._NO_DIAGNOSTICS, "data": {}, "confidence": 0.3}
+        note = str(entities.get("note") or entities.get("detail") or raw or "")
+        try:
+            message = self._diagnostics.record_feedback(note)
+        except Exception:
+            logger.exception("report_mistake failed.")
+            return {
+                "response": "I couldn't save that feedback, sorry.",
+                "data": {},
+                "confidence": 0.2,
+            }
+        return {"response": message, "data": {"note": note}, "confidence": 0.95}
+
 
     def _chat(self, query: str) -> dict:
         try:

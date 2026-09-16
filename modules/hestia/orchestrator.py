@@ -225,6 +225,12 @@ class HestiaOrchestrator:
         # Used by _synthesize() so synthesis honours the configured model/host/port
         # instead of silently falling back to core.ollama_client's hardcoded defaults.
         self._ollama_cfg: dict = ollama_cfg or {}
+        # Last decision Hecate returned, kept so the routing log and the
+        # "why did you route this there?" intent (backlog #3, #5) can
+        # report the module actually chosen and Hecate's stated reason.
+        # dispatch() returns only a response string, so without this the
+        # routing decision was observable in debug logs and nowhere else.
+        self._last_decision: Optional[dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Registration
@@ -570,20 +576,36 @@ class HestiaOrchestrator:
     # Private – routing
     # ------------------------------------------------------------------
 
+    @property
+    def last_decision(self) -> Optional[dict[str, Any]]:
+        """
+        The most recent routing decision, or None before the first query.
+
+        A copy, so a caller inspecting it (the routing log, the
+        explain_routing intent) can't mutate the orchestrator's state.
+        """
+        with self._lock:
+            return dict(self._last_decision) if self._last_decision else None
+
     def _route(self, raw_query: str, nlu_result: dict[str, Any]) -> dict[str, Any]:
         """Return a Hecate routing decision, falling back gracefully."""
+        decision: dict[str, Any]
         if self._hecate is None:
             logger.debug("Hecate not registered; using fallback decision.")
-            return _FALLBACK_DECISION.copy()
+            decision = _FALLBACK_DECISION.copy()
+        else:
+            try:
+                with self._lock:
+                    active_modules = list(self._ctx.active_modules)
 
-        try:
-            with self._lock:
-                active_modules = list(self._ctx.active_modules)
+                decision = self._hecate.decide(raw_query, nlu_result, active_modules)
+            except Exception:
+                logger.exception("Hecate.decide() failed; using fallback decision.")
+                decision = _FALLBACK_DECISION.copy()
 
-            return self._hecate.decide(raw_query, nlu_result, active_modules)
-        except Exception:
-            logger.exception("Hecate.decide() failed; using fallback decision.")
-            return _FALLBACK_DECISION.copy()
+        with self._lock:
+            self._last_decision = dict(decision)
+        return decision
 
     # ------------------------------------------------------------------
     # Private – context enrichment
