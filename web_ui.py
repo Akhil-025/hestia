@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, Response, jsonify, request, render_template, stream_with_context
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,12 @@ class HestiaWebUI:
         port: int = 5000,
         api_key: Optional[str] = None,
         apollo=None,  # ApolloEngine | None — powers /api/moods
+        pluto=None,  # PlutoEngine | None — powers /api/pluto/*
+        artemis=None,  # ArtemisEngine | None — powers /api/artemis/*
+        chronos=None,  # ChronosEngine | None — powers /api/chronos/*
+        athena=None,  # AthenaEngine | None — powers /api/athena/*
+        stt=None,  # HestiaSTT | None — powers /api/stt
+        tts=None,  # HestiaTTS | None — powers /api/tts
     ) -> None:
         self.memory = memory
         self.skill_loader = skill_loader
@@ -38,6 +44,12 @@ class HestiaWebUI:
         self.host = host
         self.port = port
         self.apollo = apollo
+        self.pluto = pluto
+        self.artemis = artemis
+        self.chronos = chronos
+        self.athena = athena
+        self.stt = stt
+        self.tts = tts
         # Optional shared-secret auth for /api/*. If unset, the API is
         # unauthenticated (fine for strictly-localhost, single-user use —
         # but anything reachable beyond localhost should set this).
@@ -54,7 +66,12 @@ class HestiaWebUI:
         self._register_ui_routes()
         self._register_memory_routes()
         self._register_chat_routes()
+        self._register_voice_routes()
         self._register_admin_routes()
+        self._register_pluto_routes()
+        self._register_artemis_routes()
+        self._register_chronos_routes()
+        self._register_athena_routes()
 
     # ── Startup ─────────────────────────────────────────
 
@@ -298,7 +315,44 @@ class HestiaWebUI:
                 logger.exception("[WebUI] skills error")
                 return jsonify([])
 
+        @app.route("/api/export")
+        def api_export():
+            try:
+                return jsonify({
+                    "facts": self.memory.db.get_all_facts(),
+                    "notes": self.memory.db.get_by_intent("take_note", 1000),
+                    "history": self.memory.db.get_recent_interactions(1000),
+                    "exported_at": datetime.datetime.now().isoformat(),
+                })
+            except Exception:
+                logger.exception("[WebUI] export error")
+                return jsonify({"error": "Failed"}), 500
+
     # ── CHAT ────────────────────────────────────────────
+
+    def _check_rate_limit(self, ip: str) -> bool:
+        """Returns True if the request is allowed, False if the caller
+        should be rejected with 429. Shared by /api/chat and
+        /api/chat/stream so the limit can't be bypassed by switching
+        endpoints."""
+        now = time.monotonic()
+        bucket = self._rate_buckets[ip]
+        bucket[:] = [t for t in bucket if now - t < _RATE_WINDOW]
+        if len(bucket) >= _RATE_LIMIT:
+            return False
+        bucket.append(now)
+        return True
+
+    @staticmethod
+    def _validate_chat_text(body: dict) -> tuple[Optional[str], Optional[tuple]]:
+        """Returns (text, None) on success or (None, (error_body, status))
+        on failure."""
+        text = (body.get("text") or "").strip()
+        if not text:
+            return None, ({"error": "Empty"}, 400)
+        if len(text) > MAX_TEXT_LENGTH:
+            return None, ({"error": "Too long"}, 413)
+        return text, None
 
     def _register_chat_routes(self) -> None:
         @self.app.route("/api/chat", methods=["POST"])
@@ -307,24 +361,16 @@ class HestiaWebUI:
                 return jsonify({"error": "Chat disabled"}), 503
 
             ip = request.remote_addr or "unknown"
-            now = time.monotonic()
-            bucket = self._rate_buckets[ip]
-            bucket[:] = [t for t in bucket if now - t < _RATE_WINDOW]
-            if len(bucket) >= _RATE_LIMIT:
+            if not self._check_rate_limit(ip):
                 return jsonify({"error": "Rate limit exceeded"}), 429
-            bucket.append(now)
 
             if not request.is_json:
                 return jsonify({"error": "JSON required"}), 415
 
             body = request.get_json(silent=True) or {}
-            text = body.get("text", "").strip()
-
-            if not text:
-                return jsonify({"error": "Empty"}), 400
-
-            if len(text) > MAX_TEXT_LENGTH:
-                return jsonify({"error": "Too long"}), 413
+            text, error = self._validate_chat_text(body)
+            if error:
+                return jsonify(error[0]), error[1]
 
             try:
                 response = self.process_fn(text)
@@ -332,6 +378,110 @@ class HestiaWebUI:
             except Exception:
                 logger.exception("[WebUI] chat error")
                 return jsonify({"error": "Failed"}), 500
+
+        @self.app.route("/api/chat/stream", methods=["POST"])
+        def api_chat_stream():
+            if not self.process_fn:
+                return jsonify({"error": "Chat disabled"}), 503
+
+            ip = request.remote_addr or "unknown"
+            if not self._check_rate_limit(ip):
+                return jsonify({"error": "Rate limit exceeded"}), 429
+
+            if not request.is_json:
+                return jsonify({"error": "JSON required"}), 415
+
+            body = request.get_json(silent=True) or {}
+            text, error = self._validate_chat_text(body)
+            if error:
+                return jsonify(error[0]), error[1]
+
+            def generate():
+                try:
+                    response = self.process_fn(text) or "..."
+                    for word in response.split(" "):
+                        yield word + " "
+                except Exception:
+                    logger.exception("[WebUI] chat stream error")
+                    yield "[error generating response]"
+
+            return Response(stream_with_context(generate()), mimetype="text/plain")
+
+    # ── VOICE (STT / TTS) ────────────────────────────────
+    # Wraps core/stt.py + core/tts.py for the web UI's mic button and
+    # per-reply speaker icon. Both engines are normally built for the
+    # local voice loop (mic → speakers); nothing here touches that loop
+    # — self.stt.transcribe_audio() just runs the model over audio we
+    # decoded ourselves, and self.tts.synthesize_wav_bytes() bypasses the
+    # speak()/queue path entirely, so a browser request can't interfere
+    # with (or get cancelled by) local barge-in.
+
+    def _register_voice_routes(self) -> None:
+        @self.app.route("/api/stt", methods=["POST"])
+        def api_stt():
+            if not self.stt:
+                return jsonify({"error": "Voice input not available"}), 503
+
+            audio_file = request.files.get("audio")
+            if not audio_file:
+                return jsonify({"error": "No audio uploaded"}), 400
+
+            raw = audio_file.read()
+            if not raw:
+                return jsonify({"error": "Empty audio"}), 400
+            if len(raw) > 15 * 1024 * 1024:  # 15MB — a few minutes of speech, plenty
+                return jsonify({"error": "Audio too large"}), 413
+
+            try:
+                import ffmpeg
+                import numpy as np
+
+                # Decode whatever the browser recorded (webm/opus, ogg, wav...)
+                # into raw float32 PCM at 16kHz mono — the exact format
+                # HestiaSTT.transcribe_audio() expects.
+                proc = (
+                    ffmpeg
+                    .input("pipe:0")
+                    .output("pipe:1", format="f32le", acodec="pcm_f32le", ac=1, ar=16000)
+                    .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True)
+                )
+                out, err = proc.communicate(input=raw)
+                if proc.returncode != 0:
+                    logger.error(
+                        "[WebUI] stt decode failed: %s",
+                        (err or b"").decode("utf-8", "ignore")[-500:],
+                    )
+                    return jsonify({"error": "Could not decode audio"}), 400
+
+                audio = np.frombuffer(out, dtype=np.float32)
+                text = self.stt.transcribe_audio(audio)
+                return jsonify({"text": text})
+            except Exception:
+                logger.exception("[WebUI] stt error")
+                return jsonify({"error": "Transcription failed"}), 500
+
+        @self.app.route("/api/tts", methods=["POST"])
+        def api_tts():
+            if not self.tts:
+                return jsonify({"error": "Voice output not available"}), 503
+
+            if not request.is_json:
+                return jsonify({"error": "JSON required"}), 415
+
+            body = request.get_json(silent=True) or {}
+            text = (body.get("text") or "").strip()
+            if not text:
+                return jsonify({"error": "Empty text"}), 400
+            text = text[:MAX_TEXT_LENGTH]
+
+            try:
+                wav_bytes = self.tts.synthesize_wav_bytes(text)
+                if not wav_bytes:
+                    return jsonify({"error": "Synthesis failed"}), 500
+                return Response(wav_bytes, mimetype="audio/wav")
+            except Exception:
+                logger.exception("[WebUI] tts error")
+                return jsonify({"error": "Synthesis failed"}), 500
 
     # ── ADMIN ───────────────────────────────────────────
 
@@ -346,6 +496,165 @@ class HestiaWebUI:
                 return jsonify({"status": "ok"})
             except Exception:
                 logger.exception("[WebUI] reload error")
+                return jsonify({"error": "Failed"}), 500
+
+    # ── PLUTO (finance) ─────────────────────────────────
+
+    def _register_pluto_routes(self) -> None:
+        app = self.app
+
+        @app.route("/api/pluto/expenses")
+        def api_pluto_expenses():
+            if not self.pluto:
+                return jsonify([])
+            try:
+                limit = max(1, min(int(request.args.get("limit", 100)), 500))
+                return jsonify(self.pluto.pf_manager.db.get_expenses(limit))
+            except Exception:
+                logger.exception("[WebUI] pluto expenses error")
+                return jsonify([])
+
+        @app.route("/api/pluto/totals")
+        def api_pluto_totals():
+            if not self.pluto:
+                return jsonify([])
+            try:
+                return jsonify({
+                    "by_category": self.pluto.pf_manager.db.get_totals_by_category(),
+                    "grand_total": self.pluto.pf_manager.db.get_grand_total(),
+                })
+            except Exception:
+                logger.exception("[WebUI] pluto totals error")
+                return jsonify({"by_category": [], "grand_total": 0})
+
+        @app.route("/api/pluto/investments")
+        def api_pluto_investments():
+            if not self.pluto:
+                return jsonify([])
+            try:
+                return jsonify(self.pluto.pf_manager.db.get_investments())
+            except Exception:
+                logger.exception("[WebUI] pluto investments error")
+                return jsonify([])
+
+        @app.route("/api/pluto/portfolio")
+        def api_pluto_portfolio():
+            if not self.pluto:
+                return jsonify({"error": "Pluto disabled"}), 503
+            try:
+                return jsonify(self.pluto.portfolio_optimizer.optimize())
+            except Exception:
+                logger.exception("[WebUI] pluto portfolio error")
+                return jsonify({"error": "Failed"}), 500
+
+    # ── ARTEMIS (habits/goals) ───────────────────────────
+
+    def _register_artemis_routes(self) -> None:
+        app = self.app
+
+        @app.route("/api/artemis/habits")
+        def api_artemis_habits():
+            if not self.artemis:
+                return jsonify([])
+            try:
+                habits = self.artemis.tracker.get_habits()
+                return jsonify([h.to_dict() | {"name": name} for name, h in habits.items()])
+            except Exception:
+                logger.exception("[WebUI] artemis habits error")
+                return jsonify([])
+
+        @app.route("/api/artemis/goals")
+        def api_artemis_goals():
+            if not self.artemis:
+                return jsonify([])
+            try:
+                goals = self.artemis.tracker.get_goals()
+                return jsonify([g.to_dict() | {"name": name} for name, g in goals.items()])
+            except Exception:
+                logger.exception("[WebUI] artemis goals error")
+                return jsonify([])
+
+        @app.route("/api/artemis/summary")
+        def api_artemis_summary():
+            if not self.artemis:
+                return jsonify({})
+            try:
+                return jsonify(self.artemis.tracker.summary())
+            except Exception:
+                logger.exception("[WebUI] artemis summary error")
+                return jsonify({})
+
+        @app.route("/api/artemis/habits/<name>/complete", methods=["POST"])
+        def api_artemis_complete_habit(name):
+            if not self.artemis:
+                return jsonify({"error": "Artemis disabled"}), 503
+            try:
+                return jsonify(self.artemis.tracker.complete_habit(name))
+            except Exception:
+                logger.exception("[WebUI] artemis complete_habit error")
+                return jsonify({"error": "Failed"}), 500
+
+    # ── CHRONOS (time/calendar) ──────────────────────────
+
+    def _register_chronos_routes(self) -> None:
+        app = self.app
+
+        @app.route("/api/chronos/now")
+        def api_chronos_now():
+            if not self.chronos:
+                return jsonify({})
+            try:
+                return jsonify(self.chronos.get_context())
+            except Exception:
+                logger.exception("[WebUI] chronos now error")
+                return jsonify({})
+
+        @app.route("/api/chronos/weather")
+        def api_chronos_weather():
+            if not self.chronos:
+                return jsonify({"error": "Chronos disabled"}), 503
+            try:
+                context = {}
+                try:
+                    context = self.memory.get_context() or {}
+                except Exception:
+                    pass
+                return jsonify(self.chronos.handle("get_weather", {}, context))
+            except Exception:
+                logger.exception("[WebUI] chronos weather error")
+                return jsonify({"error": "Failed"}), 500
+
+    # ── ATHENA (document RAG) ────────────────────────────
+
+    def _register_athena_routes(self) -> None:
+        app = self.app
+
+        @app.route("/api/athena/status")
+        def api_athena_status():
+            if not self.athena:
+                return jsonify({})
+            try:
+                return jsonify(self.athena.stats())
+            except Exception:
+                logger.exception("[WebUI] athena status error")
+                return jsonify({})
+
+        @app.route("/api/athena/query", methods=["POST"])
+        def api_athena_query():
+            if not self.athena:
+                return jsonify({"error": "Athena disabled"}), 503
+
+            body = request.get_json(silent=True) or {}
+            query = (body.get("query") or "").strip()
+            if not query:
+                return jsonify({"error": "Empty"}), 400
+            if len(query) > MAX_TEXT_LENGTH:
+                return jsonify({"error": "Too long"}), 413
+
+            try:
+                return jsonify(self.athena.handle("search", {"query": query}, {}))
+            except Exception:
+                logger.exception("[WebUI] athena query error")
                 return jsonify({"error": "Failed"}), 500
 
     # ── STATS ───────────────────────────────────────────

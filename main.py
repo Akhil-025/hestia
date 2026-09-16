@@ -295,13 +295,13 @@ class HestiaBuilder:
                 orchestrator.register(mod)
 
         # Time / calendar / communication
-        orchestrator.register(
-            ChronosEngine(
-                memory=mnemosyne,
-                local_tz=self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
-            )
+        chronos = ChronosEngine(
+            memory=mnemosyne,
+            local_tz=self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
         )
-        orchestrator.register(ArtemisEngine(ollama_cfg=self.ollama_cfg))
+        orchestrator.register(chronos)
+        artemis = ArtemisEngine(ollama_cfg=self.ollama_cfg)
+        orchestrator.register(artemis)
 
         if google_agent:
             # Same config key ChronosEngine uses above — without this,
@@ -337,13 +337,14 @@ class HestiaBuilder:
                 memory=mnemosyne,
             )
         )
-        orchestrator.register(PlutoEngine(ollama_cfg=self.ollama_cfg))
+        pluto = PlutoEngine(ollama_cfg=self.ollama_cfg)
+        orchestrator.register(pluto)
 
         logger.info(
             "Orchestrator ready (%d module(s) registered).",
             len(orchestrator.registered_modules),
         )
-        return orchestrator, apollo
+        return orchestrator, apollo, pluto, artemis, chronos
 
     # -- I/O --------------------------------------------------------------
 
@@ -403,7 +404,17 @@ class HestiaBuilder:
         return HestiaHeartbeat(interval=1800, mnemosyne=mnemosyne)
 
     def build_web_ui(
-        self, mnemosyne: MnemosyneEngine, process_fn, apollo: Optional[ApolloEngine]
+        self,
+        mnemosyne: MnemosyneEngine,
+        process_fn,
+        apollo: Optional[ApolloEngine],
+        pluto: Optional[Any] = None,
+        artemis: Optional[Any] = None,
+        chronos: Optional[Any] = None,
+        athena: Optional[Any] = None,
+        skill_loader: Optional[Any] = None,
+        stt: Optional[HestiaSTT] = None,
+        tts: Optional[HestiaTTS] = None,
     ) -> Optional[Any]:
         try:
             from web_ui import HestiaWebUI
@@ -411,6 +422,13 @@ class HestiaBuilder:
                 memory=mnemosyne,
                 process_fn=process_fn,
                 apollo=apollo,
+                pluto=pluto,
+                artemis=artemis,
+                chronos=chronos,
+                athena=athena,
+                skill_loader=skill_loader,
+                stt=stt,
+                tts=tts,
             )
             web_ui.start()
             logger.info("Web UI started.")
@@ -573,8 +591,8 @@ class Hestia:
         self.google_agent   = optional_modules["google_agent"]
         self.browser_agent: Optional[HestiaBrowserAgent] = optional_modules["browser_agent"]
 
-        self.orchestrator, self.apollo = builder.build_orchestrator(
-            self.mnemosyne, optional_modules
+        self.orchestrator, self.apollo, self.pluto, self.artemis, self.chronos = (
+            builder.build_orchestrator(self.mnemosyne, optional_modules)
         )
 
         self.stt, self.tts, self.wake_detector, self.barge_in = builder.build_io()
@@ -587,7 +605,17 @@ class Hestia:
         self.heartbeat.start()
         logger.info("Heartbeat started (interval=1800 s).")
 
-        self.web_ui = builder.build_web_ui(self.mnemosyne, self.process_text, self.apollo)
+        self.web_ui = builder.build_web_ui(
+            self.mnemosyne,
+            self.process_text,
+            self.apollo,
+            pluto=self.pluto,
+            artemis=self.artemis,
+            chronos=self.chronos,
+            athena=self.athena,
+            stt=self.stt,
+            tts=self.tts,
+        )
 
         self.telegram_bot = builder.build_telegram_bot(self.process_text, self.stt, self.mnemosyne)
 
