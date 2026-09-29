@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 58 ✅ + 2 🟡 out of 280.** Every mark falls in sections 1–5 and 26, plus #259 and #275.
+**Tally: 67 ✅ + 3 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90) and 26, plus #259 and #275.
 
 | Section | Done |
 |---|---|
@@ -19,6 +19,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 3. Mnemosyne | 12 done, 2 partial, of 20 |
 | 4. Athena | 11 of 20 |
 | 5. Iris | 6 of 10 |
+| 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
 | 26. Docs | 2 of 6 (`#245`, `#249`) |
 | 29. Judgment testing | 1 of 3 (`#259`) |
 | 30. Outside ideas | 1 of 20 (`#275`) |
@@ -124,16 +125,16 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 6. Chronos — Time, Scheduling, Reminders
 
-81. `[M]` Add recurring reminders (daily/weekly/custom cron-like), not just one-shot.
-82. `[M]` Add location-aware reminders ("remind me when I get home") if you ever add device location (Mnemosyne already has `get_device_location` — wire it in).
-83. `[Q]` Add snooze support for reminders instead of only fire-once-and-forget.
-84. `[M]` Add natural-language recurring rule parsing ("every weekday at 7am").
-85. `[Q]` Add timezone override per reminder (useful if you travel) instead of one global config timezone.
-86. `[M]` Add a "what's on my plate today" aggregator that merges Chronos reminders + Hermes calendar events + Artemis due goals into one timeline.
-87. `[Q]` Add holiday-aware scheduling (don't fire "study" reminders on days you've marked as holidays).
-88. `[M]` Add weather-triggered suggestions ("rain expected — move your outdoor plan?") by combining `_get_weather` with Dionysus's outing planner.
-89. `[Q]` Add a missed-reminder catch-up on startup (if Hestia was offline when a reminder fired, surface it once on next launch instead of silently dropping it).
-90. `[M]` Add ICS export/import so Chronos reminders can round-trip with any standard calendar app.
+81. ✅ `[M]` Add recurring reminders (daily/weekly/custom cron-like), not just one-shot.
+82. ✅ `[M]` Add location-aware reminders ("remind me when I get home") if you ever add device location (Mnemosyne already has `get_device_location` — wire it in).
+83. ✅ `[Q]` Add snooze support for reminders instead of only fire-once-and-forget.
+84. ✅ `[M]` Add natural-language recurring rule parsing ("every weekday at 7am").
+85. ✅ `[Q]` Add timezone override per reminder (useful if you travel) instead of one global config timezone.
+86. ✅ `[M]` Add a "what's on my plate today" aggregator that merges Chronos reminders + Hermes calendar events + Artemis due goals into one timeline.
+87. ✅ `[Q]` Add holiday-aware scheduling (don't fire "study" reminders on days you've marked as holidays).
+88. 🟡 `[M]` Add weather-triggered suggestions ("rain expected — move your outdoor plan?") by combining `_get_weather` with Dionysus's outing planner.
+89. ✅ `[Q]` Add a missed-reminder catch-up on startup (if Hestia was offline when a reminder fired, surface it once on next launch instead of silently dropping it).
+90. ✅ `[M]` Add ICS export/import so Chronos reminders can round-trip with any standard calendar app.
 
 ## 7. Hermes — Communication & Scheduling
 

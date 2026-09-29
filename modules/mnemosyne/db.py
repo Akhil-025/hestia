@@ -506,28 +506,325 @@ class MnemosyneDB:
                 pass
         return total
 
-    # ── Reminders ─────────────────────────────────────
+# ── Reminders ─────────────────────────────────────
+    #
+    # Time comparisons use SQLite's julianday() rather than comparing the
+    # ISO strings directly. Reminders have historically been stored with
+    # whatever UTC offset the writer happened to have ("...+05:30" from
+    # Chronos, "...+00:00" from Ares), and a plain string comparison of two
+    # different offsets is simply wrong - a 09:00+05:30 reminder (03:30 UTC)
+    # sorts *after* 05:00+00:00 and so fired up to 5.5 hours late.
+    # julianday() understands the offset suffix and normalises to UTC.
 
     def add_reminder(self, text, due_time):
+        """Legacy simple insert. Returns the new row id."""
         with self._lock, self._conn:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "INSERT INTO reminders (text, due_time, status) VALUES (?, ?, 'pending')",
                 (text, due_time)
             )
+            return cur.lastrowid
+
+    def add_reminder_full(
+        self,
+        text,
+        due_time,
+        *,
+        recurrence=None,
+        tz=None,
+        skip_holidays=False,
+        place_label=None,
+        place_lat=None,
+        place_lon=None,
+        radius_m=None,
+        armed=False,
+        snooze_of=None,
+        snooze_count=0,
+        ics_uid=None,
+    ) -> int:
+        """Insert a reminder with the extended (Chronos) attributes."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO reminders
+                    (text, due_time, status, recurrence, tz, skip_holidays,
+                     place_label, place_lat, place_lon, radius_m, armed,
+                     snooze_of, snooze_count, ics_uid)
+                VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    text, due_time, recurrence, tz, 1 if skip_holidays else 0,
+                    place_label, place_lat, place_lon, radius_m,
+                    1 if armed else 0, snooze_of, int(snooze_count or 0), ics_uid,
+                ),
+            )
+            return cur.lastrowid
+
+    def get_reminder(self, reminder_id):
+        row = self._conn.execute(
+            "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_reminders(self, status="pending"):
+        """Reminders with the given status (None = every status), soonest
+        first; location-only reminders (no due time) sort last."""
+        if status is None:
+            cur = self._conn.execute(
+                "SELECT * FROM reminders ORDER BY due_time IS NULL, julianday(due_time), id"
+            )
+        else:
+            cur = self._conn.execute(
+                "SELECT * FROM reminders WHERE status = ? "
+                "ORDER BY due_time IS NULL, julianday(due_time), id",
+                (status,),
+            )
+        return [dict(r) for r in cur.fetchall()]
 
     def get_due_reminders(self, now_iso=None):
+        """
+        Legacy view for callers that only understand ``(id, text)`` pairs
+        (the pre-Chronos-scheduler heartbeat path).
+
+        Deliberately EXCLUDES recurring and location reminders: a caller
+        that just speaks the text and marks the row done would silently
+        destroy a recurring series, so those are left for the Chronos
+        scheduler (``get_due_reminders_full`` + ``advance_reminder``).
+        """
         if now_iso is None:
-            from datetime import datetime
-            now_iso = datetime.utcnow().isoformat()
+            from datetime import datetime, timezone
+            now_iso = datetime.now(timezone.utc).isoformat()
         cur = self._conn.execute(
-            "SELECT id, text FROM reminders WHERE due_time <= ? AND status = 'pending'",
+            "SELECT id, text FROM reminders "
+            "WHERE status = 'pending' AND due_time IS NOT NULL "
+            "AND recurrence IS NULL AND place_lat IS NULL "
+            "AND julianday(due_time) <= julianday(?)",
             (now_iso,)
         )
         return [(row["id"], row["text"]) for row in cur.fetchall()]
 
-    def mark_reminder_done(self, reminder_id):
+    def get_due_reminders_full(self, now_iso=None):
+        """Every pending time-based reminder that is due, as full row dicts,
+        oldest due first."""
+        if now_iso is None:
+            from datetime import datetime, timezone
+            now_iso = datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "SELECT * FROM reminders "
+            "WHERE status = 'pending' AND due_time IS NOT NULL "
+            "AND julianday(due_time) <= julianday(?) "
+            "ORDER BY julianday(due_time), id",
+            (now_iso,)
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def get_location_reminders(self):
+        """Pending reminders triggered by arriving somewhere."""
+        cur = self._conn.execute(
+            "SELECT * FROM reminders WHERE status = 'pending' AND place_lat IS NOT NULL "
+            "ORDER BY id"
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def mark_reminder_done(self, reminder_id, fired_at=None):
+        from datetime import datetime, timezone
+        fired_at = fired_at or datetime.now(timezone.utc).isoformat()
         with self._lock, self._conn:
             self._conn.execute(
-                "UPDATE reminders SET status = 'done' WHERE id = ?",
-                (reminder_id,)
+                "UPDATE reminders SET status = 'done', fired_at = ? WHERE id = ?",
+                (fired_at, reminder_id)
             )
+
+    def claim_reminder(self, reminder_id, fired_at, *, missed=False):
+        """
+        Atomically move a *pending* one-shot reminder to 'done'.
+
+        Returns True only for the caller that actually flipped it, so two
+        concurrent schedulers (Chronos's thread and the heartbeat) can never
+        both speak the same reminder.
+        """
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE reminders SET status = 'done', fired_at = ?, missed = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (fired_at, 1 if missed else 0, reminder_id),
+            )
+            return cur.rowcount == 1
+
+    def advance_reminder(
+        self, reminder_id, expected_due, new_due, new_recurrence, fired_at,
+        *, skipped=0, fired=True, missed=False,
+    ):
+        """
+        Move a recurring reminder to its next occurrence (compare-and-swap on
+        the due time it was read with, so it can't double-advance).
+
+        ``new_due=None`` ends the series (status -> 'done'). ``fired=False``
+        is used when an occurrence was skipped (holiday) rather than spoken,
+        so ``fired_at`` is left as it was.
+        """
+        status = "pending" if new_due is not None else "done"
+        with self._lock, self._conn:
+            if fired:
+                cur = self._conn.execute(
+                    "UPDATE reminders SET due_time = ?, recurrence = ?, status = ?, "
+                    "fired_at = ?, skipped_count = skipped_count + ?, missed = ? "
+                    "WHERE id = ? AND status = 'pending' AND due_time = ?",
+                    (new_due, new_recurrence, status, fired_at, skipped,
+                     1 if missed else 0, reminder_id, expected_due),
+                )
+            else:
+                cur = self._conn.execute(
+                    "UPDATE reminders SET due_time = ?, recurrence = ?, status = ?, "
+                    "skipped_count = skipped_count + ? "
+                    "WHERE id = ? AND status = 'pending' AND due_time = ?",
+                    (new_due, new_recurrence, status, skipped,
+                     reminder_id, expected_due),
+                )
+            return cur.rowcount == 1
+
+    def reschedule_reminder(self, reminder_id, due_time, *, skipped=0):
+        """Set a new due time on a pending reminder (snooze / holiday roll)."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE reminders SET due_time = ?, skipped_count = skipped_count + ? "
+                "WHERE id = ? AND status = 'pending'",
+                (due_time, skipped, reminder_id),
+            )
+            return cur.rowcount == 1
+
+    def set_reminder_status(self, reminder_id, status):
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE reminders SET status = ? WHERE id = ?", (status, reminder_id)
+            )
+            return cur.rowcount == 1
+
+    def set_reminder_armed(self, reminder_id, armed=True):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE reminders SET armed = ? WHERE id = ?",
+                (1 if armed else 0, reminder_id),
+            )
+
+    def claim_location_reminder(self, reminder_id, fired_at):
+        """Atomically fire an armed, pending location reminder."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE reminders SET status = 'done', fired_at = ? "
+                "WHERE id = ? AND status = 'pending' AND armed = 1",
+                (fired_at, reminder_id),
+            )
+            return cur.rowcount == 1
+
+    def most_recent_fired_reminder(self, since_iso=None):
+        """The reminder that fired most recently (optionally not before
+        *since_iso*) - what "snooze it" refers to."""
+        if since_iso:
+            row = self._conn.execute(
+                "SELECT * FROM reminders WHERE fired_at IS NOT NULL "
+                "AND julianday(fired_at) >= julianday(?) "
+                "ORDER BY julianday(fired_at) DESC, id DESC LIMIT 1",
+                (since_iso,),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM reminders WHERE fired_at IS NOT NULL "
+                "ORDER BY julianday(fired_at) DESC, id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def find_reminders_by_text(self, needle, status="pending"):
+        like = "%" + str(needle).strip().lower().replace("%", "").replace("_", "") + "%"
+        if status is None:
+            cur = self._conn.execute(
+                "SELECT * FROM reminders WHERE lower(text) LIKE ? "
+                "ORDER BY julianday(fired_at) DESC, id DESC", (like,))
+        else:
+            cur = self._conn.execute(
+                "SELECT * FROM reminders WHERE status = ? AND lower(text) LIKE ? "
+                "ORDER BY due_time IS NULL, julianday(due_time), id",
+                (status, like),
+            )
+        return [dict(r) for r in cur.fetchall()]
+
+    def find_reminder_by_ics_uid(self, uid):
+        row = self._conn.execute(
+            "SELECT * FROM reminders WHERE ics_uid = ? ORDER BY id DESC LIMIT 1", (uid,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def reminder_exists(self, text, due_time):
+        """True if a *pending* reminder with this text and the same instant exists."""
+        row = self._conn.execute(
+            "SELECT 1 FROM reminders WHERE status = 'pending' AND lower(text) = lower(?) "
+            "AND due_time IS NOT NULL AND julianday(due_time) = julianday(?) LIMIT 1",
+            (text, due_time),
+        ).fetchone()
+        return row is not None
+
+    # ── User-marked holidays (backlog #87) ────────────
+
+    def add_holiday(self, day_iso, label=None):
+        """Returns True if newly added, False if it was already marked (the
+        label is refreshed either way)."""
+        with self._lock, self._conn:
+            existing = self._conn.execute(
+                "SELECT 1 FROM user_holidays WHERE day = ?", (day_iso,)
+            ).fetchone()
+            self._conn.execute(
+                "INSERT INTO user_holidays (day, label) VALUES (?, ?) "
+                "ON CONFLICT(day) DO UPDATE SET label = COALESCE(excluded.label, label)",
+                (day_iso, label),
+            )
+            return existing is None
+
+    def remove_holiday(self, day_iso):
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM user_holidays WHERE day = ?", (day_iso,)
+            )
+            return cur.rowcount == 1
+
+    def list_holidays(self, from_day=None):
+        if from_day:
+            cur = self._conn.execute(
+                "SELECT day, label FROM user_holidays WHERE day >= ? ORDER BY day",
+                (from_day,),
+            )
+        else:
+            cur = self._conn.execute("SELECT day, label FROM user_holidays ORDER BY day")
+        return [{"day": r["day"], "label": r["label"]} for r in cur.fetchall()]
+
+    def get_holiday(self, day_iso):
+        """The user's label for *day_iso* ("" if marked without one), or
+        None if it isn't marked."""
+        row = self._conn.execute(
+            "SELECT label FROM user_holidays WHERE day = ?", (day_iso,)
+        ).fetchone()
+        if row is None:
+            return None
+        return row["label"] or ""
+
+    # ── Named places (backlog #82) ────────────────────
+
+    def set_place(self, label, lat, lon):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO places (label, lat, lon, updated_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(label) DO UPDATE SET lat = excluded.lat, "
+                "lon = excluded.lon, updated_at = CURRENT_TIMESTAMP",
+                (str(label).strip().lower(), float(lat), float(lon)),
+            )
+
+    def get_place(self, label):
+        row = self._conn.execute(
+            "SELECT label, lat, lon FROM places WHERE label = ?",
+            (str(label).strip().lower(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_places(self):
+        cur = self._conn.execute("SELECT label, lat, lon FROM places ORDER BY label")
+        return [dict(r) for r in cur.fetchall()]

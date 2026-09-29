@@ -12,6 +12,80 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Chronos (Time, Scheduling, Reminders)
+
+Completes nine of ten items (#81–#87, #89, #90); **#88 is partial** (see Known gaps). Chronos already contained most of the
+logic; this batch wires it in, fixes what testing turned up, and covers it
+with tests (`tests/test_chronos_recurrence.py`, `test_chronos_engine.py`,
+`test_chronos_wiring.py`, `test_chronos_weather.py`,
+`test_chronos_main_wiring.py`, and standalone `test_chronos_ics.py` and
+`test_chronos_reminders.py` for the iCalendar codec and `ReminderService`).
+
+### Added
+
+- **Recurring reminders (#81, #84).** "every weekday at 7am", "every 2 weeks
+  on monday", "every month on the 31st", "every year on march 5", raw cron
+  literals, `until` / `for N times` limits. Stored as a JSON rule and
+  advanced with a compare-and-swap so it can never double-advance.
+- **Snooze (#83)**, **per-reminder time zones (#85)**, **location reminders
+  (#82)** ("remind me to buy milk when I get home"), **holiday-aware
+  scheduling (#87)**, **missed-reminder catch-up on startup (#89)**, the
+  **"what's on my plate" agenda (#86)**, **weather-triggered suggestions
+  (#88)** and **ICS export/import (#90)**.
+- **Ten new intents**, all owned by `chronos`: `list_reminders`,
+  `cancel_reminder`, `snooze_reminder`, `get_agenda`, `mark_holiday`,
+  `unmark_holiday`, `save_place`, `export_calendar`, `import_calendar`,
+  `weather_plan`. Registry version bumped to 2.8.0 (minor: intents added);
+  `config/nlu_prompt.txt` and `config/intent_aliases.yaml` updated to match.
+- **Schema migration** (`modules/mnemosyne/schema.py`): reminder columns,
+  `user_holidays` and `places` tables, added to existing databases one column
+  at a time. Safe to run on every startup; tested against an old-format DB.
+- **`MnemosyneEngine.add_location_listener`**, called on every GPS or
+  Telegram location update. IP-derived fixes are deliberately not forwarded:
+  they can be kilometres off and would arm or fire location reminders
+  spuriously.
+- **Config options** under `chronos:` (`scheduler_enabled`,
+  `scheduler_interval_seconds`, `default_snooze_minutes`,
+  `skip_public_holidays`, `holiday_country`, `proactive_weather`,
+  `exports_dir`), validated in `core/config_validation.py`. All optional.
+- "nth weekday of the month" repeats ("first monday of every month") are
+  now refused with an explanation instead of silently becoming a different
+  schedule.
+
+### Changed
+
+- `main.py` passes the Chronos options through, attaches Hermes / Artemis /
+  Dionysus to Chronos, and starts and stops its scheduler.
+- When Chronos's scheduler is running, `HestiaHeartbeat.handle_reminders` is
+  set to `False`, so a one-shot reminder is never announced by both.
+- Location reminders read "when you get home" rather than "when you get to
+  home".
+
+### Fixed
+
+- `modules.chronos.recurrence` failed to import (`strip_duration` missing).
+- `parse_duration` read "and" as "an" + "d" (days): "2 hours and 15 minutes"
+  came out as more than a day.
+- `Recurrence.describe()` rejected a time-zone argument, which broke
+  recurring reminders, listing and the agenda.
+- "every month on the 31st" was parsed as "every Monday" ("mon" matched
+  inside "month"); "every year on march 5" ignored the date.
+- Tomorrow's agenda listed today's occurrence of a recurring reminder as
+  "Overdue".
+
+### Known gaps
+
+- **#88 (weather-triggered suggestions) is partial.** Rain assessment, the
+  `weather_plan` intent, the Dionysus indoor idea and the once-a-day
+  proactive warning are tested against a stubbed forecast, but the live
+  Open-Meteo request was never run (blocked in the build sandbox).
+- 13 tests in Athena / Iris / Mnemosyne semantic recall fail in a sandbox
+  with a stubbed ChromaDB (`Collection` has no `upsert` / `delete`); they
+  are unrelated to Chronos and fail identically without these changes.
+  `tests/test_pluto.py` needs `pypfopt`, which was not installed.
+
+---
+
 ## [Unreleased] — Iris (Vision & Media)
 
 Completes 7 of 8 `[Q]`/`[M]` items. `[L]` items out of scope as usual

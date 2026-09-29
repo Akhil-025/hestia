@@ -357,21 +357,32 @@ class HestiaBuilder:
                 orchestrator.register(mod)
 
         # Time / calendar / communication
+        # Chronos options (backlog #81-#90). Every key is optional; the
+        # defaults reproduce the pre-#81 behaviour plus the always-safe
+        # extras (recurring / snooze / ICS), so an old config keeps working.
+        chronos_cfg = self.config.get("chronos", {}) or {}
         chronos = ChronosEngine(
             memory=mnemosyne,
-            local_tz=self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
+            local_tz=chronos_cfg.get("timezone", "Asia/Kolkata"),
+            skip_public_holidays=bool(chronos_cfg.get("skip_public_holidays", False)),
+            holiday_country=chronos_cfg.get("holiday_country"),
+            exports_dir=chronos_cfg.get("exports_dir"),
+            default_snooze_minutes=chronos_cfg.get("default_snooze_minutes", 10),
+            proactive_weather=bool(chronos_cfg.get("proactive_weather", False)),
         )
         orchestrator.register(chronos)
         artemis = ArtemisEngine(ollama_cfg=self.ollama_cfg)
         orchestrator.register(artemis)
 
+        hermes = None
         if google_agent:
             # Same config key ChronosEngine uses above — without this,
             # HermesEngine defaults to UTC and every created event lands
             # offset by the difference between UTC and the user's real
             # timezone (e.g. "3pm" becomes "8:30pm" for Asia/Kolkata).
-            hermes_tz = self.config.get("chronos", {}).get("timezone", "Asia/Kolkata")
-            orchestrator.register(HermesEngine(google_agent, timezone_name=hermes_tz))
+            hermes_tz = chronos_cfg.get("timezone", "Asia/Kolkata")
+            hermes = HermesEngine(google_agent, timezone_name=hermes_tz)
+            orchestrator.register(hermes)
 
         orchestrator.register(
             HephaestusEngine(
@@ -392,13 +403,16 @@ class HestiaBuilder:
         orchestrator.register(
             MetisEngine(ollama_cfg=self.ollama_cfg, memory=mnemosyne)
         )
-        orchestrator.register(
-            DionysusEngine(
-                ollama_cfg=self.ollama_cfg,
-                browser_agent=browser_agent,
-                memory=mnemosyne,
-            )
+        dionysus = DionysusEngine(
+            ollama_cfg=self.ollama_cfg,
+            browser_agent=browser_agent,
+            memory=mnemosyne,
         )
+        orchestrator.register(dionysus)
+        # Chronos is registered before these exist, so hand them over now:
+        # the "what's on my plate" timeline (#86) reads Hermes + Artemis, and
+        # weather-triggered suggestions (#88) can offer Dionysus's indoor plans.
+        chronos.attach_sources(hermes=hermes, artemis=artemis, dionysus=dionysus)
         pluto = PlutoEngine(ollama_cfg=self.ollama_cfg)
         orchestrator.register(pluto)
 
@@ -707,6 +721,22 @@ class Hestia:
         self._init_event_bus()
 
         self.heartbeat = builder.build_heartbeat(self.mnemosyne, diagnostics=self.diagnostics)
+        # Chronos owns reminder delivery (recurring, snooze, location and the
+        # missed-reminder catch-up on startup - backlog #81-#89). When its
+        # scheduler is running the heartbeat must not also fire one-shot
+        # reminders, or each would be announced twice.
+        chronos_cfg = self.config.get("chronos", {}) or {}
+        if chronos_cfg.get("scheduler_enabled", True):
+            try:
+                started = self.chronos.start_scheduler(
+                    chronos_cfg.get("scheduler_interval_seconds")
+                )
+            except Exception:
+                logger.exception("Chronos scheduler failed to start; heartbeat keeps reminders.")
+                started = False
+            if started:
+                self.heartbeat.handle_reminders = False
+                logger.info("Chronos scheduler started; heartbeat reminders disabled.")
         self.heartbeat.start()
         logger.info("Heartbeat started (interval=1800 s).")
 
@@ -1503,6 +1533,13 @@ class Hestia:
             self.heartbeat.stop()
         except Exception:
             logger.debug("heartbeat.stop() raised; ignoring.")
+
+        try:
+            stop_sched = getattr(self.chronos, "stop_scheduler", None)
+            if callable(stop_sched):
+                stop_sched()
+        except Exception:
+            logger.debug("chronos.stop_scheduler() raised; ignoring.")
 
         try:
             bus.shutdown()  # graceful executor shutdown

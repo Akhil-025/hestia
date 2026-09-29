@@ -125,6 +125,17 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "get_weather": "chronos",
     "set_reminder": "chronos",
     "get_holiday": "chronos",
+    # Extended reminders, agenda and calendar interchange (backlog #81-#90).
+    "list_reminders": "chronos",
+    "cancel_reminder": "chronos",
+    "snooze_reminder": "chronos",
+    "get_agenda": "chronos",
+    "mark_holiday": "chronos",
+    "unmark_holiday": "chronos",
+    "save_place": "chronos",
+    "export_calendar": "chronos",
+    "import_calendar": "chronos",
+    "weather_plan": "chronos",
 
     # --- Hermes (Gmail + Google Calendar) ---
     "read_email": "hermes",
@@ -297,7 +308,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.7.0"
+REGISTRY_VERSION: str = "2.8.0"
 
 
 def registry_fingerprint() -> str:

@@ -128,6 +128,9 @@ class MnemosyneEngine(BaseModule):
         self.hestia_llm = hestia_llm
         self.vector_store: Optional[MnemosyneVectorStore] = None
         self.summariser: Optional[Summariser] = None
+        # Callbacks told about every precise device-location update
+        # (Chronos uses this for "remind me when I get home", backlog #82).
+        self._location_listeners: list[Any] = []
 
         if _CHROMA_AVAILABLE:
             self.vector_store = MnemosyneVectorStore(
@@ -616,6 +619,20 @@ class MnemosyneEngine(BaseModule):
             "updated_at": _utc_now(),
         }
         self.db.set_fact(self._DEVICE_LOCATION_KEY, json.dumps(payload), source=source)
+        # A coarse IP-derived fix can be kilometres off, which would make a
+        # location reminder fire (or arm) spuriously - so only GPS-grade
+        # sources are passed on.
+        if source != "ip_geolocation":
+            for listener in list(self._location_listeners):
+                try:
+                    listener(lat, lon, source)
+                except Exception:
+                    logger.exception("Location listener failed; continuing.")
+
+    def add_location_listener(self, callback: Any) -> None:
+        """Register ``callback(lat, lon, source)`` to run on each location update."""
+        if callable(callback) and callback not in self._location_listeners:
+            self._location_listeners.append(callback)
 
     def get_device_location(self) -> Optional[dict]:
         """Return the last known {"lat", "lon", "source", "label", "updated_at"}

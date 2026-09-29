@@ -67,6 +67,14 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     # here offsets every reminder and calendar event.
     ("chronos", (dict,), False),
     ("chronos.timezone", (str,), False),
+    # Reminder features (backlog #81-#90); all optional.
+    ("chronos.skip_public_holidays", (bool,), False),
+    ("chronos.holiday_country", (str,), False),
+    ("chronos.exports_dir", (str,), False),
+    ("chronos.default_snooze_minutes", (int, float), False),
+    ("chronos.proactive_weather", (bool,), False),
+    ("chronos.scheduler_enabled", (bool,), False),
+    ("chronos.scheduler_interval_seconds", (int, float), False),
 
     # Feature flags whose truthiness decides whether a subsystem boots.
     ("webui", (dict,), False),

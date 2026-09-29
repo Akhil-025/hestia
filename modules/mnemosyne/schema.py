@@ -74,7 +74,35 @@ CREATE TABLE IF NOT EXISTS reminders (
     text TEXT,
     due_time TIMESTAMP,
     status TEXT DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Chronos extended reminders (backlog #81-#90). Every column below is
+    -- nullable / defaulted so rows written by older code stay valid.
+    recurrence TEXT,                    -- JSON rule (#81/#84); NULL = one-shot
+    tz TEXT,                            -- per-reminder IANA zone (#85)
+    skip_holidays INTEGER DEFAULT 0,    -- honour marked holidays (#87)
+    place_label TEXT,                   -- location trigger (#82)
+    place_lat REAL,
+    place_lon REAL,
+    radius_m REAL,
+    armed INTEGER DEFAULT 0,            -- location reminder has left the area
+    snooze_of INTEGER,                  -- id of the reminder this snoozes
+    snooze_count INTEGER DEFAULT 0,     -- (#83)
+    fired_at TIMESTAMP,
+    skipped_count INTEGER DEFAULT 0,    -- occurrences skipped for holidays
+    missed INTEGER DEFAULT 0,           -- fired late after downtime (#89)
+    ics_uid TEXT                        -- calendar UID for import dedupe (#90)
+);
+
+CREATE TABLE IF NOT EXISTS user_holidays (
+    day TEXT PRIMARY KEY,               -- YYYY-MM-DD
+    label TEXT
+);
+
+CREATE TABLE IF NOT EXISTS places (
+    label TEXT PRIMARY KEY,             -- lower-cased name, e.g. "home"
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_reminders_due_time ON reminders(due_time);
@@ -89,6 +117,7 @@ def init_db(db_path: str):
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA)
         _migrate_facts_columns(conn)
+        _migrate_reminders_columns(conn)
         conn.commit()
 
 
@@ -123,3 +152,37 @@ def _migrate_facts_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE facts SET last_accessed = created_at WHERE last_accessed IS NULL"
     )
+
+
+# Columns added to `reminders` for Chronos (backlog #81-#90). Same pattern as
+# the facts migration above: `CREATE TABLE IF NOT EXISTS` never alters an
+# existing table, so a database created before these features needs the
+# columns added one by one. Duplicate-column errors are the "already there"
+# signal, which keeps init_db safe to run on every startup.
+_REMINDERS_MIGRATION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("recurrence", "TEXT"),
+    ("tz", "TEXT"),
+    ("skip_holidays", "INTEGER DEFAULT 0"),
+    ("place_label", "TEXT"),
+    ("place_lat", "REAL"),
+    ("place_lon", "REAL"),
+    ("radius_m", "REAL"),
+    ("armed", "INTEGER DEFAULT 0"),
+    ("snooze_of", "INTEGER"),
+    ("snooze_count", "INTEGER DEFAULT 0"),
+    ("fired_at", "TIMESTAMP"),
+    ("skipped_count", "INTEGER DEFAULT 0"),
+    ("missed", "INTEGER DEFAULT 0"),
+    ("ics_uid", "TEXT"),
+)
+
+
+def _migrate_reminders_columns(conn: sqlite3.Connection) -> None:
+    for column, coltype in _REMINDERS_MIGRATION_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE reminders ADD COLUMN {column} {coltype}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_ics_uid ON reminders(ics_uid)")

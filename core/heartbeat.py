@@ -26,6 +26,10 @@ class HestiaHeartbeat:
         self._last_review_date = None         # tracks date of last low-confidence review
         self._last_weekly_review_date = None  # tracks date of last per-intent accuracy review
         self._reminder_last_fired: dict = {}  # task_text -> timestamp
+        # Set to False by main.py once ChronosEngine's own scheduler has taken
+        # over reminder delivery (backlog #81-#89), so a one-shot reminder is
+        # never announced by both.
+        self.handle_reminders = True
 
     def start(self) -> None:
         self._running = True
@@ -41,7 +45,7 @@ class HestiaHeartbeat:
             time.sleep(self.interval)
 
     def _run_heartbeat(self) -> None:
-        if self.mnemosyne:
+        if self.mnemosyne and self.handle_reminders:
             reminders = self.mnemosyne.get_due_reminders()
             for rid, text in reminders:
                 bus.emit("speak", {"text": f"Reminder: {text}"})

@@ -134,6 +134,99 @@ set_reminder:
   - "mujhe yaad dilana"
 
 # --- Mnemosyne: facts ------------------------------------------------------
+# --- Chronos: reminder management (backlog #81-#90) ------------------------
+# Prefix/exact phrases only - each is unambiguous on its own and none begins
+# with "remind me" (that stays with set_reminder above).
+list_reminders:
+  - "list my reminders"
+  - "show my reminders"
+  - "show me my reminders"
+  - "what reminders do i have"
+  - "what are my reminders"
+  - "my upcoming reminders"
+  - phrase: "reminders"
+    match: exact
+
+cancel_reminder:
+  - "cancel my reminder"
+  - "cancel the reminder"
+  - "cancel reminder"
+  - "delete my reminder"
+  - "delete the reminder"
+  - "remove my reminder"
+  - "remove the reminder"
+  - "cancel all my reminders"
+  - "delete all my reminders"
+
+snooze_reminder:
+  - phrase: "snooze"
+    match: exact
+  - "snooze that"
+  - "snooze it"
+  - "snooze the"
+  - "snooze for"
+  - "snooze my"
+
+get_agenda:
+  - "what's on my plate"
+  - "whats on my plate"
+  - "what is on my plate"
+  - "what's my agenda"
+  - "whats my agenda"
+  - "my agenda"
+  - "what does my day look like"
+  - "what's my day look like"
+
+mark_holiday:
+  - "mark tomorrow as a holiday"
+  - "mark today as a holiday"
+  - "mark it as a holiday"
+  - "mark the day as a holiday"
+  - "i'm on leave"
+  - "im on leave"
+  - "i am on leave"
+  - "i'm on holiday"
+  - "im on holiday"
+
+unmark_holiday:
+  - "unmark tomorrow as a holiday"
+  - "unmark today as a holiday"
+  - "unmark it as a holiday"
+  - "unmark the holiday"
+  - "remove the holiday"
+  - "i'm back from leave"
+
+save_place:
+  - "save my location as"
+  - "save this place as"
+  - "save this location as"
+  - "remember this place as"
+  - "this is my home"
+  - "this is my office"
+  - "this is my work"
+
+export_calendar:
+  - "export my reminders"
+  - "export reminders"
+  - "export my calendar"
+  - "export to ics"
+  - "give me an ics"
+  - "download my reminders"
+
+import_calendar:
+  - "import my reminders"
+  - "import reminders"
+  - "import an ics"
+  - "import this ics"
+  - "import my calendar file"
+  - "import the calendar file"
+
+weather_plan:
+  - "will the rain ruin"
+  - "will it rain on my plans"
+  - "is the weather ok for my plans"
+  - "should i move my outdoor"
+
 learn_fact:
   - "remember that"
   - "make a note that i"

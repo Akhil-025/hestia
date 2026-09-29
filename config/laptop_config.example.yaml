@@ -92,6 +92,14 @@ ollama:
 # UTC if this is missing, which will look "wrong" for any non-UTC user.
 chronos:
   timezone: "Asia/Kolkata"
+  # Reminder options (all optional; defaults shown).
+  scheduler_enabled: true            # background loop that fires reminders
+  scheduler_interval_seconds: 30     # how often it checks what is due
+  default_snooze_minutes: 10         # length of "snooze" when you don't say
+  skip_public_holidays: false        # reminders marked "skip holidays" also skip public ones
+  holiday_country: "IN"              # ISO code used for public-holiday lookups
+  proactive_weather: false           # warn once each morning if rain threatens an outdoor plan
+  exports_dir: "data/exports"        # where ICS exports are written
 
 # LLM providers (priority order)
 llm:

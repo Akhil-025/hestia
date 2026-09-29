@@ -30,6 +30,9 @@ the input language or script:
 
 Valid intents:
 get_time, get_date, get_weather, set_reminder, get_holiday,
+list_reminders, cancel_reminder, snooze_reminder, get_agenda,
+mark_holiday, unmark_holiday, save_place, export_calendar,
+import_calendar, weather_plan,
 apollo_lookup_food, apollo_suggest_exercise,
 pluto_convert_currency, pluto_company_lookup, pluto_analyze_asset,
 dionysus_recommend_recipe, suggest_activity,
@@ -740,6 +743,91 @@ User: is 2026-01-26 a holiday in India
 
 User: what public holidays are there in the US this year
 {"intent": "get_holiday", "entities": {"country": "US"}, "response": "Checking the holiday calendar.", "confidence": 0.9}
+
+# ---- REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS ----
+#
+# set_reminder also covers recurring reminders ("every weekday at 7am"),
+# location reminders ("when I get home") and per-reminder time zones
+# ("9am London time"). Pass the user's wording through in the entities; the
+# module parses the rule itself, so do not invent cron strings.
+
+User: remind me to take my vitamins every weekday at 7am
+{"intent": "set_reminder", "entities": {"task": "take my vitamins", "time": "07:00"}, "response": "Recurring reminder set.", "confidence": 0.94}
+
+User: remind me to water the plants every sunday
+{"intent": "set_reminder", "entities": {"task": "water the plants"}, "response": "Recurring reminder set.", "confidence": 0.92}
+
+User: remind me to call the bank at 9am London time
+{"intent": "set_reminder", "entities": {"task": "call the bank", "time": "09:00", "timezone": "London"}, "response": "Reminder set.", "confidence": 0.93}
+
+User: remind me to buy milk when I get home
+{"intent": "set_reminder", "entities": {"task": "buy milk"}, "response": "Location reminder set.", "confidence": 0.92}
+
+User: remind me to study every evening but not on holidays
+{"intent": "set_reminder", "entities": {"task": "study"}, "response": "Recurring reminder set.", "confidence": 0.9}
+
+User: what reminders do I have
+{"intent": "list_reminders", "entities": {}, "response": "Checking your reminders.", "confidence": 0.95}
+
+User: show my upcoming reminders
+{"intent": "list_reminders", "entities": {}, "response": "Checking your reminders.", "confidence": 0.94}
+
+User: did I miss any reminders
+{"intent": "list_reminders", "entities": {}, "response": "Checking your reminders.", "confidence": 0.85}
+
+User: cancel the gym reminder
+{"intent": "cancel_reminder", "entities": {"task": "gym"}, "response": "Cancelling it.", "confidence": 0.94}
+
+User: delete all my reminders
+{"intent": "cancel_reminder", "entities": {}, "response": "Cancelling them.", "confidence": 0.9}
+
+User: snooze that for 10 minutes
+{"intent": "snooze_reminder", "entities": {"duration": "10 minutes"}, "response": "Snoozing.", "confidence": 0.96}
+
+User: snooze the dentist reminder for an hour
+{"intent": "snooze_reminder", "entities": {"task": "dentist", "duration": "1 hour"}, "response": "Snoozing.", "confidence": 0.95}
+
+User: remind me again in 15 minutes
+{"intent": "snooze_reminder", "entities": {"duration": "15 minutes"}, "response": "Snoozing.", "confidence": 0.85}
+
+User: what's on my plate today
+{"intent": "get_agenda", "entities": {}, "response": "Pulling together your day.", "confidence": 0.96}
+
+User: what does my day look like tomorrow
+{"intent": "get_agenda", "entities": {"date": "tomorrow"}, "response": "Pulling together tomorrow.", "confidence": 0.94}
+
+User: give me my agenda for friday
+{"intent": "get_agenda", "entities": {"date": "friday"}, "response": "Pulling together Friday.", "confidence": 0.93}
+
+User: mark tomorrow as a holiday
+{"intent": "mark_holiday", "entities": {"date": "tomorrow"}, "response": "Marked as a holiday.", "confidence": 0.94}
+
+User: I'm on leave from monday to wednesday
+{"intent": "mark_holiday", "entities": {"label": "leave"}, "response": "Marked as a holiday.", "confidence": 0.88}
+
+User: unmark tomorrow as a holiday
+{"intent": "unmark_holiday", "entities": {"date": "tomorrow"}, "response": "Holiday removed.", "confidence": 0.94}
+
+User: save my location as home
+{"intent": "save_place", "entities": {"place": "home"}, "response": "Saving the place.", "confidence": 0.95}
+
+User: this is my office
+{"intent": "save_place", "entities": {"place": "office"}, "response": "Saving the place.", "confidence": 0.82}
+
+User: export my reminders to a calendar file
+{"intent": "export_calendar", "entities": {}, "response": "Exporting your reminders.", "confidence": 0.95}
+
+User: give me an ics file of my reminders
+{"intent": "export_calendar", "entities": {}, "response": "Exporting your reminders.", "confidence": 0.94}
+
+User: import reminders from my calendar file
+{"intent": "import_calendar", "entities": {}, "response": "Importing.", "confidence": 0.93}
+
+User: will the rain ruin my plans today
+{"intent": "weather_plan", "entities": {}, "response": "Checking the forecast against your plans.", "confidence": 0.9}
+
+User: is it going to rain during my run tomorrow
+{"intent": "weather_plan", "entities": {"date": "tomorrow", "activity": "run"}, "response": "Checking the forecast.", "confidence": 0.9}
 
 User: take a note: buy milk
 {"intent": "take_note", "entities": {"content": "buy milk"}, "response": "Note saved.", "confidence": 0.96}
