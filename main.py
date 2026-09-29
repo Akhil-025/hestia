@@ -109,6 +109,10 @@ import yaml
 
 from core.barge_in import BargeInListener
 from core.config_validation import ConfigError, validate_config, validate_or_raise
+from core.module_loader import discover_skills
+from core.query_splitter import candidate_segments
+from core.intent_chains import apply_chain, detect_chain_reference
+from core.hot_reload import FileWatcher
 from core.browser_agent import HestiaBrowserAgent
 from core.event_bus import bus
 from core.heartbeat import HestiaHeartbeat
@@ -317,7 +321,14 @@ class HestiaBuilder:
         google_agent = optional_modules.get("google_agent")
         browser_agent = optional_modules.get("browser_agent")
 
-        orchestrator = HestiaOrchestrator(ollama_cfg=self.ollama_cfg)
+        orchestrator = HestiaOrchestrator(
+            ollama_cfg=self.ollama_cfg,
+            # Backlog #12. Configurable via `hecate.session_ttl_seconds`
+            # in laptop_config.yaml; defaults to 30 minutes if unset.
+            session_ttl_seconds=float(
+                self.config.get("hecate", {}).get("session_ttl_seconds", 1800)
+            ),
+        )
         orchestrator.register_hecate(HecateEngine())
 
         # Core – always first so chat fallback is always available.
@@ -391,6 +402,23 @@ class HestiaBuilder:
         pluto = PlutoEngine(ollama_cfg=self.ollama_cfg)
         orchestrator.register(pluto)
 
+        # Drop-in skills (backlog #9): single-file BaseModule subclasses
+        # under `skills.path`, auto-discovered and registered here rather
+        # than requiring an edit to this method for every new one. See
+        # core/module_loader.py for the file convention. Every built-in
+        # module above is already registered by this point, so a skill
+        # cannot accidentally shadow one — discover_skills() checks
+        # registered_modules and skips any name collision.
+        skills_cfg = self.config.get("skills", {})
+        if skills_cfg.get("enabled", True):
+            for skill in discover_skills(
+                skills_cfg.get("path", "skills"),
+                ollama_cfg=self.ollama_cfg,
+                memory=mnemosyne,
+                skip_names=orchestrator.registered_modules,
+            ):
+                orchestrator.register(skill)
+
         logger.info(
             "Orchestrator ready (%d module(s) registered).",
             len(orchestrator.registered_modules),
@@ -451,8 +479,15 @@ class HestiaBuilder:
 
     # -- Heartbeat / web UI / sync API ------------------------------------
 
-    def build_heartbeat(self, mnemosyne: MnemosyneEngine) -> HestiaHeartbeat:
-        return HestiaHeartbeat(interval=1800, mnemosyne=mnemosyne)
+    def build_heartbeat(
+        self, mnemosyne: MnemosyneEngine, diagnostics: Any = None
+    ) -> HestiaHeartbeat:
+        # diagnostics powers the nightly low-confidence review (backlog
+        # #6); optional, so a heartbeat built without one just never runs
+        # that job, same as every other diagnostics-gated feature.
+        return HestiaHeartbeat(
+            interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics
+        )
 
     def build_web_ui(
         self,
@@ -616,7 +651,8 @@ class Hestia:
 
     def __init__(self, config_path: str | Path = _DEFAULT_CONFIG) -> None:
         logger.info("Initialising Hestia…")
-        self.config = _load_config(Path(config_path))
+        self._config_path = Path(config_path)
+        self.config = _load_config(self._config_path)
         builder = HestiaBuilder(self.config)
 
         # Derived config sections (read-only after __init__)
@@ -670,7 +706,7 @@ class Hestia:
         # -- Wiring: connect already-built subsystems together -------------
         self._init_event_bus()
 
-        self.heartbeat = builder.build_heartbeat(self.mnemosyne)
+        self.heartbeat = builder.build_heartbeat(self.mnemosyne, diagnostics=self.diagnostics)
         self.heartbeat.start()
         logger.info("Heartbeat started (interval=1800 s).")
 
@@ -691,6 +727,8 @@ class Hestia:
         builder.start_sync_api(
             self.mnemosyne, diagnostics=self.diagnostics, nlu=self.nlu
         )
+
+        self._start_hot_reload_watchers()
 
         logger.info("Hestia is ready.")
 
@@ -779,28 +817,36 @@ class Hestia:
         logger.info("You: %s", cleaned)
 
         with Timer() as turn_timer:
-            try:
-                context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
-                nlu_result = self.nlu.understand(cleaned, context)
-            except Exception:
-                logger.exception("NLU failed for input=%r.", cleaned[:80])
-                nlu_result = {"intent": "chat", "entities": {}, "response": ""}
+            multi = self._try_multi_intent(cleaned)
+            if multi is not None:
+                response, nlu_result = multi
+            else:
+                try:
+                    context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
+                    nlu_result = self.nlu.understand(cleaned, context)
+                except Exception:
+                    logger.exception("NLU failed for input=%r.", cleaned[:80])
+                    nlu_result = {"intent": "chat", "entities": {}, "response": ""}
 
-            try:
-                response = self.orchestrator.dispatch(cleaned, nlu_result)
-            except Exception:
-                logger.exception("Orchestrator dispatch failed.")
-                response = "I'm sorry, something went wrong."
+                try:
+                    response = self.orchestrator.dispatch(cleaned, nlu_result)
+                except Exception:
+                    logger.exception("Orchestrator dispatch failed.")
+                    response = "I'm sorry, something went wrong."
 
         response = _postprocess(response)
 
         # Every classification + routing decision, one JSON line each
         # (backlog #5). Best-effort: observability must never be the
-        # reason a query fails.
-        try:
-            self._log_routing(cleaned, nlu_result, turn_timer.ms)
-        except Exception:
-            logger.debug("Routing log failed; continuing.")
+        # reason a query fails. Skipped for a committed multi-intent split
+        # — _try_multi_intent already logged one record per segment, which
+        # is the accurate picture; a third combined record here would just
+        # misattribute two different routing decisions to one module.
+        if nlu_result.get("source") != "multi_intent":
+            try:
+                self._log_routing(cleaned, nlu_result, turn_timer.ms)
+            except Exception:
+                logger.debug("Routing log failed; continuing.")
 
         logger.info("Hestia: %s", response)
 
@@ -824,6 +870,232 @@ class Hestia:
         )
 
         return response
+
+    # ------------------------------------------------------------------
+    # Multi-intent queries (backlog #13)
+    # ------------------------------------------------------------------
+
+    def _try_multi_intent(self, cleaned: str) -> Optional[tuple[str, dict]]:
+        """
+        Attempt to split *cleaned* into two independent requests and
+        dispatch each separately — "log my workout and tell me the
+        weather" should do both, not whichever one the NLU happened to
+        pick for the whole sentence.
+
+        Returns ``(combined_response, representative_nlu_result)`` if a
+        split was committed to, or ``None`` to fall through to the normal
+        single-query path in ``process_text``.
+
+        A split is committed to only when BOTH candidate segments
+        independently classify — via a real ``self.nlu.understand()``
+        call each, not a guess from ``core.query_splitter``'s string
+        heuristic alone — to two DIFFERENT, concrete (non-``chat``),
+        REGISTERED intents. That's deliberately a much higher bar than
+        "the text contains the word 'and'": a wrong split candidate costs
+        one discarded NLU call, never a wrong action, because nothing is
+        dispatched until both halves already look like two genuine,
+        distinct requests. "log my workout and how I felt" (one request,
+        two clauses) fails this bar — the second half has no concrete
+        intent of its own — and falls through to single-query handling,
+        same as before this feature existed.
+        """
+        segments = candidate_segments(cleaned)
+        if len(segments) != 2:
+            return None
+
+        results: list[dict] = []
+        for segment in segments:
+            try:
+                context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
+                results.append(self.nlu.understand(segment, context))
+            except Exception:
+                logger.exception(
+                    "Multi-intent candidate classification failed for "
+                    "segment %r; falling back to single-query handling.",
+                    segment[:80],
+                )
+                return None
+
+        intents = [r.get("intent", "chat") for r in results]
+        if (
+            intents[0] == "chat"
+            or intents[1] == "chat"
+            or intents[0] == intents[1]
+            or module_for_intent(intents[0]) is None
+            or module_for_intent(intents[1]) is None
+        ):
+            return None
+
+        logger.info(
+            "Multi-intent split: %r -> [%r (%s), %r (%s)]",
+            cleaned[:80], segments[0][:40], intents[0], segments[1][:40], intents[1],
+        )
+
+        responses: list[str] = []
+        for i, (segment, result) in enumerate(zip(segments, results)):
+            # Intent chaining (backlog #24): "summarize this and add IT to
+            # my reading list" — the second segment refers back to the
+            # first segment's result rather than carrying its own
+            # content. Detected purely from the second segment's own
+            # text (see core/intent_chains.py); only applies from segment
+            # 0 into segment 1, since a two-segment split has nowhere
+            # else for a reference to point.
+            if i == 1 and responses:
+                chain_key = detect_chain_reference(segment, intents[1])
+                if chain_key is not None:
+                    result = dict(result)
+                    result["entities"] = apply_chain(
+                        result.get("entities", {}), chain_key, responses[0]
+                    )
+                    logger.info(
+                        "Chained segment 2 (%r) off segment 1's result via "
+                        "entity %r.", intents[1], chain_key,
+                    )
+
+            try:
+                raw = self.orchestrator.dispatch(segment, result)
+            except Exception:
+                logger.exception(
+                    "Multi-intent dispatch failed for segment %r.", segment[:80]
+                )
+                raw = "something went wrong with that part"
+            piece = _postprocess(raw).strip()
+            # Each segment is logged individually here (its own accurate
+            # module/reason/confidence) rather than once at the end for
+            # the combined pair — see process_text's guard on
+            # nlu_result["source"] == "multi_intent", which skips a
+            # second, misattributing log entry for the pair as a whole.
+            try:
+                self._log_routing(segment, result, 0.0)
+            except Exception:
+                logger.debug("Routing log failed for multi-intent segment; continuing.")
+            responses.append(piece)
+
+        combined = " Also, ".join(
+            r if r.rstrip().endswith((".", "!", "?")) else f"{r}."
+            for r in responses if r
+        )
+        representative = {
+            "intent": "multi_intent",
+            "entities": {},
+            "response": "",
+            "confidence": min(
+                float(r.get("confidence", 0.0) or 0.0) for r in results
+            ),
+            "source": "multi_intent",
+        }
+        return combined or "Done.", representative
+
+    # ------------------------------------------------------------------
+    # Hot reload (backlog #15)
+    # ------------------------------------------------------------------
+
+    def _start_hot_reload_watchers(self) -> None:
+        """
+        Start the two file watchers described in core/hot_reload.py's
+        module docstring: a full reload for the NLU prompt, and a
+        detect-and-validate-only watcher for the main config.
+
+        Best-effort like the rest of observability: a watcher that fails
+        to start (e.g. the prompt file was deleted between startup and
+        here) is logged and skipped, never fatal — hot reload is a
+        development convenience, not something a query's correctness
+        depends on.
+        """
+        self._hot_reload_watchers: list[FileWatcher] = []
+
+        prompt_path = getattr(self.nlu, "_prompt_path", None)
+        if prompt_path:
+            try:
+                watcher = FileWatcher(prompt_path, self.nlu.reload_prompt)
+                watcher.start()
+                self._hot_reload_watchers.append(watcher)
+                logger.info("Watching %s for hot reload.", prompt_path)
+            except Exception:
+                logger.exception("Could not start prompt hot-reload watcher.")
+
+        try:
+            self._config_snapshot = dict(self.config)
+            watcher = FileWatcher(self._config_path, self._on_config_file_changed)
+            watcher.start()
+            self._hot_reload_watchers.append(watcher)
+            logger.info("Watching %s for changes.", self._config_path)
+        except Exception:
+            logger.exception("Could not start config change watcher.")
+
+    def _on_config_file_changed(self) -> None:
+        """
+        Detect-and-report handler for `laptop_config.yaml` (backlog #15).
+
+        Deliberately does NOT re-wire any subsystem — see
+        core/hot_reload.py's module docstring for why most config keys
+        can't be safely hot-applied. What this DOES do: re-validate the
+        edited file exactly as startup would (so a typo is caught in
+        seconds, not at the next restart), and log which top-level
+        sections changed, so tuning a value and wondering "did that even
+        take" has an immediate, honest answer — "no, and here's why" or
+        "yes, but not until you restart".
+        """
+        try:
+            with self._config_path.open("r", encoding="utf-8") as fh:
+                new_config = yaml.safe_load(fh)
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning(
+                "%s changed but could not be read: %s", self._config_path, exc
+            )
+            return
+
+        if not isinstance(new_config, dict):
+            logger.warning(
+                "%s changed but is no longer a YAML mapping; ignoring.",
+                self._config_path,
+            )
+            return
+
+        report = validate_config(new_config)
+        for warning in report.warnings:
+            logger.warning("Config: %s", warning)
+        if not report.ok:
+            logger.error(
+                "%s changed but is now invalid — the running process is "
+                "UNAFFECTED (it keeps the config it started with), but a "
+                "restart right now would fail:\n%s",
+                self._config_path, report.format(),
+            )
+            return
+
+        old_keys = set(self._config_snapshot)
+        new_keys = set(new_config)
+        changed = sorted(
+            k for k in old_keys & new_keys
+            if self._config_snapshot.get(k) != new_config.get(k)
+        )
+        added = sorted(new_keys - old_keys)
+        removed = sorted(old_keys - new_keys)
+        self._config_snapshot = dict(new_config)
+
+        if not (changed or added or removed):
+            return  # touched but not actually different (e.g. a re-save)
+
+        parts = []
+        if changed:
+            parts.append(f"changed: {', '.join(changed)}")
+        if added:
+            parts.append(f"added: {', '.join(added)}")
+        if removed:
+            parts.append(f"removed: {', '.join(removed)}")
+        logger.info(
+            "%s changed and is valid (%s). Most settings take effect on "
+            "the next restart — nothing was hot-applied.",
+            self._config_path, "; ".join(parts),
+        )
+
+    def _stop_hot_reload_watchers(self) -> None:
+        for watcher in getattr(self, "_hot_reload_watchers", []):
+            try:
+                watcher.stop()
+            except Exception:
+                logger.debug("Hot-reload watcher stop() raised; ignoring.")
 
     # ------------------------------------------------------------------
     # Observability helpers (backlog #1, #3, #5)
@@ -1212,6 +1484,11 @@ class Hestia:
     def _shutdown(self) -> None:
         """Gracefully stop background services."""
         logger.info("Shutting down Hestia…")
+        try:
+            self._stop_hot_reload_watchers()
+        except Exception:
+            logger.debug("_stop_hot_reload_watchers() raised; ignoring.")
+
         try:
             # force=True: a mid-capture barge-in listener would otherwise
             # wait for its own natural end-of-utterance (up to

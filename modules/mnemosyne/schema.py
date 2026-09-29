@@ -15,7 +15,20 @@ CREATE TABLE IF NOT EXISTS facts (
     source TEXT,
     confidence REAL DEFAULT 1.0,
     created_at TIMESTAMP,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMP,
+    -- Added for backlog #36 (expiry/decay) and #45 (importance scoring).
+    -- last_accessed starts equal to created_at (set at INSERT time by
+    -- MnemosyneDB.set_fact) and advances whenever the fact is recalled —
+    -- see MnemosyneDB.touch_fact. access_count is the raw reference
+    -- count; importance is an explicit 0..1 user-settable multiplier,
+    -- separate from confidence (confidence is "how sure am I this is
+    -- true"; importance is "how much should this matter for ranking even
+    -- if true"). stale is set by the decay job (#36) to flag — never
+    -- silently delete — a fact that hasn't been touched in a long time.
+    last_accessed TIMESTAMP,
+    access_count INTEGER DEFAULT 0,
+    importance REAL DEFAULT 0.5,
+    stale INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS summaries (
@@ -75,4 +88,38 @@ def init_db(db_path: str):
     """Initializes the database at db_path with the Mnemosyne schema."""
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate_facts_columns(conn)
         conn.commit()
+
+
+# Columns added to `facts` after the table already existed in the wild
+# (backlog #36, #45). `CREATE TABLE IF NOT EXISTS` above is a no-op on an
+# existing table, so an existing database needs these added explicitly.
+# ALTER TABLE ... ADD COLUMN has no "IF NOT EXISTS" guard in SQLite, so
+# idempotency comes from catching "duplicate column" instead — this makes
+# init_db safe to call every startup, on both a fresh database (where the
+# CREATE TABLE above already includes these columns, so every ALTER here
+# is a no-op duplicate-column error) and an old one (where they're
+# genuinely new).
+_FACTS_MIGRATION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("last_accessed", "TIMESTAMP"),
+    ("access_count", "INTEGER DEFAULT 0"),
+    ("importance", "REAL DEFAULT 0.5"),
+    ("stale", "INTEGER DEFAULT 0"),
+)
+
+
+def _migrate_facts_columns(conn: sqlite3.Connection) -> None:
+    for column, coltype in _FACTS_MIGRATION_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE facts ADD COLUMN {column} {coltype}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    # Backfill last_accessed for any pre-existing row that predates the
+    # column (it's NULL by default from ADD COLUMN, not created_at) —
+    # without this, every fact that existed before this migration would
+    # look infinitely stale to the #36 decay job on its very first run.
+    conn.execute(
+        "UPDATE facts SET last_accessed = created_at WHERE last_accessed IS NULL"
+    )

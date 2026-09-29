@@ -36,6 +36,11 @@ class IrisConfig:
     # genuinely different photos; raise it to be stricter about what counts
     # as "duplicate enough to skip", lower it to only catch closer matches.
     perceptual_hash_threshold: int = 12
+    # backlog #80: warn (never silently stop) before ingesting a folder
+    # that would push total ingested media past this many bytes. None (the
+    # default) disables the guard entirely — most people don't want a
+    # quota until they've hit a real storage problem once.
+    storage_quota_bytes: Optional[int] = None
 
     def __post_init__(self):
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
@@ -77,6 +82,7 @@ def get_config(path: str = "config/laptop_config.yaml") -> IrisConfig:
         max_workers=iris_cfg.get("max_workers", 4),
         use_gpu=iris_cfg.get("use_gpu", False),
         perceptual_hash_threshold=iris_cfg.get("perceptual_hash_threshold", 12),
+        storage_quota_bytes=iris_cfg.get("storage_quota_bytes"),
     )
 
     return _config

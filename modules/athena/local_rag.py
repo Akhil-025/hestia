@@ -147,10 +147,27 @@ class IngestionStats:
     total_chunks: int = 0
     by_subject: dict[str, dict[str, int]] = field(default_factory=dict)
     by_module: dict[str, dict[str, int]] = field(default_factory=dict)
+    # backlog #57/#61: distinguishes "nothing to do" from "processed but
+    # extracted nothing" from "genuinely new content" — a single
+    # total_chunks==0 used to mean all three, which made a "what's new"
+    # digest impossible to build from this alone.
+    new_files: int = 0
+    updated_files: int = 0
+    unchanged_files: int = 0
+    failed_files: int = 0
 
-    def record(self, file_info: dict[str, str], chunks: int) -> None:
+    def record(self, file_info: dict[str, str], chunks: int, status: str = "new") -> None:
         self.total_files += 1
         self.total_chunks += chunks
+
+        if status == "new":
+            self.new_files += 1
+        elif status == "updated":
+            self.updated_files += 1
+        elif status == "unchanged":
+            self.unchanged_files += 1
+        else:
+            self.failed_files += 1
 
         subj = file_info.get("subject") or "unknown"
         self.by_subject.setdefault(subj, {"files": 0, "chunks": 0})
@@ -169,6 +186,10 @@ class IngestionStats:
             "total_chunks": self.total_chunks,
             "by_subject": self.by_subject,
             "by_module": self.by_module,
+            "new_files": self.new_files,
+            "updated_files": self.updated_files,
+            "unchanged_files": self.unchanged_files,
+            "failed_files": self.failed_files,
         }
 
 
@@ -243,6 +264,14 @@ class MergedLocalRAG:
         self._client, self._collection = self._init_chroma()
         self._embedder: SentenceTransformer = self._init_embedder()
         self._pdf_processor = PDFProcessor()
+
+        # backlog #63: relevance feedback, stored alongside (not inside)
+        # ChromaDB — see core/chunk_feedback_store.py for why a separate
+        # small SQLite store fits this better than Chroma metadata.
+        from core.chunk_feedback_store import ChunkFeedbackStore
+        self._feedback = ChunkFeedbackStore(
+            str(Path(self.persist_directory) / "chunk_feedback.db")
+        )
 
         logger.info(
             "MergedLocalRAG ready (model=%s, bm25=%s, dir=%s)",
@@ -326,12 +355,21 @@ class MergedLocalRAG:
         self,
         file_info: dict[str, str],
         rebuild_bm25: bool = True,
-    ) -> int:
+    ) -> tuple[int, str]:
         """
         Ingest a single file into ChromaDB.
 
-        The operation is idempotent: if the file is already present it is
-        skipped without touching the database.
+        The operation is idempotent AND change-aware (backlog #61): a file
+        that hasn't changed since it was last ingested is skipped without
+        touching the database, same as before. A file whose content HAS
+        changed (detected via a cheap mtime+size signature — see
+        `_file_signature` — not a full content hash, which would mean
+        reading every large PDF/document on every ingestion run just to
+        check whether it changed) has its OLD chunks deleted first, then
+        is re-ingested fresh. Before this, a modified file with the same
+        name/subject was silently treated as already-ingested forever —
+        an update to a document was invisible to the index with no error
+        or warning anywhere.
 
         Parameters
         ----------
@@ -344,17 +382,34 @@ class MergedLocalRAG:
 
         Returns
         -------
-        int
-            Number of chunks added (0 if skipped or on error).
+        tuple[int, str]
+            (chunks added, status) where status is one of "new",
+            "updated", "unchanged", or "failed" — see IngestionStats,
+            which this return value exists to feed.
         """
         file_path = file_info.get("full_path", "")
         if not file_path:
             logger.warning("ingest_file: file_info missing 'full_path'; skipping.")
-            return 0
+            return 0, "failed"
 
-        if self._is_ingested(file_info):
-            logger.debug("Already ingested: %s", file_path)
-            return 0
+        try:
+            signature = _file_signature(file_path)
+        except OSError:
+            logger.warning("ingest_file: could not stat %s; skipping.", file_path)
+            return 0, "failed"
+
+        existing_signature = self._get_ingested_signature(file_info)
+        if existing_signature == signature:
+            logger.debug("Unchanged since last ingestion: %s", file_path)
+            return 0, "unchanged"
+
+        status = "updated" if existing_signature is not None else "new"
+        if existing_signature is not None:
+            removed = self._delete_file_chunks(file_info)
+            logger.info(
+                "Content changed since last ingestion — removed %d stale "
+                "chunk(s) for %s before re-ingesting.", removed, file_path,
+            )
 
         ext = Path(file_path).suffix.lower()
 
@@ -362,19 +417,19 @@ class MergedLocalRAG:
             chunks = self._extract_chunks(file_info, ext)
         except Exception:
             logger.exception("Chunk extraction failed for %s.", file_path)
-            return 0
+            return 0, "failed"
 
         if not chunks:
             logger.warning("No text extracted from %s.", file_path)
-            return 0
+            return 0, "failed"
 
-        ids, documents, metadatas = _prepare_batch(file_info, chunks, file_path)
+        ids, documents, metadatas = _prepare_batch(file_info, chunks, file_path, signature)
 
         try:
             embeddings = self._embed(documents)
         except RAGError:
             logger.exception("Embedding failed for %s; skipping ingestion.", file_path)
-            return 0
+            return 0, "failed"
 
         try:
             with self._chroma_write_lock:
@@ -386,14 +441,14 @@ class MergedLocalRAG:
                 )
         except Exception:
             logger.exception("ChromaDB add failed for %s.", file_path)
-            return 0
+            return 0, "failed"
 
-        logger.info("Ingested %d chunk(s) from %s.", len(chunks), file_path)
+        logger.info("Ingested %d chunk(s) from %s (%s).", len(chunks), file_path, status)
 
         if self.enable_bm25 and rebuild_bm25:
             self._rebuild_bm25()
 
-        return len(chunks)
+        return len(chunks), status
 
     def ingest_directory(
         self,
@@ -406,7 +461,8 @@ class MergedLocalRAG:
         Returns
         -------
         dict
-            Aggregated ingestion statistics.
+            Aggregated ingestion statistics, including the new/updated/
+            unchanged/failed breakdown (backlog #57, #61).
         """
         resolved = data_dir or str(get_config().data_dir)
         files = get_supported_files(resolved)
@@ -417,18 +473,113 @@ class MergedLocalRAG:
             return stats.to_dict()
 
         for fi in files:
-            n = self.ingest_file(fi, rebuild_bm25=False)
-            stats.record(fi, n)
+            n, status = self.ingest_file(fi, rebuild_bm25=False)
+            stats.record(fi, n, status)
 
         if self.enable_bm25 and rebuild_bm25:
             self._rebuild_bm25()
 
         logger.info(
-            "Directory ingestion complete: %d chunk(s) from %d file(s).",
-            stats.total_chunks,
-            stats.total_files,
+            "Directory ingestion complete: %d chunk(s) from %d file(s) "
+            "(%d new, %d updated, %d unchanged, %d failed).",
+            stats.total_chunks, stats.total_files,
+            stats.new_files, stats.updated_files, stats.unchanged_files, stats.failed_files,
         )
         return stats.to_dict()
+
+    def list_files(self, subject: Optional[str] = None) -> list[dict[str, Any]]:
+        """
+        Distinct ingested files (file_name, subject, module, chunk_count),
+        optionally scoped to one subject. Used by the multi-document
+        features below (#54, #55, #56, #65) to know what documents exist
+        to synthesize across, before running any search.
+        """
+        try:
+            where = {"subject": {"$eq": subject}} if subject else None
+            raw = self._collection.get(include=["metadatas"], where=where)
+            md_list = _unwrap(raw.get("metadatas", []))
+        except Exception:
+            logger.exception("list_files failed.")
+            return []
+
+        by_file: dict[tuple[str, str], dict[str, Any]] = {}
+        for md in md_list:
+            if not md or not md.get("file_name"):
+                continue
+            key = (md.get("file_name"), md.get("subject", "unknown"))
+            entry = by_file.setdefault(key, {
+                "file_name": md.get("file_name"),
+                "subject": md.get("subject", "unknown"),
+                "module": md.get("module", "unknown"),
+                "chunk_count": 0,
+            })
+            entry["chunk_count"] += 1
+        return sorted(by_file.values(), key=lambda f: f["file_name"])
+
+    def get_chunks_for_file(
+        self, file_name: str, subject: Optional[str] = None, limit: int = 30,
+    ) -> list[str]:
+        """
+        Raw chunk texts for one specific file, in original chunk order —
+        NOT relevance-ranked, since "gather this document's content" and
+        "find content relevant to a query" are different needs. Used for
+        literature review / research-gap / document-comparison synthesis,
+        where the point is representative coverage of a document, not a
+        ranked subset for one query.
+        """
+        where: dict[str, Any] = {"file_name": {"$eq": file_name}}
+        if subject:
+            where = {"$and": [where, {"subject": {"$eq": subject}}]}
+        try:
+            raw = self._collection.get(
+                where=where, include=["documents", "metadatas"], limit=max(limit, 1) * 4,
+            )
+        except Exception:
+            logger.exception("get_chunks_for_file failed for %s.", file_name)
+            return []
+
+        docs = _unwrap(raw.get("documents", []))
+        metas = _unwrap(raw.get("metadatas", []))
+        paired = sorted(
+            zip(docs, metas),
+            key=lambda dm: (dm[1] or {}).get("chunk_number", 0),
+        )
+        return [d for d, _ in paired[:limit] if d]
+
+    def get_changes_since_last_check(self, data_dir: Optional[str] = None) -> dict[str, Any]:
+        """
+        A dry preview of what `ingest_directory` WOULD do, without
+        actually ingesting anything (backlog #57 — "what's new since I
+        last checked"). Compares each file's current signature against
+        what's already indexed; nothing is written to the database or the
+        BM25 index either way.
+        """
+        resolved = data_dir or str(get_config().data_dir)
+        files = get_supported_files(resolved)
+        new_files: list[str] = []
+        updated_files: list[str] = []
+        unchanged_count = 0
+
+        for fi in files:
+            file_path = fi.get("full_path", "")
+            try:
+                signature = _file_signature(file_path)
+            except OSError:
+                continue
+            existing = self._get_ingested_signature(fi)
+            if existing is None:
+                new_files.append(fi.get("relative_path", fi.get("file_name", file_path)))
+            elif existing != signature:
+                updated_files.append(fi.get("relative_path", fi.get("file_name", file_path)))
+            else:
+                unchanged_count += 1
+
+        return {
+            "new_files": new_files,
+            "updated_files": updated_files,
+            "unchanged_count": unchanged_count,
+            "total_files_scanned": len(files),
+        }
 
     # ------------------------------------------------------------------
     # Search – public API
@@ -467,8 +618,60 @@ class MergedLocalRAG:
         n = _clamp(n_results or get_config().default_search_results, 1, _MAX_SEARCH_RESULTS)
 
         if self.enable_bm25:
-            return self._hybrid_search(query, n, subject_filter, module_filter)
-        return self._semantic_search(query, n, subject_filter, module_filter)
+            response = self._hybrid_search(query, n, subject_filter, module_filter)
+        else:
+            response = self._semantic_search(query, n, subject_filter, module_filter)
+
+        return self._apply_feedback_weighting(response)
+
+    def mark_feedback(self, chunk_metadata: dict[str, Any], relevant: bool) -> None:
+        """
+        Record that a previously-returned chunk was (ir)relevant to the
+        query it was returned for (backlog #63). *chunk_metadata* is the
+        metadata dict already attached to a SearchResult/SourceDocument —
+        the caller doesn't need to know how chunk ids are constructed.
+        """
+        chunk_id = _chunk_id_from_metadata(chunk_metadata)
+        self._feedback.record(chunk_id, relevant)
+        logger.info(
+            "Feedback recorded: chunk=%s relevant=%s", chunk_id, relevant
+        )
+
+    def _apply_feedback_weighting(self, response: SearchResponse) -> SearchResponse:
+        """
+        Down-weight (never zero out) results with a history of being
+        marked irrelevant, then re-sort by the adjusted score.
+
+        Never fully excludes a chunk regardless of how much negative
+        feedback it has — a chunk irrelevant to one question can still be
+        exactly right for a different one, so this is a demotion, not a
+        blacklist. Floors at 10% of the original score after enough
+        negative feedback rather than approaching zero, for the same
+        reason.
+        """
+        if not response.results:
+            return response
+
+        feedback = self._feedback.get_all()
+        if not feedback:
+            return response  # no feedback recorded yet — nothing to adjust
+
+        import dataclasses
+        adjusted_results = []
+        for result in response.results:
+            chunk_id = _chunk_id_from_metadata(result.metadata)
+            counts = feedback.get(chunk_id)
+            if not counts or not counts["irrelevant_count"]:
+                adjusted_results.append(result)
+                continue
+            multiplier = max(0.1, 1 - counts["irrelevant_count"] * 0.2)
+            # SearchResult is a frozen dataclass — build a new instance
+            # with the adjusted score rather than mutating in place.
+            adjusted_results.append(dataclasses.replace(result, score=result.score * multiplier))
+
+        adjusted_results.sort(key=lambda r: r.score, reverse=True)
+        response.results = adjusted_results
+        return response
 
     def _semantic_search(
         self,
@@ -696,7 +899,13 @@ class MergedLocalRAG:
     # Ingestion helpers (private)
     # ------------------------------------------------------------------
 
-    def _is_ingested(self, file_info: dict[str, str]) -> bool:
+    def _get_ingested_signature(self, file_info: dict[str, str]) -> Optional[str]:
+        """
+        The `file_signature` stored in metadata for this file's chunks, if
+        any were previously ingested — None if the file has never been
+        ingested. Used by `ingest_file` to decide new vs. updated vs.
+        unchanged (backlog #61).
+        """
         try:
             result = self._collection.get(
                 where={
@@ -705,20 +914,62 @@ class MergedLocalRAG:
                         {"subject": file_info.get("subject", "unknown")},
                     ]
                 },
+                include=["metadatas"],
                 limit=1,
             )
-            return bool(result and result.get("ids"))
+            metadatas = result.get("metadatas") if result else None
+            if metadatas:
+                return metadatas[0].get("file_signature")
+            return None
         except Exception:
-            logger.debug("_is_ingested check failed; assuming not ingested.")
-            return False
+            logger.debug("_get_ingested_signature check failed; treating as never ingested.")
+            return None
+
+    def _delete_file_chunks(self, file_info: dict[str, str]) -> int:
+        """Delete every previously-ingested chunk for this file (by name+subject)."""
+        where = {
+            "$and": [
+                {"file_name": file_info.get("file_name", "")},
+                {"subject": file_info.get("subject", "unknown")},
+            ]
+        }
+        try:
+            existing = self._collection.get(where=where, limit=10_000)
+            ids = existing.get("ids", []) if existing else []
+            if not ids:
+                return 0
+            with self._chroma_write_lock:
+                self._collection.delete(ids=ids)
+            return len(ids)
+        except Exception:
+            logger.exception(
+                "_delete_file_chunks failed for %s; stale chunks may remain.",
+                file_info.get("file_name"),
+            )
+            return 0
+
+    def _resolve_chunk_config(self, ext: str) -> tuple[int, int]:
+        """
+        (chunk_size, chunk_overlap) for *ext* — the single place that
+        looks up `AthenaConfig.chunk_config_by_type` and falls back to the
+        global chunk_size/chunk_overlap for an extension not listed there
+        (backlog #62).
+        """
+        by_type = getattr(get_config(), "chunk_config_by_type", {}) or {}
+        return by_type.get(
+            ext, (self._pdf_processor.chunk_size, self._pdf_processor.chunk_overlap)
+        )
 
     def _extract_chunks(
         self, file_info: dict[str, str], ext: str
     ) -> list[dict[str, Any]]:
         file_path = file_info["full_path"]
+        chunk_size, chunk_overlap = self._resolve_chunk_config(ext)
 
         if ext == ".pdf":
-            return self._pdf_processor.process_pdf(file_path)
+            return self._pdf_processor.process_pdf(
+                file_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            )
 
         from modules.athena.document_processor import extract_text_from_file
 
@@ -726,7 +977,10 @@ class MergedLocalRAG:
         chunks: list[dict[str, Any]] = []
         for page in pages:
             for idx, text in enumerate(
-                self._pdf_processor.semantic_chunking(page["text"]), start=1
+                self._pdf_processor.semantic_chunking(
+                    page["text"], chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                ),
+                start=1,
             ):
                 if len(text.strip()) < _MIN_CHUNK_CHARS:
                     continue
@@ -837,6 +1091,25 @@ def _doc_key(meta: dict[str, Any]) -> str:
     )
 
 
+def _chunk_id_from_metadata(metadata: dict[str, Any]) -> str:
+    """
+    Reconstruct the same id `_chunk_id` would have generated at ingestion
+    time, but from a SearchResult/SourceDocument's METADATA (subject,
+    module, file_name, page_number, chunk_number) rather than from
+    `file_info` + a fresh chunk dict — this is what `mark_feedback` and
+    `_apply_feedback_weighting` use to identify a chunk that was already
+    returned from a search, where only the metadata is available, not the
+    original file_info used to ingest it.
+    """
+    return (
+        f"{metadata.get('subject', 'unknown')}"
+        f"::{metadata.get('module', 'unknown')}"
+        f"::{metadata.get('file_name', 'file')}"
+        f"::p{metadata.get('page_number', 0)}"
+        f"::c{metadata.get('chunk_number', 0)}"
+    )
+
+
 def _chunk_id(file_info: dict[str, str], chunk: dict[str, Any]) -> str:
     """Globally unique ID for a single chunk (used as the ChromaDB document id)."""
     safe_name = Path(file_info.get("full_path", "file")).name
@@ -849,10 +1122,27 @@ def _chunk_id(file_info: dict[str, str], chunk: dict[str, Any]) -> str:
     )
 
 
+def _file_signature(file_path: str) -> str:
+    """
+    Cheap change-detection signature: mtime + size, not a content hash.
+
+    A full hash would mean reading every file's entire content on every
+    ingestion run just to check whether it changed — for a folder of
+    large PDFs, that's most of the cost of re-ingesting them anyway. A
+    modified file almost always has a different mtime or size (and if
+    someone deliberately preserves both while changing content, that's a
+    genuinely rare edge case this trade-off accepts).
+    """
+    import os
+    st = os.stat(file_path)
+    return f"{int(st.st_mtime)}:{st.st_size}"
+
+
 def _prepare_batch(
     file_info: dict[str, str],
     chunks: list[dict[str, Any]],
     file_path: str,
+    file_signature: str = "",
 ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     """Convert extracted chunks into parallel id / document / metadata lists."""
     ids: list[str] = []
@@ -873,6 +1163,9 @@ def _prepare_batch(
                 "page_number": chunk.get("page_number") or 0,
                 "chunk_number": chunk.get("chunk_number") or 0,
                 "total_pages": chunk.get("total_pages") or 0,
+                # backlog #61 — read back by _get_ingested_signature on the
+                # next ingestion run to detect whether this file changed.
+                "file_signature": file_signature,
             }
         )
 

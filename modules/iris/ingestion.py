@@ -99,7 +99,79 @@ class DuplicateDetector:
             logger.debug(f"Could not compare perceptual hashes {hash_a!r}/{hash_b!r}: {e}")
             return None
 
-    async def find_duplicates(self, file_path: Path, file_hash: str, perceptual_hash: Optional[str] = None) -> List[Tuple[int, str, float]]:
+    def find_all_duplicate_groups(self) -> list[dict]:
+        """
+        Scan the ENTIRE already-ingested library for duplicate/near-
+        duplicate groups — a cleanup tool, distinct from the at-ingest
+        check above (which only ever compares one incoming file against
+        what's already in the DB).
+
+        This also catches a real gap the at-ingest path has: two near-
+        identical files ingested in the SAME batch are processed
+        concurrently (see FileIngestor._process_batch's asyncio.gather),
+        so neither has been written to the DB yet when the other's
+        find_duplicates() runs — both get inserted as if unique. A full-
+        library scan afterward is the only way to catch that pair.
+
+        Returns a list of {"kind": "exact"|"near", "files": [...],
+        "similarity": float} groups, largest groups first. "exact" groups
+        share a file_hash; "near" groups are within
+        perceptual_hash_threshold of each other. A file can appear in at
+        most one group (the first/strongest one found) — this reports
+        duplicate CLUSTERS for cleanup, not every pairwise relationship.
+        """
+        groups: list[dict] = []
+        grouped_ids: set[int] = set()
+
+        # 1. Exact duplicates — group by file_hash.
+        by_hash: dict[str, list[tuple[int, str]]] = {}
+        for file_id, path, file_hash in self.db.get_all_file_hashes():
+            if file_hash:
+                by_hash.setdefault(file_hash, []).append((file_id, path))
+        for file_hash, entries in by_hash.items():
+            if len(entries) > 1:
+                groups.append({
+                    "kind": "exact",
+                    "files": [{"id": i, "path": p} for i, p in entries],
+                    "similarity": 1.0,
+                })
+                grouped_ids.update(i for i, _ in entries)
+
+        # 2. Near-duplicates via perceptual hash — greedy clustering: for
+        # each not-yet-grouped file, gather every other not-yet-grouped
+        # file within the threshold. O(n^2) comparisons, which is fine
+        # for a personal library (thousands, not millions, of photos) —
+        # the same trade-off find_duplicates already makes at ingest time.
+        candidates = [
+            (i, p, h) for i, p, h in self.db.get_perceptual_hashes()
+            if i not in grouped_ids
+        ]
+        seen: set[int] = set()
+        for idx, (file_id, path, phash) in enumerate(candidates):
+            if file_id in seen:
+                continue
+            cluster = [(file_id, path, 1.0)]
+            for other_id, other_path, other_hash in candidates[idx + 1:]:
+                if other_id in seen:
+                    continue
+                distance = self._hash_distance(phash, other_hash)
+                if distance is not None and distance <= self.perceptual_hash_threshold:
+                    similarity = round(
+                        1.0 - (distance / (self.perceptual_hash_threshold * 2)), 3
+                    )
+                    cluster.append((other_id, other_path, similarity))
+            if len(cluster) > 1:
+                seen.update(i for i, _, _ in cluster)
+                groups.append({
+                    "kind": "near",
+                    "files": [{"id": i, "path": p, "similarity": s} for i, p, s in cluster],
+                    "similarity": min(s for _, _, s in cluster),
+                })
+
+        groups.sort(key=lambda g: len(g["files"]), reverse=True)
+        return groups
+
+
         # 0. If exact path exists, treat as already ingested
         if self.db.file_exists(str(file_path)):
             return [(0, str(file_path), 1.0)]

@@ -116,6 +116,18 @@ nlu:
   # host: "127.0.0.1"
   # port: 11435
 
+hecate:
+  # Conversation session TTL, in seconds (backlog #12). A gap longer than
+  # this since the last turn clears conversational context (recent
+  # intents, extracted entities, time/memory context) so "add it to the
+  # list" three hours after an unrelated conversation doesn't inherit that
+  # conversation's entities. Registered modules and active_modules are
+  # NOT affected — this only resets conversation state, never
+  # registration state. Default (also used if this whole section or this
+  # key is omitted) is 1800 (30 minutes). Set to 0 to disable expiry
+  # entirely and keep context for the life of the process.
+  session_ttl_seconds: 1800
+
 # Scheduler
 scheduler:
   enabled: true

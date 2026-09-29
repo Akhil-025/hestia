@@ -39,6 +39,10 @@ apollo_track_sleep:
   - "track my sleep"
   - "i slept"
   - "slept for"
+  # Hinglish (backlog #27)
+  - "neend log karo"
+  - "mera neend"
+  - "kal itni der soya"
 
 apollo_log_workout:
   - "log my workout"
@@ -52,6 +56,9 @@ apollo_log_mood:
   - "i'm feeling"
   - "im feeling"
   - "feeling pretty"
+  # Hinglish (backlog #27)
+  - "mera mood"
+  - "aaj mood theek nahi"
 
 apollo_log_water:
   - "log my water"
@@ -75,6 +82,10 @@ pluto_log_expense:
   - "i spent"
   - "i paid"
   - "add an expense"
+  # Hinglish (backlog #27)
+  - "kharch likho"
+  - "maine kharch kiya"
+  - "paise kharch kiye"
 
 pluto_get_budget_summary:
   - "budget summary"
@@ -98,6 +109,9 @@ list_habits:
   - "list my habits"
   - "what are my habits"
   - "show my habits"
+  # Hinglish (backlog #27)
+  - "mere habits dikhao"
+  - "habits ki list"
 
 get_goals:
   - "list my goals"
@@ -114,6 +128,10 @@ set_reminder:
   - "set a reminder"
   - "don't let me forget"
   - "dont let me forget"
+  # Hinglish (backlog #27)
+  - "yaad dilao"
+  - "reminder lagao"
+  - "mujhe yaad dilana"
 
 # --- Mnemosyne: facts ------------------------------------------------------
 learn_fact:
@@ -124,6 +142,30 @@ learn_fact:
 forget_fact:
   - "forget that i"
   - "stop remembering"
+
+# --- Hindi/Hinglish (backlog #27) ------------------------------------------
+# Common Romanized Hindi/Hinglish phrasings, merged directly into the
+# relevant intent's block above rather than duplicated here as separate
+# top-level keys — a repeated YAML key silently overwrites the earlier
+# one when parsed, which is exactly what a first draft of this section
+# did (see git history / CHANGELOG.md if curious). Two intents have no
+# earlier English block to merge into, so they're new entries below.
+#
+# Reuses the exact mechanism #22 built for English phrasings the model
+# gets wrong — a deterministic, zero-latency pre-LLM match beats hoping
+# the model's Hindi/Hinglish handling is reliable for phrases used often.
+# See config/nlu_prompt.txt's "Multi-language input" section for what
+# covers everything these aliases don't (novel phrasings, full Devanagari
+# script, free-text entity content in Hindi).
+
+get_weather:
+  - "mausam kaisa hai"
+  - "aaj mausam"
+
+take_note:
+  - "note likho"
+  - "ye likh lo"
+  - "yaad rakho ki"
 
 # --- Diagnostics (see modules/hestia/core_module.py) -----------------------
 modules_status:

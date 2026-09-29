@@ -9,6 +9,23 @@ The JSON must contain:
 - response (string)
 - confidence (float between 0 and 1)
 
+Multi-language input (backlog #27): the user may write in English, Hindi
+(Devanagari script), or Hinglish (Romanized Hindi-English code-switching,
+e.g. "mera sleep log karo", "kal 6 baje reminder lagao"). Regardless of
+the input language or script:
+- ALWAYS choose the intent name from the English snake_case list below —
+  never translate or transliterate an intent name itself.
+- Extract entity VALUES in whatever language they were given — a note's
+  content, a habit's name, or free text stays in the user's original
+  language/script; don't translate it.
+- `response` should match the language/register the user wrote in where
+  natural (a Hinglish query can get a Hinglish-flavoured response), but
+  this is a style preference, not a correctness requirement — an English
+  response to a Hindi query is still a correct classification.
+- If genuinely unsure what a Hindi/Hinglish phrase means, prefer a lower
+  confidence score over guessing a specific intent — the same policy as
+  for ambiguous English input.
+
 ---
 
 Valid intents:
@@ -21,7 +38,11 @@ save_name, get_user_info, set_preference, get_system_info,
 learn_fact, forget_fact,
 chat,
 iris_search, iris_ingest, iris_status, iris_analyse, iris_query,
-athena_search, athena_ingest, athena_status,
+iris_find_duplicates, iris_correct_caption, iris_organize_albums,
+iris_compare_photos,
+athena_search, athena_ingest, athena_status, athena_check_updates,
+athena_mark_feedback, athena_literature_review, athena_research_gaps,
+athena_compare_documents, athena_get_citations, athena_translate_document,
 add_goal, get_goals, update_goal, remove_goal, abandon_goal,
 add_habit, complete_habit, list_habits, remove_habit,
 productivity_summary, get_at_risk_goals, get_motivation,
@@ -43,7 +64,31 @@ pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, plut
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
 hephaestus_scrape_page, hephaestus_open_app,
 read_email, send_email, list_events, create_event, delete_events,
-modules_status, explain_routing, report_mistake
+modules_status, explain_routing, report_mistake, clarify_intent
+
+---
+
+# ---- MULTI-LANGUAGE (HINDI/HINGLISH) EXAMPLES ----
+#
+# A handful of Hinglish phrasings not already covered by
+# config/intent_aliases.yaml, to show the model the intent stays English
+# snake_case regardless of input script/language (see the "Multi-language
+# input" instructions near the top of this file).
+
+User: mera 7 hours ka neend track karo
+{"intent": "apollo_track_sleep", "entities": {"hours": "7"}, "response": "Logged your sleep.", "confidence": 0.9}
+
+User: kal shaam 6 baje dentist appointment ka reminder set karo
+{"intent": "set_reminder", "entities": {"text": "dentist appointment", "time": "6pm tomorrow"}, "response": "Reminder set.", "confidence": 0.85}
+
+User: maine aaj 500 rupees grocery pe kharch kiye
+{"intent": "pluto_log_expense", "entities": {"amount": "500", "category": "grocery"}, "response": "Expense logged.", "confidence": 0.9}
+
+User: ye note kar lo ki milk khatam ho gaya hai
+{"intent": "take_note", "entities": {"content": "milk khatam ho gaya hai"}, "response": "Noted.", "confidence": 0.9}
+
+User: aaj Mumbai mein mausam kaisa hai
+{"intent": "get_weather", "entities": {"location": "Mumbai"}, "response": "Checking the weather.", "confidence": 0.9}
 
 ---
 
@@ -98,6 +143,30 @@ User: find research papers on turbulence modeling
 
 User: search my documents for CFD reports
 {"intent": "athena_search", "entities": {"query": "CFD reports"}, "response": "Looking through your documents.", "confidence": 0.95}
+
+User: ingest my documents folder
+{"intent": "athena_ingest", "entities": {}, "response": "Ingesting your documents.", "confidence": 0.9}
+
+User: how many documents have I indexed
+{"intent": "athena_status", "entities": {}, "response": "Checking your document index.", "confidence": 0.9}
+
+User: what's new since I last checked my documents
+{"intent": "athena_check_updates", "entities": {}, "response": "Checking for new or updated documents.", "confidence": 0.9}
+
+User: write me a literature review on turbulence modeling
+{"intent": "athena_literature_review", "entities": {"subject": "turbulence modeling"}, "response": "Generating a literature review.", "confidence": 0.85}
+
+User: what research gaps exist in my heat transfer papers
+{"intent": "athena_research_gaps", "entities": {"subject": "heat transfer"}, "response": "Looking for research gaps.", "confidence": 0.85}
+
+User: compare paper1.pdf and paper2.pdf on their methodology
+{"intent": "athena_compare_documents", "entities": {"file_names": ["paper1.pdf", "paper2.pdf"], "query": "their methodology"}, "response": "Comparing those documents.", "confidence": 0.85}
+
+User: give me a bibliography for that
+{"intent": "athena_get_citations", "entities": {}, "response": "Building a bibliography.", "confidence": 0.8}
+
+User: translate notes.pdf into spanish
+{"intent": "athena_translate_document", "entities": {"file_name": "notes.pdf", "target_language": "Spanish"}, "response": "Translating that document.", "confidence": 0.85}
 
 User: search heat transfer notes
 {"intent": "athena_search", "entities": {"query": "heat transfer notes"}, "response": "Searching your documents.", "confidence": 0.95}
@@ -160,6 +229,15 @@ User: what's the status of image indexing
 
 User: how many photos have you indexed
 {"intent": "iris_status", "entities": {}, "response": "Checking indexing status.", "confidence": 0.93}
+
+User: find duplicate photos
+{"intent": "iris_find_duplicates", "entities": {}, "response": "Scanning for duplicates.", "confidence": 0.9}
+
+User: organize my photos into albums
+{"intent": "iris_organize_albums", "entities": {}, "response": "Organizing your photos.", "confidence": 0.9}
+
+User: what changed between these two photos
+{"intent": "iris_compare_photos", "entities": {}, "response": "Comparing those photos.", "confidence": 0.85}
 
 ---
 

@@ -118,14 +118,19 @@ class PDFProcessor:
                 logger.warning("OCR failed for %s — using sparse digital text", file_path)
         return pages
 
-    def process_pdf(self, file_path: str) -> List[Dict[str, Any]]:
+    def process_pdf(
+        self, file_path: str,
+        chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         pages = self.extract_text_from_pdf(file_path)
         all_chunks: List[Dict[str, Any]] = []
 
         for page in pages:
             if page["text"] == OCR_FAILED_MARKER:
                 continue
-            chunks = self.semantic_chunking(page["text"])
+            chunks = self.semantic_chunking(
+                page["text"], chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            )
             for idx, chunk_text in enumerate(chunks, start=1):
                 if len(chunk_text.strip()) < 20:
                     continue
@@ -232,7 +237,21 @@ class PDFProcessor:
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
-    def semantic_chunking(self, text: str) -> List[str]:
+    def semantic_chunking(
+        self, text: str, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None,
+    ) -> List[str]:
+        """
+        Split *text* into semantically-grouped chunks around headings.
+
+        *chunk_size*/*chunk_overlap* override the instance defaults for
+        this call only (backlog #62 — a caller resolves a per-document-
+        type value via `AthenaConfig.chunk_config_by_type` and passes it
+        here, rather than every document in the whole index sharing one
+        global chunk size).
+        """
+        size = chunk_size if chunk_size is not None else self.chunk_size
+        overlap = chunk_overlap if chunk_overlap is not None else self.chunk_overlap
+
         heading_re = re.compile(
             r"^(?:[A-Z][A-Z\s]{3,}"
             r"|(?:\d+\.)+\s+\w"
@@ -273,15 +292,22 @@ class PDFProcessor:
 
             if not current_chunk:
                 current_chunk = candidate
-            elif len(current_chunk) + len(candidate) < self.chunk_size:
+            elif len(current_chunk) + len(candidate) < size:
                 current_chunk += "\n\n" + candidate
             else:
                 chunks.append(current_chunk.strip())
-                last_para = current_chunk.split("\n\n")[-1]
+                # Carry forward up to `overlap` characters from the END of
+                # the chunk just closed, not the whole last paragraph
+                # unconditionally — this is what makes chunk_overlap an
+                # actual, tunable number rather than dead config (it was
+                # previously stored on the instance and never read
+                # anywhere in this method).
+                tail = current_chunk[-overlap:].strip() if overlap > 0 else ""
                 current_chunk = (
-                    f"{current_heading}\n{last_para}\n\n{candidate}"
-                    if current_heading
-                    else f"{last_para}\n\n{candidate}"
+                    f"{current_heading}\n{tail}\n\n{candidate}"
+                    if current_heading and tail
+                    else f"{tail}\n\n{candidate}" if tail
+                    else candidate
                 )
 
         if current_chunk:

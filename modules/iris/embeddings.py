@@ -170,6 +170,36 @@ class ImageVectorIndex:
                 continue
         return out
 
+    def get_all_embeddings(self) -> list[tuple[int, list[float]]]:
+        """
+        Every (file_id, embedding) pair currently stored — used by album
+        auto-organization (backlog #79) to cluster the whole library.
+        Chroma's collection.get() with no query returns everything, so
+        this is a full scan; fine for a personal photo library's size.
+        """
+        if not self._ensure_client():
+            return []
+        try:
+            count = self._collection.count()
+            if count == 0:
+                return []
+            result = self._collection.get(include=["embeddings"], limit=count)
+        except Exception as e:
+            logger.warning("[Iris] get_all_embeddings failed: %s", e)
+            return []
+
+        ids = result.get("ids") or []
+        embeddings = result.get("embeddings")
+        if embeddings is None:
+            return []
+        out: list[tuple[int, list[float]]] = []
+        for raw_id, vector in zip(ids, embeddings):
+            try:
+                out.append((int(raw_id), list(vector)))
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def delete(self, file_id: int) -> None:
         if not self._ensure_client():
             return

@@ -1,105 +1,126 @@
-# 🔥 HESTIA IMPROVEMENT BACKLOG
+# 🔥 HESTIA IMPROVEMENT BACKLOG — status annotated
 
 280+ concrete ideas, grouped by area, pulled from the actual codebase's gaps (see the integration audit), patterns from other assistant/RAG/home-automation projects, and general software-engineering practice. Not a roadmap — a menu. Pick what serves you; ignore the rest.
 
 Each item is a single sentence so you can copy rows straight into an issue tracker. `[Q]` = quick win (hours), `[M]` = medium (a weekend), `[L]` = large (multi-week project).
 
+**Status legend** (source: `CHANGELOG.md` in `hestia_files - Copy.zip` only; code and tests were not independently verified)
+
+- ✅ = completed per the changelog
+- 🟡 = partially done (see note on the item)
+- no mark = not done, or not mentioned in the changelog
+
+**Tally: 58 ✅ + 2 🟡 out of 280.** Every mark falls in sections 1–5 and 26, plus #259 and #275.
+
+| Section | Done |
+|---|---|
+| 1. Core Architecture | 16 of 20 (the 4 `[L]` items are out of scope) |
+| 2. NLU | 9 of 10 (`#25` `[L]` out of scope) |
+| 3. Mnemosyne | 12 done, 2 partial, of 20 |
+| 4. Athena | 11 of 20 |
+| 5. Iris | 6 of 10 |
+| 26. Docs | 2 of 6 (`#245`, `#249`) |
+| 29. Judgment testing | 1 of 3 (`#259`) |
+| 30. Outside ideas | 1 of 20 (`#275`) |
+
+Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs `reportlab`), #58 / #59 / #68 (need `fitz`, which was unavailable to test), #70 (not reached), #72 (needs a face-detection library), #32 (needs the knowledge graph from #31). Items it called **out of scope** as multi-week `[L]` projects: #4, #10, #16, #20, #25, #31, #33, #39, #43, #47, #51, #52, #60, #66, #71, #77.
+
 ---
 
 ## 1. Core Architecture & Orchestration (Hestia / Hecate)
 
-1. `[Q]` Add a `--dry-run` flag to `main.py` that prints the resolved routing decision without executing the handler.
-2. `[M]` Give Hecate a confidence-weighted fallback: if the top intent's confidence is below a threshold, ask a clarifying question instead of guessing.
-3. `[M]` Add a "why did you route this here" debug command that dumps the registry lookup → trigger-tier → fallback-tier path Hecate actually took for the last query.
+1. ✅ `[Q]` Add a `--dry-run` flag to `main.py` that prints the resolved routing decision without executing the handler.
+2. ✅ `[M]` Give Hecate a confidence-weighted fallback: if the top intent's confidence is below a threshold, ask a clarifying question instead of guessing.
+3. ✅ `[M]` Add a "why did you route this here" debug command that dumps the registry lookup → trigger-tier → fallback-tier path Hecate actually took for the last query.
 4. `[L]` Replace the hand-tuned fallback tiers with a small trained classifier (even a logistic regression over embeddings) that can be retrained from logged misroutes.
-5. `[Q]` Log every intent classification (query, chosen intent, confidence, module, latency) to a rotating file for later analysis.
-6. `[M]` Build a nightly job that reviews the last day's low-confidence classifications and surfaces them for you to manually label.
-7. `[M]` Add per-module circuit breakers so a crashing module (e.g. Pluto's Postgres pool) degrades gracefully instead of taking down dispatch.
-8. `[Q]` Add a `modules_status` command that reports each module's `available`/`ready` state in one place (several modules already expose this individually).
-9. `[M]` Introduce a plugin/skill-loading system so new modules can be dropped into `modules/` and auto-registered without editing `main.py`.
+5. ✅ `[Q]` Log every intent classification (query, chosen intent, confidence, module, latency) to a rotating file for later analysis.
+6. ✅ `[M]` Build a nightly job that reviews the last day's low-confidence classifications and surfaces them for you to manually label.
+7. ✅ `[M]` Add per-module circuit breakers so a crashing module (e.g. Pluto's Postgres pool) degrades gracefully instead of taking down dispatch.
+8. ✅ `[Q]` Add a `modules_status` command that reports each module's `available`/`ready` state in one place (several modules already expose this individually).
+9. ✅ `[M]` Introduce a plugin/skill-loading system so new modules can be dropped into `modules/` and auto-registered without editing `main.py`.
 10. `[L]` Add a real event bus (you have `core/event_bus.py` — check if modules actually publish/subscribe or just import it) so modules can react to each other's events without direct calls, without breaking the "no module calls another" contract.
-11. `[Q]` Version the intent registry (`INTENT_MODULE_MAP`) so old client integrations (Telegram bot, web UI) can detect a breaking change.
-12. `[M]` Add a "conversation session" concept with a TTL so multi-turn context doesn't leak across unrelated topics hours apart.
-13. `[M]` Let Hecate support multi-intent queries ("log my workout and tell me the weather") by splitting compound requests before routing.
-14. `[Q]` Add a config validation step at startup that fails fast with a clear error if `laptop_config.yaml` is missing required keys, instead of failing deep in a module.
-15. `[M]` Add hot-reload for `config/nlu_prompt.txt` and `laptop_config.yaml` so you don't need a full restart to tune prompts.
+11. ✅ `[Q]` Version the intent registry (`INTENT_MODULE_MAP`) so old client integrations (Telegram bot, web UI) can detect a breaking change.
+12. ✅ `[M]` Add a "conversation session" concept with a TTL so multi-turn context doesn't leak across unrelated topics hours apart.
+13. ✅ `[M]` Let Hecate support multi-intent queries ("log my workout and tell me the weather") by splitting compound requests before routing.
+14. ✅ `[Q]` Add a config validation step at startup that fails fast with a clear error if `laptop_config.yaml` is missing required keys, instead of failing deep in a module.
+15. ✅ `[M]` Add hot-reload for `config/nlu_prompt.txt` and `laptop_config.yaml` so you don't need a full restart to tune prompts.
 16. `[L]` Add a "shadow mode" for new intents: route to the new handler but also run the old fallback, log both outputs, and diff them before switching over for real.
-17. `[Q]` Add a global request ID that flows through logs across `core/`, `modules/`, and `api.py` so one query's full trace can be grepped in one shot.
-18. `[M]` Add graceful shutdown handling (SIGTERM) that finishes in-flight requests and flushes the heartbeat/scheduler state before exiting.
-19. `[M]` Add a health-check endpoint in `api.py` that aggregates every module's `available()`/`ready()` into one JSON blob for the web UI to poll.
+17. ✅ `[Q]` Add a global request ID that flows through logs across `core/`, `modules/`, and `api.py` so one query's full trace can be grepped in one shot.
+18. ✅ `[M]` Add graceful shutdown handling (SIGTERM) that finishes in-flight requests and flushes the heartbeat/scheduler state before exiting.
+19. ✅ `[M]` Add a health-check endpoint in `api.py` that aggregates every module's `available()`/`ready()` into one JSON blob for the web UI to poll.
 20. `[L]` Consider splitting the single Python process into 2–3 processes (voice pipeline, core assistant, background jobs) communicating over a local queue, without going all the way to Docker microservices — a middle ground between the monolith and HEARTH.txt's 11-service vision.
 
 ## 2. NLU & Intent Classification
 
-21. `[M]` Add a confusion-matrix eval script using `hestia_test_prompts.md` as a golden dataset, run in CI.
-22. `[Q]` Add synonyms/aliases config so "log my sleep" and "I slept for" both map cleanly without prompt-engineering every phrasing.
-23. `[M]` Add entity extraction confidence scores, not just intent confidence, so "remind me tomorrow" with a garbled date can trigger a clarification instead of a wrong reminder.
-24. `[M]` Support intent chaining/pipelines ("summarize this paper and add it to my reading list" → athena_search + summarize + artemis-style tracking).
+21. ✅ `[M]` Add a confusion-matrix eval script using `hestia_test_prompts.md` as a golden dataset, run in CI.
+22. ✅ `[Q]` Add synonyms/aliases config so "log my sleep" and "I slept for" both map cleanly without prompt-engineering every phrasing.
+23. ✅ `[M]` Add entity extraction confidence scores, not just intent confidence, so "remind me tomorrow" with a garbled date can trigger a clarification instead of a wrong reminder.
+24. ✅ `[M]` Support intent chaining/pipelines ("summarize this paper and add it to my reading list" → athena_search + summarize + artemis-style tracking).
 25. `[L]` Fine-tune a small local classifier (distilbert-sized) on your own logged queries so NLU stops depending on Ollama's JSON-mode reliability.
-26. `[Q]` Add a regression test that fails CI if `config/nlu_prompt.txt`'s intent list and `intent_registry.py`'s `ALL_INTENTS` ever drift (you already have the invariant — codify it).
-27. `[M]` Add multi-language support (start with Hindi/Hinglish given your context) at the NLU layer.
-28. `[Q]` Cache repeated identical queries' NLU classification for a short TTL to cut Ollama round-trips during rapid testing.
-29. `[M]` Add slot-filling for missing required entities (ask "which app?" instead of failing `open_app` silently).
-30. `[M]` Track per-intent accuracy over time (via user corrections / thumbs-down) and surface a weekly "worst-performing intents" report.
+26. ✅ `[Q]` Add a regression test that fails CI if `config/nlu_prompt.txt`'s intent list and `intent_registry.py`'s `ALL_INTENTS` ever drift (you already have the invariant — codify it).
+27. ✅ `[M]` Add multi-language support (start with Hindi/Hinglish given your context) at the NLU layer.
+28. ✅ `[Q]` Cache repeated identical queries' NLU classification for a short TTL to cut Ollama round-trips during rapid testing.
+29. ✅ `[M]` Add slot-filling for missing required entities (ask "which app?" instead of failing `open_app` silently).
+30. ✅ `[M]` Track per-intent accuracy over time (via user corrections / thumbs-down) and surface a weekly "worst-performing intents" report.
 
 ## 3. Mnemosyne — Memory & Knowledge
 
 31. `[L]` Build the knowledge graph HEARTH.txt describes: extract entities/concepts from facts and notes, store relationships, expose "what connects to X."
 32. `[M]` Add a lightweight graph visualization in the web UI (even a force-directed D3 graph of facts/concepts) rather than the full 3D vision.
 33. `[L]` Add spaced-repetition scheduling (SM-2 algorithm) for facts tagged as "study material," with due-today surfacing in the morning brief.
-34. `[M]` Add quiz generation from ingested notes/documents (pull N facts, generate multiple-choice via Ollama, track score history).
-35. `[M]` Add "strength/weakness map" per subject by tracking quiz performance over time.
-36. `[Q]` Add fact expiry/decay — facts not reinforced or referenced in N months get flagged for review instead of living forever.
-37. `[M]` Add contradiction detection: when learning a new fact, check semantic similarity against existing facts and flag conflicts ("you said X before, now Y — update?").
-38. `[M]` Add per-fact confidence/source tracking (user-stated vs. inferred vs. imported) so recall can express uncertainty appropriately.
+34. 🟡 `[M]` Add quiz generation from ingested notes/documents (pull N facts, generate multiple-choice via Ollama, track score history). — *Engine built and tested (`core/quiz_engine.py`); NOT yet wired to any voice/chat intent.*
+35. 🟡 `[M]` Add "strength/weakness map" per subject by tracking quiz performance over time. — *Same as #34: engine only, no user-facing intent yet.*
+36. ✅ `[Q]` Add fact expiry/decay — facts not reinforced or referenced in N months get flagged for review instead of living forever.
+37. ✅ `[M]` Add contradiction detection: when learning a new fact, check semantic similarity against existing facts and flag conflicts ("you said X before, now Y — update?").
+38. ✅ `[M]` Add per-fact confidence/source tracking (user-stated vs. inferred vs. imported) so recall can express uncertainty appropriately.
 39. `[L]` Add Obsidian vault sync: watch a configured vault folder, ingest markdown notes with wikilink-aware chunking, and write back structured notes Hestia generates.
-40. `[M]` Add weekly/monthly auto-summarization of interactions (you have `add_summary`/`get_recent_summaries` — wire this into an actual heartbeat-triggered digest).
-41. `[Q]` Add a "forget everything about X" bulk-delete flow beyond single-fact `forget_fact`.
-42. `[M]` Add semantic deduplication on ingest — don't store near-identical facts twice, merge them with a reference count.
+40. ✅ `[M]` Add weekly/monthly auto-summarization of interactions (you have `add_summary`/`get_recent_summaries` — wire this into an actual heartbeat-triggered digest).
+41. ✅ `[Q]` Add a "forget everything about X" bulk-delete flow beyond single-fact `forget_fact`.
+42. ✅ `[M]` Add semantic deduplication on ingest — don't store near-identical facts twice, merge them with a reference count.
 43. `[L]` Add episodic memory clustering: group related interactions into "episodes" (e.g. all messages about a specific project) for better long-range recall.
-44. `[M]` Expose a "memory export" (JSON/Markdown dump of all facts+summaries) for backup and portability, independent of the sync API.
-45. `[M]` Add importance scoring so `get_top_facts_for_context` weighs recency, frequency of reference, and explicit user emphasis, not just recency.
-46. `[Q]` Add unit tests around embedding drift — if you ever change embedding models, verify old vectors are re-embedded, not silently stale.
+44. ✅ `[M]` Expose a "memory export" (JSON/Markdown dump of all facts+summaries) for backup and portability, independent of the sync API.
+45. ✅ `[M]` Add importance scoring so `get_top_facts_for_context` weighs recency, frequency of reference, and explicit user emphasis, not just recency.
+46. ✅ `[Q]` Add unit tests around embedding drift — if you ever change embedding models, verify old vectors are re-embedded, not silently stale.
 47. `[L]` Add arXiv/IEEE monitoring: scheduled fetch of new papers matching saved interest queries, auto-summarized and queued in Athena.
-48. `[M]` Add "recall what I said on X date" as a first-class dated query, not just semantic search (you may already partially have this — confirm date-range filtering works on ChromaDB metadata).
-49. `[Q]` Add a memory size/cost dashboard (# facts, DB size, embedding count) surfaced via `get_memory_stats`.
-50. `[M]` Add memory provenance in responses — when Hestia recalls something, cite roughly when/how it learned it ("you mentioned this on Tuesday").
+48. ✅ `[M]` Add "recall what I said on X date" as a first-class dated query, not just semantic search (you may already partially have this — confirm date-range filtering works on ChromaDB metadata).
+49. ✅ `[Q]` Add a memory size/cost dashboard (# facts, DB size, embedding count) surfaced via `get_memory_stats`.
+50. ✅ `[M]` Add memory provenance in responses — when Hestia recalls something, cite roughly when/how it learned it ("you mentioned this on Tuesday").
 
 ## 4. Athena — Research & Documents
 
 51. `[L]` Add document *generation*, not just ingestion: LaTeX report scaffolding from a set of notes/citations.
 52. `[L]` Add PowerPoint generation via python-pptx from a document/summary (you already parse pptx — mirror it for output).
 53. `[M]` Add PDF export of any generated report/summary.
-54. `[M]` Add a literature-review generator that synthesizes across multiple ingested papers into one structured draft.
-55. `[M]` Add citation management — track sources per fact/claim and auto-generate a bibliography (BibTeX or APA) on request.
-56. `[M]` Add research-gap detection: compare a set of papers' stated future-work sections and surface recurring unaddressed gaps.
-57. `[Q]` Add a "what's new since I last checked" digest per ingested folder (diff against last ingestion timestamp).
+54. ✅ `[M]` Add a literature-review generator that synthesizes across multiple ingested papers into one structured draft.
+55. ✅ `[M]` Add citation management — track sources per fact/claim and auto-generate a bibliography (BibTeX or APA) on request.
+56. ✅ `[M]` Add research-gap detection: compare a set of papers' stated future-work sections and surface recurring unaddressed gaps.
+57. ✅ `[Q]` Add a "what's new since I last checked" digest per ingested folder (diff against last ingestion timestamp).
 58. `[M]` Add table extraction from PDFs (not just text/OCR) so quantitative data in papers is queryable.
 59. `[M]` Add figure/chart extraction with captions indexed separately for "find the graph that shows X" queries.
 60. `[L]` Add cross-document citation graphs — which papers cite which, visualized.
-61. `[Q]` Add a re-ingestion command that only processes changed/new files instead of a full rebuild every time.
-62. `[M]` Add configurable chunk size/overlap per document type (a textbook chapter vs. a two-page abstract shouldn't chunk the same way).
-63. `[M]` Add a feedback loop: let the user mark a retrieved chunk as irrelevant, and down-weight that chunk/source in future hybrid search.
-64. `[Q]` Surface retrieval scores (semantic + BM25 breakdown) in responses when debug mode is on, to help tune the hybrid weighting.
-65. `[M]` Add multi-document comparative queries ("compare how these three papers define X").
+61. ✅ `[Q]` Add a re-ingestion command that only processes changed/new files instead of a full rebuild every time.
+62. ✅ `[M]` Add configurable chunk size/overlap per document type (a textbook chapter vs. a two-page abstract shouldn't chunk the same way).
+63. ✅ `[M]` Add a feedback loop: let the user mark a retrieved chunk as irrelevant, and down-weight that chunk/source in future hybrid search.
+64. ✅ `[Q]` Surface retrieval scores (semantic + BM25 breakdown) in responses when debug mode is on, to help tune the hybrid weighting.
+65. ✅ `[M]` Add multi-document comparative queries ("compare how these three papers define X").
 66. `[L]` Add methodology-generator: given a research question, draft a study design skeleton (variables, controls, expected analysis).
-67. `[Q]` Add file-type coverage checks in CI — a test per supported format (pdf/docx/pptx/epub/txt) that ingests a fixture file and asserts non-empty extraction.
+67. ✅ `[Q]` Add file-type coverage checks in CI — a test per supported format (pdf/docx/pptx/epub/txt) that ingests a fixture file and asserts non-empty extraction.
 68. `[M]` Add OCR language auto-detection instead of assuming English-only documents.
-69. `[M]` Add a "translate this document" pipeline (useful for non-English papers).
+69. ✅ `[M]` Add a "translate this document" pipeline (useful for non-English papers).
 70. `[Q]` Add ingestion progress reporting (X of Y files processed) to the web UI instead of a silent batch job.
 
 ## 5. Iris — Vision & Media
 
 71. `[L]` Add CLIP-based semantic image search (already on your own roadmap in README) to replace caption-only matching.
 72. `[M]` Add face clustering (privacy-respecting, local-only) so "photos of person X" works without external APIs.
-73. `[M]` Add duplicate/near-duplicate detection across the whole library, not just the perceptual-hash function that already exists — surface it as a cleanup tool.
-74. `[Q]` Add EXIF-based search (date taken, location, camera) alongside caption search.
+73. ✅ `[M]` Add duplicate/near-duplicate detection across the whole library, not just the perceptual-hash function that already exists — surface it as a cleanup tool.
+74. ✅ `[Q]` Add EXIF-based search (date taken, location, camera) alongside caption search.
 75. `[M]` Add video support (frame sampling + captioning), not just static images, if your library has video.
-76. `[M]` Add a "describe what changed" mode comparing two photos of the same subject over time (useful for progress photos, plant growth, etc.).
+76. ✅ `[M]` Add a "describe what changed" mode comparing two photos of the same subject over time (useful for progress photos, plant growth, etc.).
 77. `[L]` Add real-time object detection over a webcam/phone-camera feed for the "hardware debugging via image" and "gesture recognition" use cases HEARTH.txt describes, scoped down to something achievable (e.g. YOLO for common objects, not full PCB fault detection).
-78. `[Q]` Add a manual re-tag/correct-caption flow so wrong AI captions can be fixed and the correction feeds back into search relevance.
-79. `[M]` Add album/collection auto-organization by clustering embeddings (event detection: "these 40 photos are probably one trip").
-80. `[Q]` Add a storage-budget guard — warn before ingesting a folder that would blow past a configured disk quota.
+78. ✅ `[Q]` Add a manual re-tag/correct-caption flow so wrong AI captions can be fixed and the correction feeds back into search relevance.
+79. ✅ `[M]` Add album/collection auto-organization by clustering embeddings (event detection: "these 40 photos are probably one trip").
+80. ✅ `[Q]` Add a storage-budget guard — warn before ingesting a folder that would blow past a configured disk quota.
 
 ## 6. Chronos — Time, Scheduling, Reminders
 
@@ -327,11 +348,11 @@ Each item is a single sentence so you can copy rows straight into an issue track
 
 ## 26. Documentation & Developer Experience
 
-245. `[Q]` Add a `CONTRIBUTING.md` documenting the "add one line to intent_registry.py" pattern so future-you (or a collaborator) doesn't reintroduce the drift bug it just fixed.
+245. ✅ `[Q]` Add a `CONTRIBUTING.md` documenting the "add one line to intent_registry.py" pattern so future-you (or a collaborator) doesn't reintroduce the drift bug it just fixed.
 246. `[M]` Add architecture decision records (ADRs) for the big calls already made (why SQLite+ChromaDB hybrid, why no Docker, why single-process) so the reasoning survives beyond memory.
 247. `[Q]` Add module-level README files (`modules/pluto/README.md` etc.) summarizing what each entity actually does today, since `god_function.md`/`README.md` describe the system but not each module in isolation.
 248. `[M]` Add auto-generated API docs from `api.py`'s FastAPI schema (free via `/docs`, just confirm it's exposed and documented for future-you).
-249. `[Q]` Add a CHANGELOG.md and start using it — useful once you're iterating on 280 backlog items and need to remember what actually shipped.
+249. ✅ `[Q]` Add a CHANGELOG.md and start using it — useful once you're iterating on 280 backlog items and need to remember what actually shipped.
 250. `[M]` Add example `.env`/config files with inline comments for every optional integration (you already do this well for Telegram — extend the pattern to Google, market-data, and OMDB/Spotify keys).
 
 ## 27. Multi-Device & Sync
@@ -350,7 +371,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 ## 29. Testing the Assistant's Own Judgment
 
 258. `[M]` Add a "confidence calibration" report — compare NLU's stated confidence to actual correctness over a labeled sample, and see if confidence scores mean what they claim to.
-259. `[Q]` Add a feedback command ("that was wrong") that logs the query+wrong-response pair for later review, distinct from silent failure.
+259. ✅ `[Q]` Add a feedback command ("that was wrong") that logs the query+wrong-response pair for later review, distinct from silent failure.
 260. `[M]` Add A/B-able prompt variants for the trickiest intents (the ones the NLU prompt file already has extensive disambiguation notes for, like Ares's premortem-vs-risk split) and measure which phrasing performs better.
 
 ## 30. Ideas From Outside the Assistant Space
@@ -369,7 +390,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 272. `[M]` Borrow from RSS readers: add a unified "inbox" view merging new papers (Athena), new reminders (Chronos), new recommendations (Dionysus) into one triage list instead of five separate places to check.
 273. `[Q]` Borrow from password managers: add a "data you've given Hestia" audit screen broken down by module, for periodic review/cleanup.
 274. `[M]` Borrow from journaling apps (Day One): add mood/weather/location auto-tagging on voice journal entries if you build that Mnemosyne feature, purely as context, never as a diagnosis.
-275. `[Q]` Borrow from build tools: add a `--verbose`/`--quiet` global flag so CLI output can be dialed up for debugging or down for daily use.
+275. ✅ `[Q]` Borrow from build tools: add a `--verbose`/`--quiet` global flag so CLI output can be dialed up for debugging or down for daily use.
 276. `[M]` Borrow from feature-flag systems: wrap every experimental Tier-3-style feature in a flag so it can be disabled instantly without a code change, matching the "manual fallback" philosophy both your docs already emphasize.
 277. `[Q]` Borrow from static site generators: add incremental rebuilds everywhere you currently do full rebuilds (Athena's BM25 index rebuild, Iris's stats) so large libraries don't force a full recompute on every small change.
 278. `[M]` Borrow from observability tooling (Honeycomb/Datadog philosophy): treat every user correction as a labeled data point, not just a one-off fix — feed it back into the eval sets in #21.

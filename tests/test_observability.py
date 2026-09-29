@@ -149,6 +149,24 @@ def test_record_classification_tolerates_none_confidence(obs):
     assert record["latency_ms"] == 0.0
 
 
+def test_record_classification_includes_the_script_field(obs, tmp_path):
+    # backlog #27 — lets a future accuracy breakdown ask "is
+    # classification worse for Devanagari input" from the log alone.
+    diag = obs.Diagnostics()
+    diag.record_classification(
+        query="मौसम कैसा है", intent="get_weather", confidence=0.8, module="chronos"
+    )
+    assert _read_jsonl(tmp_path / "routing.jsonl")[0]["script"] == "devanagari"
+
+
+def test_record_classification_script_field_for_english(obs, tmp_path):
+    diag = obs.Diagnostics()
+    diag.record_classification(
+        query="what's the weather", intent="get_weather", confidence=0.8, module="chronos"
+    )
+    assert _read_jsonl(tmp_path / "routing.jsonl")[0]["script"] == "latin"
+
+
 def test_unwritable_log_dir_does_not_raise(tmp_path, monkeypatch):
     # Observability must never be the reason a query fails.
     blocker = tmp_path / "blocked"
@@ -401,6 +419,233 @@ def test_bind_orchestrator_after_construction(obs):
     assert diag.module_status() == {}
     diag.bind_orchestrator(_FakeOrchestrator([_FakeModule("core")]))
     assert "core" in diag.module_status()
+
+
+# ---------------------------------------------------------------------------
+# Per-intent accuracy tracking (#30)
+# ---------------------------------------------------------------------------
+
+def _feedback_record(ts, intent, note="wrong"):
+    return {"ts": ts, "request_id": "r", "note": note, "intent": intent}
+
+
+def _write_feedback_line(tmp_path, record):
+    with open(tmp_path / "feedback.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def test_per_intent_accuracy_excludes_intents_below_min_samples(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.9, "a"))
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.9, "b"))
+    diag = obs.Diagnostics()
+    # Only 2 samples of the "chat" intent — below the default min of 3.
+    assert diag.per_intent_accuracy() == {}
+
+
+def test_per_intent_accuracy_reports_full_accuracy_with_no_feedback(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for i in range(3):
+        _write_routing_line(tmp_path, _record(now.isoformat(), 0.9, f"r{i}"))
+    diag = obs.Diagnostics()
+    result = diag.per_intent_accuracy()
+    assert result["chat"]["total"] == 3
+    assert result["chat"]["flagged_wrong"] == 0
+    assert result["chat"]["accuracy_estimate"] == 1.0
+
+
+def test_per_intent_accuracy_reflects_flagged_mistakes(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for i in range(4):
+        rec = _record(now.isoformat(), 0.9, f"r{i}")
+        rec["intent"] = "apollo_log_workout"
+        _write_routing_line(tmp_path, rec)
+    _write_feedback_line(tmp_path, _feedback_record(now.isoformat(), "apollo_log_workout"))
+    diag = obs.Diagnostics()
+    result = diag.per_intent_accuracy()
+    assert result["apollo_log_workout"]["total"] == 4
+    assert result["apollo_log_workout"]["flagged_wrong"] == 1
+    assert result["apollo_log_workout"]["accuracy_estimate"] == 0.75
+
+
+def test_per_intent_accuracy_tracks_multiple_intents_independently(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for i in range(3):
+        rec = _record(now.isoformat(), 0.9, f"a{i}")
+        rec["intent"] = "apollo_log_workout"
+        _write_routing_line(tmp_path, rec)
+    for i in range(3):
+        rec = _record(now.isoformat(), 0.9, f"p{i}")
+        rec["intent"] = "pluto_log_expense"
+        _write_routing_line(tmp_path, rec)
+    _write_feedback_line(tmp_path, _feedback_record(now.isoformat(), "pluto_log_expense"))
+    diag = obs.Diagnostics()
+    result = diag.per_intent_accuracy()
+    assert result["apollo_log_workout"]["accuracy_estimate"] == 1.0
+    assert result["pluto_log_expense"]["flagged_wrong"] == 1
+
+
+def test_per_intent_accuracy_excludes_records_outside_the_window(obs, tmp_path):
+    from datetime import datetime, timezone, timedelta
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    for i in range(5):
+        rec = _record(old.isoformat(), 0.9, f"r{i}")
+        _write_routing_line(tmp_path, rec)
+    diag = obs.Diagnostics()
+    assert diag.per_intent_accuracy(days=7) == {}
+
+
+def test_worst_performing_intents_sorted_worst_first(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for i in range(4):
+        rec = _record(now.isoformat(), 0.9, f"a{i}")
+        rec["intent"] = "apollo_log_workout"
+        _write_routing_line(tmp_path, rec)
+    for i in range(4):
+        rec = _record(now.isoformat(), 0.9, f"p{i}")
+        rec["intent"] = "pluto_log_expense"
+        _write_routing_line(tmp_path, rec)
+    # apollo: 1/4 wrong (75% accurate); pluto: 3/4 wrong (25% accurate)
+    _write_feedback_line(tmp_path, _feedback_record(now.isoformat(), "apollo_log_workout"))
+    for _ in range(3):
+        _write_feedback_line(tmp_path, _feedback_record(now.isoformat(), "pluto_log_expense"))
+    diag = obs.Diagnostics()
+    worst = diag.worst_performing_intents()
+    assert worst[0][0] == "pluto_log_expense"
+    assert worst[1][0] == "apollo_log_workout"
+
+
+def test_worst_performing_intents_respects_top_n(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for intent_name in ("a", "b", "c"):
+        for i in range(3):
+            rec = _record(now.isoformat(), 0.9, f"{intent_name}{i}")
+            rec["intent"] = intent_name
+            _write_routing_line(tmp_path, rec)
+    diag = obs.Diagnostics()
+    assert len(diag.worst_performing_intents(top_n=2)) == 2
+
+
+def test_weekly_accuracy_summary_reports_no_data(obs):
+    summary = obs.Diagnostics().weekly_accuracy_summary()
+    assert "not enough" in summary.lower()
+
+
+def test_weekly_accuracy_summary_reports_no_mistakes(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for i in range(3):
+        _write_routing_line(tmp_path, _record(now.isoformat(), 0.9, f"r{i}"))
+    summary = obs.Diagnostics().weekly_accuracy_summary()
+    assert "no mistakes" in summary.lower()
+
+
+def test_weekly_accuracy_summary_lists_worst_intents(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for i in range(3):
+        rec = _record(now.isoformat(), 0.9, f"r{i}")
+        rec["intent"] = "pluto_log_expense"
+        _write_routing_line(tmp_path, rec)
+    _write_feedback_line(tmp_path, _feedback_record(now.isoformat(), "pluto_log_expense"))
+    summary = obs.Diagnostics().weekly_accuracy_summary()
+    assert "pluto_log_expense" in summary
+
+
+# ---------------------------------------------------------------------------
+# Nightly low-confidence review (#6)
+# ---------------------------------------------------------------------------
+
+def _write_routing_line(tmp_path, record):
+    with open(tmp_path / "routing.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def _record(ts, confidence, request_id="r1"):
+    return {
+        "ts": ts, "request_id": request_id, "query": "q",
+        "intent": "chat", "confidence": confidence, "module": "core",
+        "reason": "", "latency_ms": 1.0, "source": "nlu",
+    }
+
+
+def test_low_confidence_since_returns_recent_low_confidence_records(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.3, "low"))
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.9, "high"))
+    diag = obs.Diagnostics()
+    results = diag.low_confidence_since(hours=24, threshold=0.6)
+    assert [r["request_id"] for r in results] == ["low"]
+
+
+def test_low_confidence_since_excludes_entries_outside_the_window(obs, tmp_path):
+    from datetime import datetime, timezone, timedelta
+    old = datetime.now(timezone.utc) - timedelta(hours=48)
+    _write_routing_line(tmp_path, _record(old.isoformat(), 0.3, "old"))
+    diag = obs.Diagnostics()
+    assert diag.low_confidence_since(hours=24, threshold=0.6) == []
+
+
+def test_low_confidence_since_with_no_log_file_returns_empty(obs):
+    assert obs.Diagnostics().low_confidence_since() == []
+
+
+def test_low_confidence_since_skips_malformed_lines(obs, tmp_path):
+    with open(tmp_path / "routing.jsonl", "a", encoding="utf-8") as fh:
+        fh.write("not json at all\n")
+    diag = obs.Diagnostics()
+    assert diag.low_confidence_since() == []  # must not raise
+
+
+def test_write_review_queue_appends_new_entries(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.3, "a"))
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.4, "b"))
+    diag = obs.Diagnostics()
+    added = diag.write_review_queue(threshold=0.6)
+    assert added == 2
+    assert len(_read_jsonl(tmp_path / "review_queue.jsonl")) == 2
+
+
+def test_write_review_queue_deduplicates_by_request_id(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.3, "a"))
+    diag = obs.Diagnostics()
+    diag.write_review_queue(threshold=0.6)
+    added_again = diag.write_review_queue(threshold=0.6)
+    assert added_again == 0
+    assert len(_read_jsonl(tmp_path / "review_queue.jsonl")) == 1
+
+
+def test_write_review_queue_returns_zero_when_nothing_qualifies(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.95, "a"))
+    diag = obs.Diagnostics()
+    assert diag.write_review_queue(threshold=0.6) == 0
+
+
+def test_review_queue_summary_reports_zero_when_empty(obs):
+    assert "No low-confidence" in obs.Diagnostics().review_queue_summary()
+
+
+def test_review_queue_summary_reports_a_count(obs, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    _write_routing_line(tmp_path, _record(now.isoformat(), 0.3, "a"))
+    diag = obs.Diagnostics()
+    diag.write_review_queue(threshold=0.6)
+    summary = diag.review_queue_summary()
+    assert "1 low-confidence" in summary
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,19 @@ class HecateEngine(BaseModule):
     """
     name = "hecate"
 
+    # Below this, a registered-but-uncertain intent is not executed blind
+    # (backlog #2). Tier 1 below would otherwise dispatch ANY registered
+    # intent regardless of the NLU's own confidence — a single misheard
+    # word turning into a real "send_email" or "pluto_log_expense" call
+    # with no chance to double-check. Deliberately well below Hecate's own
+    # 0.85 "high confidence" bar (Tier 5) and just above the "force chat"
+    # floor (Tier 6, 0.5): this is specifically the band where the NLU
+    # recognised *something* concrete but wasn't sure, which is exactly
+    # the case a clarifying question serves — a genuinely low-confidence
+    # "chat" guess is already routed to plain chat by Tier 6 and needs no
+    # special handling here.
+    _CLARIFY_CONFIDENCE_THRESHOLD = 0.45
+
     # --- Tier 2 data: raw-text triggers ---------------------------------
     # Moved verbatim from the original tiered implementation — these exist
     # specifically because the NLU intent can't be trusted for these
@@ -138,6 +151,28 @@ class HecateEngine(BaseModule):
             inner = (nlu_result.get("entities") or {}).get("action")
             if isinstance(inner, str) and inner.strip():
                 intent = inner.strip().lower()
+
+        # --- Tier 0.5: low-confidence clarification (backlog #2) -------
+        # Runs before Tier 1 on purpose: Tier 1 dispatches any REGISTERED
+        # intent unconditionally (it exists to guarantee reachability, not
+        # to gate on confidence), so this has to intercept first or it
+        # never fires for exactly the intents it's meant to protect —
+        # recognised-but-uncertain ones. "chat" is excluded because a
+        # low-confidence "chat" guess already has a correct home (plain
+        # conversation, via Tier 6 below); there's nothing concrete to
+        # confirm before answering it.
+        if (
+            intent != "chat"
+            and intent in INTENT_MODULE_MAP
+            and confidence < self._CLARIFY_CONFIDENCE_THRESHOLD
+        ):
+            module = INTENT_MODULE_MAP.get(intent)
+            return self._route(
+                "core", [], confidence,
+                f"low confidence ({confidence:.2f}) for intent {intent!r} "
+                f"(would route to {module!r}) -> asking for clarification",
+                intent="clarify_intent",
+            )
 
         # --- Tier 1: Registry-driven direct dispatch ------------------
         # Replaces the old Tier 1 (Chronos/Hermes exact-match), Tier 1.5

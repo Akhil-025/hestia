@@ -184,6 +184,259 @@ Run everything: `python run_tests.py` (or `python -m pytest tests/`).
 
 ---
 
+## Resilience and extensibility patterns
+
+Added alongside observability; same rationale — make failure visible and
+recoverable instead of silent.
+
+- **Circuit breakers** (`core/circuit_breaker.py`). Every module dispatch
+  goes through a per-module breaker: three consecutive failures opens it
+  for 60s, during which queries to that module get an immediate, honest
+  "taking a short break" response instead of a slow failing call. A
+  `NotImplementedError` (a module deliberately not supporting a call
+  shape) never counts toward the breaker — only real, unexpected failures
+  do. Check `orch.circuit_breaker_status` or ask "module status" to see
+  current state.
+- **Confidence-weighted clarification.** Hecate's Tier 1 dispatches any
+  *registered* intent unconditionally — that's what guarantees every
+  module's intents are reachable (see the drift-bug story above). Tier 0.5
+  runs first and catches the case that guarantee doesn't cover: a
+  registered intent the NLU itself wasn't confident about. Below 0.45
+  confidence, she asks you to rephrase instead of guessing. Don't lower
+  this threshold to "fix" a module that keeps getting misrouted — that's
+  an NLU accuracy problem; fix it with `config/intent_aliases.yaml` or a
+  better few-shot example instead.
+- **Drop-in skills** (`core/module_loader.py`, `skills/`). For something
+  small enough not to justify editing `main.py` — a single-file
+  `BaseModule` with at most `ollama_cfg`/`memory` as dependencies — drop a
+  file in `skills/` defining a top-level `Skill` class. It's discovered
+  and registered automatically on the next restart. This is NOT where the
+  14 built-in modules live or where a new *full* module should go; it's
+  for the smaller tier below that. A skill whose `name` collides with an
+  existing module is skipped with a warning, not silently allowed to
+  shadow it.
+- **Session TTL.** `OrchestratorContext` tracks wall-clock time between
+  turns; a 30-minute gap (`hecate.session_ttl_seconds`) clears
+  conversational context (`recent_intents`, `entities`, `time_context`,
+  `memory_context`) so returning after a long break starts clean instead
+  of carrying stale entities from an unrelated earlier topic.
+  `active_modules` is registration state, not conversation state, and is
+  never touched by this.
+- **Multi-intent splitting** (`core/query_splitter.py`). Splitting a
+  compound query on string shape alone is unreliable — "mac and cheese"
+  looks exactly like "log my workout and check the weather" at that
+  level. So the splitter only proposes *candidates*; the real decision
+  (commit to the split, or treat it as one query) is made by actually
+  classifying both halves and requiring two different, concrete,
+  registered intents. If you're debugging why a compound query didn't
+  split, check the two halves individually with `--dry-run` first — if
+  either one alone doesn't resolve to a clean intent, that's why.
+- **Hot reload** (`core/hot_reload.py`). `config/nlu_prompt.txt` reloads
+  live — no restart needed to tune a few-shot example. `laptop_config.yaml`
+  changes are detected and validated live but NOT hot-applied (see the
+  module's docstring for why most keys can't be); you still restart to
+  actually pick up a config change, but you find out immediately whether
+  the edit was even valid.
+
+---
+
+## NLU, entities, and multi-language
+
+- **Golden-dataset eval.** `hestia_test_prompts.md` isn't just documentation
+  — `scripts/eval_intents.py` parses it as a real dataset. If you add a new
+  test prompt there with an explicit expected answer, follow the existing
+  format: a module-level bullet under a `**ModuleName (...)**` header in
+  Section 1, or an intent-level `- "prompt" → \`intent_name\`` (optionally
+  `must be \`X\`, never \`Y\`\`) in Section 2. Write the intent name
+  unprefixed (`rewrite_style`, not `orpheus_rewrite_style`) — the eval
+  script resolves that automatically against the registry, and fails
+  loudly (`tests/test_eval_parser.py`) if resolution is ever ambiguous.
+  Run `python scripts/eval_intents.py --dataset-only` after editing to
+  confirm the parser still picks it up before assuming it's wired in.
+- **Entity confidence is a signal, not a decision.**
+  `core/entity_confidence.py` scores individual extracted values; it
+  never decides what to do about a low score. If you want a module to act
+  on it (re-prompt, downgrade to a clarifying question), read
+  `entity_confidence` from the NLU result yourself and use the existing
+  slot-filling mechanism — don't build a second confidence-driven
+  reprompt path.
+- **Slot-filling only where the entity shape is verified.** Extending
+  `_clarify(slot=, entities=)` to a new intent means checking that
+  intent's real handler for the exact entity key it reads — same
+  discipline as `core/intent_chains.py`'s `CHAINABLE_TARGETS` comment.
+  Guessing the key name means the orchestrator faithfully re-dispatches
+  with a value the handler never looks at, and the conversation silently
+  goes nowhere.
+- **Intent chaining is regex-detected, not semantic.**
+  `core/intent_chains.py` only fires on an anaphoric reference anchored at
+  the START of the second segment ("add it", "save that"). If you add a
+  new chainable target, verify its entity shape the same way `take_note`
+  was verified (read the real handler), and keep the detection
+  conservative — a false negative just means no chaining happens (the
+  segment dispatches with whatever the NLU itself extracted, same as
+  before this feature existed); a false positive means good content gets
+  overwritten with the wrong thing.
+- **Hindi/Hinglish phrases go in the existing intent's alias block, not a
+  new top-level YAML key.** `config/intent_aliases.yaml` is a flat mapping
+  of intent name -> phrase list; a repeated top-level key silently
+  overwrites the earlier one when the YAML loads (this happened once
+  already — see CHANGELOG.md). If `apollo_track_sleep:` already has
+  English phrases, add the Hinglish ones as more list items under that
+  SAME key, not a second `apollo_track_sleep:` block further down the
+  file. `tests/test_intent_aliases.py`'s shipped-file tests would have
+  caught this except duplicate-key detection has to run on the raw text,
+  not the parsed dict — the dict has already silently lost the duplicate
+  by the time a test could see it. If you're ever unsure, grep the file
+  for the intent name first.
+- **Script detection ≠ language identification.**
+  `core/language_detect.py` reliably tells you what Unicode script a
+  query is written in; it deliberately does NOT try to guess whether Roman
+  script text is English or Hinglish — that's unsolvable from characters
+  alone. Don't build logic that assumes `detect_script() == "latin"` means
+  "definitely English."
+
+---
+
+## Mnemosyne (memory & knowledge)
+
+- **Decay flags, never deletes.** `run_decay_check` marks a fact `stale`
+  after months of no access; nothing ever auto-deletes a fact. If you add
+  a new decay-adjacent feature, keep that boundary — deletion stays an
+  explicit `forget()`/`forget_matching()` call the user asked for.
+- **Contradiction (#37) vs. deduplication (#42) are mirror images, on
+  purpose.** Contradiction detection compares KEYS (fuzzy string match,
+  different value = possible conflict). Deduplication compares VALUES
+  (embedding similarity, different key = possible duplicate). Don't merge
+  these into one "similarity check" — they catch different mistakes
+  ("you're describing the same slot differently" vs. "you already told me
+  this under a different label") and conflating them raises the false-
+  positive rate of both.
+- **Dedup only applies to genuinely new keys.** `learn()` checks for a
+  duplicate value ONLY when the key doesn't already exist. An update to
+  an existing key is always a legitimate upsert. Getting this boundary
+  wrong is exactly the embedding-drift failure
+  `test_mnemosyne_embedding_drift.py` exists to catch — read that file
+  before touching `learn()`'s dedup branch.
+- **Every `vector_store.add()` call must go through `upsert`, never a
+  plain insert.** Chroma's `upsert` replaces an existing doc_id's
+  embedding; an insert-only path can leave a stale vector next to a new
+  one, or silently duplicate. `MnemosyneVectorStore.add()` already does
+  this correctly — if you add a second write path to the vector store,
+  make it upsert too.
+- **Schema changes need a migration, not just a new `CREATE TABLE`
+  column.** `CREATE TABLE IF NOT EXISTS` is a no-op against an existing
+  table — see `modules/mnemosyne/schema.py`'s `_migrate_facts_columns`
+  for the idempotent `ALTER TABLE ... ADD COLUMN` pattern (catch
+  "duplicate column", don't try to detect it in advance) and backfill any
+  column whose value should default to another existing column's value
+  rather than NULL.
+- **The quiz engine (`core/quiz_engine.py`, `core/quiz_store.py`) is
+  intentionally its own schema**, not bolted onto Mnemosyne's facts
+  table — multiple-choice questions and per-subject scoring are a
+  different shape from key/value facts. It's also not yet wired to a
+  user-facing intent (see CHANGELOG.md) — if you pick that up, follow the
+  standard intent checklist above, and feed `generate_quiz` from Athena's
+  search/query results for the "ingested notes/documents" source the
+  backlog asks for, rather than Mnemosyne facts.
+
+---
+
+## Athena (research & documents)
+
+- **Change detection is mtime+size, not a content hash, deliberately.** A
+  full hash would mean reading every file's entire content on every
+  ingestion run just to check whether it changed. If you need stronger
+  guarantees (e.g. a file edited with its mtime deliberately preserved),
+  that's a known, accepted trade-off — don't silently "fix" it to a full
+  hash without discussing the performance cost first.
+- **`_chunk_id` and `_chunk_id_from_metadata` must always agree.** The
+  first builds a chunk's id at ingestion time (from `file_info` + a fresh
+  chunk dict); the second reconstructs the SAME id later from a search
+  result's stored metadata (for feedback marking, dedup, etc.). If you
+  change what one of them reads, check the other still produces an
+  identical string for the same chunk — `test_athena_feedback.py`'s
+  `test_chunk_id_from_metadata_matches_ingestion_format` guards this, but
+  only for the fields it currently knows to check.
+- **Per-document-type config lives in `AthenaConfig.chunk_config_by_type`,
+  resolved once, in `MergedLocalRAG._resolve_chunk_config`.** Don't add a
+  second per-extension lookup elsewhere — extend that one dict and that
+  one resolver.
+- **Dataclasses in `local_rag.py`/`models.py`: check `@dataclass` vs.
+  `@dataclass(frozen=True)` before mutating an instance in place.**
+  `SearchResult` is frozen; a down-weighting or scoring adjustment builds
+  a new instance via `dataclasses.replace(...)`, not `result.score = ...`.
+- **Feedback demotes, never excludes.** `_apply_feedback_weighting` floors
+  at 10% of the original score no matter how much negative feedback a
+  chunk has. If you're tempted to let enough negative feedback zero a
+  chunk out entirely, don't — a chunk irrelevant to one question can
+  still be exactly right for a different one.
+- **`SynthesisService` (literature review, research gaps, document
+  comparison, translation) gathers content via `list_files`/
+  `get_chunks_for_file`, never via `search()`.** Those two return a
+  document's content in original order for REPRESENTATIVE coverage;
+  `search()` returns a relevance-ranked subset for one query. Don't swap
+  one for the other — a literature review built from search results
+  would be biased toward whatever the search query happened to match.
+- **Citations are file-based, not academic.** `CitationRegistry` only
+  knows file_name/subject/page — no author, year, or journal, because
+  Athena doesn't extract that from ingested PDFs. Never have a citation
+  formatter fabricate a plausible-looking author or year; an empty field
+  is honest, a guessed one isn't. If you add real bibliographic
+  extraction later, that's a distinctly bigger feature, not an extension
+  of this one.
+- **New supported document type → add a `test_athena_file_type_coverage.py`
+  fixture too.** That file's `test_every_declared_supported_extension_has_coverage_above`
+  fails on purpose if `document_processor.py`'s `SUPPORTED_EXTENSIONS`
+  grows without matching real-fixture coverage. Generate the fixture with
+  the format's own writer library at test time (see the existing
+  `.docx`/`.pptx`/`.epub` tests) rather than checking in a binary file.
+- **`pytest.importorskip` isn't enough to detect a genuinely-missing
+  library in this test suite specifically** — `tests/conftest.py`/
+  `test_athena.py`'s stub setup also writes fake, import-succeeding
+  modules (`fitz`, `chromadb`, `torch`, ...) for OTHER tests' sake. A
+  test that needs the REAL library (not just something importable under
+  that name) has to additionally check for a real attribute the stub
+  doesn't have — see `test_pdf_extraction_with_a_real_generated_file`'s
+  `hasattr(fitz, "Document")` check for the pattern.
+
+---
+
+## Iris (vision & media)
+
+- **Whole-library scans are a different tool from at-ingest checks, not a
+  bigger version of them.** `DuplicateDetector.find_all_duplicate_groups`
+  exists specifically because at-ingest duplicate checking has a real
+  blind spot: two near-identical files ingested in the same concurrent
+  batch never see each other in the DB. If you add another "check
+  everything already ingested" feature, don't try to make the at-ingest
+  path do double duty — write it as its own pass over `db.get_all_*`,
+  same as this one.
+- **Schema migrations for `files`: never put a new index in the same
+  `executescript` as `CREATE TABLE IF NOT EXISTS`.** That statement is a
+  no-op against a pre-existing table, so an index referencing a NEW
+  column has to be created separately, after the `ALTER TABLE` migration
+  loop that actually adds the column to old databases — this bit a real
+  edit while adding the EXIF columns (see CHANGELOG.md's "Fixed" note),
+  caught only because the test run happened to hit the real persisted
+  `data/iris/iris.db`, not a fresh one.
+- **Album clustering re-runs from scratch, never incrementally.**
+  `organize_into_albums` calls `clear_all_events()` before reclustering —
+  don't change this to "only cluster new photos" without thinking through
+  that adding one photo can legitimately change which cluster several
+  EXISTING photos best belong to.
+- **Vision-LLM calls that compare multiple images send them together, in
+  one call.** `_send_to_ollama` takes a single image or a list; passing
+  two images together (see `describe_change`) lets the model make a
+  direct comparison. Two separate single-image calls diffed afterward is
+  a different, weaker feature — don't conflate them.
+- **A guard warns; it does not silently proceed, and it does not silently
+  block either.** `check_storage_quota` returns a warning dict instead of
+  ingesting; the caller decides whether that's shown to the user or
+  overridden with `force=True`. Don't make ingestion fail outright on a
+  quota being exceeded — that turns a heads-up into an outage.
+
+---
+
 ## Debugging a misroute
 
 1. `python main.py --dry-run "the query that went wrong"` — runs real
@@ -199,3 +452,10 @@ Run everything: `python run_tests.py` (or `python -m pytest tests/`).
    ordering problem. If the intent itself was wrong, it's the NLU — and if
    the correct mapping is unambiguous, `config/intent_aliases.yaml` is the
    cheap fix.
+6. If Hestia asked you to rephrase instead of doing anything
+   (`clarify_intent`), the NLU recognised something but wasn't confident —
+   check `logs/routing.jsonl` for that query's actual confidence score.
+7. If a module suddenly answers "taking a short break" for every query,
+   its circuit breaker is open — check `orch.circuit_breaker_status` or
+   ask "module status"; it'll self-heal after the cooldown, or check the
+   module's own logs for what's actually failing.

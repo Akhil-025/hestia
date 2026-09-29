@@ -24,6 +24,7 @@ from typing import Any, Optional
 from modules.base import BaseModule
 from modules.hecate.engine import HecateEngine
 from modules.hecate.intent_registry import strip_module_prefix as _strip_module_prefix
+from core.circuit_breaker import CircuitBreakerOpen, CircuitBreakerRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,13 @@ _GENERIC_ERROR = "I'm sorry, something went wrong. Please try again."
 # confirms or cancels it (or it expires, below). See
 # HestiaOrchestrator._execute_confirmed / _classify_yes_no.
 _CONFIRMATION_TTL_SECONDS = 120
+
+# Phrases that cancel a pending slot-fill instead of being taken as the
+# literal missing value (backlog #29) — "never mind" as an email recipient
+# would be a strange thing to actually try sending to.
+_CANCEL_PHRASES = frozenset({
+    "never mind", "nevermind", "cancel", "forget it", "nvm", "stop",
+})
 
 _AFFIRMATIVE_PHRASES: frozenset[str] = frozenset(
     {
@@ -141,6 +149,27 @@ class DispatchResult:
 
 
 @dataclass
+class PendingSlotFill:
+    """
+    A single missing entity value a module is waiting on (backlog #29).
+
+    Distinct from PendingConfirmation: that one waits for a yes/no verdict
+    on an already-fully-specified action; this one waits for the ONE
+    piece of information (a recipient, a title, a body) a module said it
+    was missing before it could even form a request to confirm. The
+    entire next raw query is taken verbatim as that value — see
+    HestiaOrchestrator._resolve_pending_slot for why that's the right
+    contract here even though it isn't for yes/no.
+    """
+
+    module: str
+    intent: str
+    entities: dict[str, Any]
+    missing_slot: str
+    created_at: float
+
+
+@dataclass
 class PendingConfirmation:
     """
     A confirmation-gated action awaiting the user's next reply.
@@ -170,6 +199,11 @@ class OrchestratorContext:
     active_modules: list[str] = field(default_factory=list)
     time_context: dict[str, Any] = field(default_factory=dict)
     memory_context: dict[str, Any] = field(default_factory=dict)
+    # Wall-clock time of the last dispatch (backlog #12), used to detect a
+    # session gap — see maybe_expire_session below. 0.0 means "no turn
+    # yet", which is deliberately never treated as a gap on the very first
+    # query of a run.
+    last_active: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +230,39 @@ class OrchestratorContext:
                     "context_update contains unknown key %r; ignoring.", key
                 )
 
+    def maybe_expire_session(self, now: float, ttl_seconds: float) -> bool:
+        """
+        Clear conversational state (recent_intents, entities,
+        time_context, memory_context — everything EXCEPT active_modules,
+        which is process-lifetime registration state, not conversation
+        state) if more than *ttl_seconds* has elapsed since the last turn.
+
+        Returns True if a reset happened. Called at the top of every
+        dispatch() (backlog #12): without this, "add it to my list" three
+        hours after an unrelated conversation about a completely different
+        topic still had that topic's entities and recent_intents sitting
+        in context, because nothing ever cleared them between turns short
+        of a full restart.
+        """
+        if ttl_seconds <= 0 or self.last_active <= 0.0:
+            self.last_active = now
+            return False
+
+        gap = now - self.last_active
+        self.last_active = now
+        if gap <= ttl_seconds:
+            return False
+
+        self.recent_intents = []
+        self.entities = {}
+        self.time_context = {}
+        self.memory_context = {}
+        logger.info(
+            "Session expired after a %.0fs gap (ttl=%.0fs); conversational "
+            "context reset.", gap, ttl_seconds,
+        )
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Orchestrator
@@ -214,14 +281,33 @@ class HestiaOrchestrator:
     is required, wrap dispatch() with an external lock.
     """
 
-    def __init__(self, ollama_cfg: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        ollama_cfg: Optional[dict] = None,
+        session_ttl_seconds: float = 1800.0,
+    ) -> None:
         self._modules: dict[str, BaseModule] = {}
         self._hecate: Optional[HecateEngine] = None
         self._ctx = OrchestratorContext()
+        # Backlog #12. Default 30 minutes: long enough that a normal back-
+        # and-forth conversation is never interrupted, short enough that
+        # coming back to Hestia after lunch starts a clean context instead
+        # of carrying entities from a three-hour-old unrelated topic.
+        # 0 (or negative) disables expiry entirely — useful for tests that
+        # want deterministic context across dispatch() calls regardless of
+        # wall-clock time.
+        self.session_ttl_seconds = float(session_ttl_seconds)
         self._lock = threading.Lock()
         # Set only while a confirmation-gated action (see "Confirmation
         # gating" above) is awaiting the user's yes/no on the *next* query.
         self._pending: Optional[PendingConfirmation] = None
+        # Backlog #29. Separate from self._pending (see PendingSlotFill's
+        # docstring) — the two are mutually exclusive at any moment (a
+        # module response sets at most one of needs_confirmation /
+        # needs_clarification-with-missing_slot), but kept as distinct
+        # attributes rather than a tagged union so each resolution path
+        # stays simple and independently testable.
+        self._pending_slot: Optional[PendingSlotFill] = None
         # Used by _synthesize() so synthesis honours the configured model/host/port
         # instead of silently falling back to core.ollama_client's hardcoded defaults.
         self._ollama_cfg: dict = ollama_cfg or {}
@@ -231,6 +317,11 @@ class HestiaOrchestrator:
         # dispatch() returns only a response string, so without this the
         # routing decision was observable in debug logs and nowhere else.
         self._last_decision: Optional[dict[str, Any]] = None
+        # Per-module circuit breakers (backlog #7). A module whose
+        # handle() keeps raising is skipped entirely — with a fast, honest
+        # fallback — for a cooldown window instead of being called fresh
+        # (and failing slowly) on every query that routes to it.
+        self._breakers = CircuitBreakerRegistry()
 
     # ------------------------------------------------------------------
     # Registration
@@ -300,6 +391,26 @@ class HestiaOrchestrator:
         Never raises; all internal errors produce a graceful string response.
         """
         t_start = time.perf_counter()
+
+        # Session expiry (backlog #12): clears recent_intents/entities/
+        # time_context/memory_context after a long enough gap since the
+        # last turn, so "add it to the list" three hours later doesn't
+        # inherit entities from an unrelated earlier topic. Deliberately
+        # separate from the pending-confirmation TTL a few lines below
+        # (_CONFIRMATION_TTL_SECONDS, checked inside _resolve_pending) —
+        # that one guards a specific yes/no exchange and already has its
+        # own, shorter, window; this one is about general conversational
+        # drift and reuses the same "time since last turn" measurement for
+        # both, via the single last_active timestamp.
+        with self._lock:
+            self._ctx.maybe_expire_session(time.time(), self.session_ttl_seconds)
+
+        # A missing-entity clarification from the previous turn takes
+        # priority over normal routing, same reasoning as the pending
+        # confirmation check just below (backlog #29).
+        pending_slot_response = self._resolve_pending_slot(raw_query)
+        if pending_slot_response is not None:
+            return pending_slot_response
 
         # A confirmation-gated action from the previous turn takes priority
         # over normal routing — this query is presumed to be the user's
@@ -377,6 +488,32 @@ class HestiaOrchestrator:
             logger.info(
                 "Pending confirmation set: module=%s intent=%s label=%r",
                 primary_name, response.confirm_intent or intent, response.confirm_label,
+            )
+            return response.response
+
+        if (
+            isinstance(response, DispatchResult)
+            and response.data.get("needs_clarification")
+            and response.data.get("missing_slot")
+        ):
+            # The module recognised the intent but is missing exactly one
+            # required piece of information (backlog #29) — see
+            # modules/hermes/engine.py's _clarify() for the producing
+            # side. Hold it and hand the question back as this turn's
+            # response; _resolve_pending_slot consumes the next query
+            # verbatim as that value.
+            with self._lock:
+                self._pending_slot = PendingSlotFill(
+                    module=primary_name,
+                    intent=intent,
+                    entities=dict(response.data.get("slot_entities") or entities),
+                    missing_slot=response.data["missing_slot"],
+                    created_at=time.time(),
+                )
+                self._ctx.push_intent(raw_intent)
+            logger.info(
+                "Pending slot-fill set: module=%s intent=%s missing_slot=%s",
+                primary_name, intent, response.data["missing_slot"],
             )
             return response.response
 
@@ -484,6 +621,113 @@ class HestiaOrchestrator:
     # Private – confirmation gating
     # ------------------------------------------------------------------
 
+    def _resolve_pending_slot(self, raw_query: str) -> Optional[str]:
+        """
+        If a module is waiting on exactly one missing entity value from a
+        previous turn's clarifying question, consume this query VERBATIM
+        as that value and re-dispatch straight to the module, bypassing
+        Hecate and the NLU (backlog #29).
+
+        The whole-query-is-the-answer contract is deliberate, not a
+        shortcut: after "Who should I send it to?", running the reply
+        back through intent classification would be actively wrong — "raj
+        at gmail dot com" or "the usual group" isn't a new command, it's
+        an answer, and the NLU has no slot for "email recipient" to put it
+        in anyway. A wrong fill here costs exactly what a wrong fill would
+        have cost if the user had gotten it right the first time — for
+        send_email specifically, the existing yes/no confirmation gate
+        still stands between this and anything actually being sent.
+
+        Returns None if there is nothing pending (or it just expired), in
+        which case *raw_query* should be routed normally instead.
+        """
+        with self._lock:
+            pending = self._pending_slot
+            if pending is not None and (
+                time.time() - pending.created_at > _CONFIRMATION_TTL_SECONDS
+            ):
+                logger.info(
+                    "Pending slot-fill for %s.%s (%s) expired unanswered.",
+                    pending.module, pending.intent, pending.missing_slot,
+                )
+                self._pending_slot = None
+                pending = None
+
+        if pending is None:
+            return None
+
+        with self._lock:
+            self._pending_slot = None
+
+        value = raw_query.strip()
+        if not value:
+            return "I still didn't catch that — want to try again, or say 'never mind'?"
+        if value.lower() in _CANCEL_PHRASES:
+            logger.info(
+                "Pending slot-fill for %s.%s cancelled by user.",
+                pending.module, pending.intent,
+            )
+            return "Okay, never mind."
+
+        module = self._modules.get(pending.module)
+        if module is None:
+            logger.warning(
+                "Pending slot-fill module %r no longer registered.", pending.module
+            )
+            return None
+
+        filled_entities = dict(pending.entities)
+        filled_entities[pending.missing_slot] = value
+        filled_entities.setdefault("raw_query", raw_query)
+
+        logger.info(
+            "Slot filled: module=%s intent=%s slot=%s -> re-dispatching.",
+            pending.module, pending.intent, pending.missing_slot,
+        )
+
+        try:
+            with self._lock:
+                context = self._ctx.as_dict()
+            raw_result = module.handle(pending.intent, filled_entities, context)
+        except Exception:
+            logger.exception(
+                "Slot-filled re-dispatch to %s.%s raised.",
+                pending.module, pending.intent,
+            )
+            return _GENERIC_ERROR
+
+        result = _to_dispatch_result(raw_result)
+
+        # The re-dispatch can itself lead straight into the existing
+        # yes/no confirmation gate (filling "to" for send_email does
+        # exactly this) or into ANOTHER missing slot ("to" filled, "body"
+        # still empty) — chain into the same two pending states dispatch()
+        # itself sets, rather than leaving the conversation with no way to
+        # continue.
+        if result.needs_confirmation:
+            with self._lock:
+                self._pending = PendingConfirmation(
+                    module=pending.module,
+                    intent=result.confirm_intent or pending.intent,
+                    entities=dict(result.confirm_entities or filled_entities),
+                    label=result.confirm_label,
+                    created_at=time.time(),
+                )
+            return result.response
+
+        if result.data.get("needs_clarification") and result.data.get("missing_slot"):
+            with self._lock:
+                self._pending_slot = PendingSlotFill(
+                    module=pending.module,
+                    intent=pending.intent,
+                    entities=dict(result.data.get("slot_entities") or filled_entities),
+                    missing_slot=result.data["missing_slot"],
+                    created_at=time.time(),
+                )
+            return result.response
+
+        return result.response
+
     def _resolve_pending(self, raw_query: str) -> Optional[str]:
         """
         If a confirmation-gated action is awaiting a reply, consume this
@@ -575,6 +819,11 @@ class HestiaOrchestrator:
     # ------------------------------------------------------------------
     # Private – routing
     # ------------------------------------------------------------------
+
+    @property
+    def circuit_breaker_status(self) -> dict[str, dict]:
+        """Per-module circuit breaker state, for diagnostics (backlog #7)."""
+        return self._breakers.snapshot()
 
     @property
     def last_decision(self) -> Optional[dict[str, Any]]:
@@ -702,6 +951,21 @@ class HestiaOrchestrator:
                 return self._chat_fallback(nlu_result)
 
         try:
+            self._breakers.before_call(primary_name)
+        except CircuitBreakerOpen as exc:
+            logger.warning(
+                "Skipping module %r: %s", primary_name, exc,
+            )
+            return DispatchResult(
+                response=(
+                    f"The {primary_name} module has been failing repeatedly, "
+                    f"so I'm giving it a short break — try again in about "
+                    f"{max(int(exc.retry_after), 1)}s."
+                ),
+                confidence=0.3,
+            )
+
+        try:
             raw_result = mod.handle(intent, entities, context)
         except NotImplementedError:
             logger.error(
@@ -709,6 +973,11 @@ class HestiaOrchestrator:
                 primary_name,
                 intent,
             )
+            # Not a transient failure — the module deliberately doesn't
+            # implement this path (e.g. HecateEngine.handle() itself) — so
+            # it must never count toward that module's circuit breaker;
+            # doing so would eventually trip a breaker over a call shape
+            # that eventual retries can never fix.
             return _GENERIC_ERROR
         except Exception:
             logger.exception(
@@ -716,8 +985,10 @@ class HestiaOrchestrator:
                 primary_name,
                 intent,
             )
+            self._breakers.record_failure(primary_name)
             return _GENERIC_ERROR
 
+        self._breakers.record_success(primary_name)
         return _to_dispatch_result(raw_result)
 
     def _find_alternate_module(

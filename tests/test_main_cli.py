@@ -351,3 +351,94 @@ def test_install_signal_handlers_is_a_noop_off_the_main_thread():
     thread.start()
     thread.join()
     assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Config change detection (#15)
+# ---------------------------------------------------------------------------
+
+def _minimal_valid_config():
+    return {
+        "ollama": {"model": "mistral", "host": "127.0.0.1", "port": 11434},
+        "database": {"path": "data/hestia.db"},
+    }
+
+
+def _stub_hestia_for_config_reload(config_path, snapshot):
+    return types.SimpleNamespace(
+        _config_path=config_path,
+        _config_snapshot=snapshot,
+    )
+
+
+def test_config_change_updates_the_snapshot_and_logs_the_diff(tmp_path, caplog):
+    cfg = _minimal_valid_config()
+    path = tmp_path / "cfg.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    new_cfg = dict(cfg)
+    new_cfg["chronos"] = {"timezone": "UTC"}
+    path.write_text(yaml.safe_dump(new_cfg), encoding="utf-8")
+
+    stub = _stub_hestia_for_config_reload(path, dict(cfg))
+    with caplog.at_level(logging.INFO):
+        main_module.Hestia._on_config_file_changed(stub)
+
+    assert stub._config_snapshot == new_cfg
+    assert any("added: chronos" in r.message for r in caplog.records)
+
+
+def test_invalid_config_change_is_not_applied(tmp_path, caplog):
+    cfg = _minimal_valid_config()
+    path = tmp_path / "cfg.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    broken = dict(cfg)
+    broken["ollama"] = {"port": "11434"}  # quoted string — invalid
+    path.write_text(yaml.safe_dump(broken), encoding="utf-8")
+
+    original_snapshot = dict(cfg)
+    stub = _stub_hestia_for_config_reload(path, original_snapshot)
+    with caplog.at_level(logging.ERROR):
+        main_module.Hestia._on_config_file_changed(stub)
+
+    # The running process's snapshot is untouched by an invalid edit.
+    assert stub._config_snapshot == original_snapshot
+    assert any("UNAFFECTED" in r.message for r in caplog.records)
+
+
+def test_unparseable_yaml_change_does_not_raise(tmp_path):
+    path = tmp_path / "cfg.yaml"
+    path.write_text("ollama: [unclosed\n", encoding="utf-8")
+    stub = _stub_hestia_for_config_reload(path, _minimal_valid_config())
+    main_module.Hestia._on_config_file_changed(stub)  # must not raise
+
+
+def test_a_resave_with_no_real_change_does_not_log(tmp_path, caplog):
+    cfg = _minimal_valid_config()
+    path = tmp_path / "cfg.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    stub = _stub_hestia_for_config_reload(path, dict(cfg))
+    with caplog.at_level(logging.INFO):
+        main_module.Hestia._on_config_file_changed(stub)
+    assert not any("changed and is valid" in r.message for r in caplog.records)
+
+
+def test_a_removed_section_is_reported(tmp_path, caplog):
+    cfg = _minimal_valid_config()
+    cfg["chronos"] = {"timezone": "UTC"}
+    path = tmp_path / "cfg.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    without_chronos = _minimal_valid_config()
+    path.write_text(yaml.safe_dump(without_chronos), encoding="utf-8")
+
+    stub = _stub_hestia_for_config_reload(path, dict(cfg))
+    with caplog.at_level(logging.INFO):
+        main_module.Hestia._on_config_file_changed(stub)
+    assert any("removed: chronos" in r.message for r in caplog.records)
+
+
+def test_stop_hot_reload_watchers_is_a_noop_when_none_started():
+    # No _hot_reload_watchers attribute at all on a fresh test double.
+    main_module.Hestia._stop_hot_reload_watchers(types.SimpleNamespace())

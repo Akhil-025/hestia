@@ -85,13 +85,15 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("athena", (dict,), False),
     ("iris", (dict,), False),
     ("mnemosyne", (dict,), False),
+    ("hecate", (dict,), False),
+    ("hecate.session_ttl_seconds", (int, float), False),
 )
 
 # Top-level keys the app knows about. Anything else is reported as a
 # warning (likely a typo), never an error.
 _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
     "ollama", "nlu", "llm", "database", "chronos", "webui", "browser",
-    "google", "telegram", "sync", "athena", "iris", "mnemosyne", "stt",
+    "google", "telegram", "sync", "athena", "iris", "mnemosyne", "hecate", "stt",
     "tts", "wake_word", "barge_in", "scheduler", "heartbeat", "skills",
     "hephaestus", "pluto", "dionysus", "apollo", "artemis", "logging",
     "observability",

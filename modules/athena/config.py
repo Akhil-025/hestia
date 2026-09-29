@@ -31,8 +31,26 @@ class AthenaConfig:
     embed_batch_size: int = 32
 
     # ── Chunking ─────────────────────────────────────────────────────────────
+    # Global fallback, used for any extension not in chunk_config_by_type
+    # below (or when a caller doesn't ask for a type-specific value).
     chunk_size: int    = 1000
     chunk_overlap: int = 200
+
+    # backlog #62: a dense academic PDF and a one-page markdown note
+    # shouldn't chunk the same way. Keyed by file extension (lowercase,
+    # with the leading dot); values are (chunk_size, chunk_overlap) in
+    # characters. An extension not listed here falls back to the plain
+    # chunk_size/chunk_overlap fields above — see
+    # MergedLocalRAG._resolve_chunk_config, the single place that does
+    # that lookup+fallback so it's not duplicated per call site.
+    chunk_config_by_type: dict[str, tuple[int, int]] = field(default_factory=lambda: {
+        ".pdf": (1200, 200),   # dense academic content; larger context per chunk
+        ".docx": (1000, 150),
+        ".epub": (1000, 150),
+        ".txt": (600, 80),
+        ".md": (600, 80),
+        ".pptx": (500, 60),    # short bullet-point text per slide
+    })
 
     # ── Retrieval ────────────────────────────────────────────────────────────
     default_search_results: int = 10

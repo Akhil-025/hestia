@@ -51,6 +51,32 @@ def _readable(key: str) -> str:
     return key.replace("_", " ")
 
 
+def _months_delta(months: float):
+    """A timedelta approximating *months* calendar months (30.44 days/month average)."""
+    from datetime import timedelta
+    return timedelta(days=months * 30.44)
+
+
+def _normalise_key(key: str) -> str:
+    """Lowercase, underscore-stripped form of a fact key, for fuzzy-matching similar keys."""
+    return (key or "").lower().replace("_", " ").strip()
+
+
+def _relative_day(ts: datetime) -> str:
+    """'today' / 'yesterday' / 'on Tuesday' / 'on 2026-01-15' relative to now, for provenance phrasing."""
+    now = datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    days = (now.date() - ts.date()).days
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    if 2 <= days <= 6:
+        return f"on {ts.strftime('%A')}"
+    return f"on {ts.strftime('%Y-%m-%d')}"
+
+
 # ---------------------------------------------------------------------------
 # Response builders
 # ---------------------------------------------------------------------------
@@ -184,8 +210,14 @@ class MnemosyneEngine(BaseModule):
         if key:
             value = self.db.get_fact(key)
             if value:
+                self.db.touch_fact(key)
                 label = "name" if key == "user_name" else _readable(key)
-                return _ok(f"Your {label} is {value}.", confidence=0.95)
+                row = self.db.get_fact_row(key)
+                provenance = (
+                    self._provenance_phrase(row.get("created_at"), row.get("source"))
+                    if row else ""
+                )
+                return _ok(f"Your {label} is {value}.{provenance}", confidence=0.95)
             return _ok("I don't have that information yet.", confidence=0.5)
 
         # Fallback: semantic recall
@@ -199,19 +231,44 @@ class MnemosyneEngine(BaseModule):
         if not key or not value:
             return _ok("What should I remember?", confidence=0.0)
 
-        self.learn(key, value)
-        return _ok(f"Got it — I'll remember your {_readable(key)}.", confidence=0.95)
+        # Contradiction check (backlog #37) runs BEFORE writing, against
+        # the fact table as it stood before this call — checking after
+        # the write risks the new row itself (if its key happens to fuzzy-
+        # match something) being compared against, which is meaningless.
+        conflict = self.check_for_contradiction(key, value)
+
+        result = self.learn(key, value)
+
+        if result["deduplicated"]:
+            other = _readable(result["matched_key"])
+            return _ok(
+                f"I already have that noted (as your {other}).", confidence=0.9,
+                data={"deduplicated": True, "matched_key": result["matched_key"]},
+            )
+
+        response = f"Got it — I'll remember your {_readable(key)}."
+        if conflict:
+            response += (
+                f" Note: this seems to differ from what you told me about "
+                f"your {_readable(conflict['key'])} (\"{conflict['value']}\") — "
+                f"let me know if that one should be updated instead."
+            )
+        return _ok(response, confidence=0.95, data={"conflict": conflict} if conflict else {})
 
     def _handle_forget_fact(self, entities: dict) -> dict:
         """
-        Forget a remembered fact.
-
-        Gated by the orchestrator's confirmation mechanism (see
-        HestiaOrchestrator._resolve_pending): the first call shows what's
-        about to be forgotten and asks for confirmation instead of deleting
-        it immediately — forgetting is not undoable, and "forget fact" is
-        exactly the kind of short, easily-misheard phrase STT gets wrong.
+        Forget a remembered fact — a single one by exact key, or every
+        fact matching a pattern (backlog #41, "forget everything about
+        X"). Both paths are gated by the orchestrator's confirmation
+        mechanism (see HestiaOrchestrator._resolve_pending): the first
+        call shows what's about to be forgotten and asks for confirmation
+        instead of deleting immediately — forgetting is not undoable, and
+        doubly so for a bulk delete.
         """
+        pattern: str = (entities.get("pattern") or entities.get("topic") or "").strip()
+        if pattern:
+            return self._handle_forget_matching(entities, pattern)
+
         key: str = (entities.get("key") or "").strip()
         if not key:
             return _ok("Which fact should I forget?", confidence=0.0)
@@ -236,6 +293,31 @@ class MnemosyneEngine(BaseModule):
         self.forget(key)
         logger.info("Fact forgotten: key=%s", key)
         return _ok(f"Forgotten: {_readable(key)}.", confidence=0.9)
+
+    def _handle_forget_matching(self, entities: dict, pattern: str) -> dict:
+        matches = self.find_matching_facts(pattern)
+        if not matches:
+            return _ok(f"I don't have anything remembered about {pattern}.", confidence=0.5)
+
+        if not entities.get("_confirmed"):
+            listed = ", ".join(_readable(k) for k in matches[:10])
+            more = f" and {len(matches) - 10} more" if len(matches) > 10 else ""
+            return {
+                "response": (
+                    f"That would forget {len(matches)} thing(s) about {pattern}: "
+                    f"{listed}{more}. Say yes to confirm."
+                ),
+                "data": {"pattern": pattern, "keys": matches},
+                "confidence": 0.9,
+                "needs_confirmation": True,
+                "confirm_intent": "forget_fact",
+                "confirm_entities": {"pattern": pattern},
+                "confirm_label": f"forget everything about {pattern}",
+            }
+
+        removed = self.forget_matching(matches)
+        logger.info("Bulk-forgot %d fact(s) matching %r: %s", len(removed), pattern, removed)
+        return _ok(f"Forgotten: {len(removed)} thing(s) about {pattern}.", confidence=0.9)
 
     # ------------------------------------------------------------------
     # Core memory operations (public)
@@ -334,13 +416,50 @@ class MnemosyneEngine(BaseModule):
             line = self._format_result(r)
             if line:
                 lines.append(line)
+            # Being recalled is direct evidence a fact is still relevant
+            # (backlog #45's frequency signal, and #36's decay job reads
+            # this same access_count/last_accessed pair to know what NOT
+            # to flag as stale).
+            meta = r.get("metadata") or {}
+            if meta.get("type") == "fact" and meta.get("key"):
+                try:
+                    self.db.touch_fact(meta["key"])
+                except Exception:
+                    logger.debug("touch_fact failed for key=%s", meta.get("key"))
 
         return " ".join(lines)
 
-    def learn(self, key: str, value: str, source: str = "user") -> None:
-        """Persist a key/value fact to SQLite and the vector store."""
+    def learn(self, key: str, value: str, source: str = "user") -> dict:
+        """
+        Persist a key/value fact to SQLite and the vector store.
+
+        Returns {"deduplicated": bool, "matched_key": Optional[str]} —
+        every existing caller (several modules call this as a fire-and-
+        forget statement and never inspected the old None return) is
+        unaffected by this becoming a dict instead of None (backlog #42).
+
+        Deduplication (#42) only applies when *key* doesn't already exist:
+        an update to an existing key is deliberate (the caller already
+        knows the key) and goes through the normal upsert untouched. Only
+        for a genuinely NEW key is the value checked against existing
+        facts' values — if it closely matches one under a DIFFERENT key,
+        that existing fact's reference count is bumped instead of writing
+        a near-duplicate second copy.
+        """
         if not key or not value:
             raise ValueError(f"learn() requires non-empty key and value; got key={key!r} value={value!r}")
+
+        is_new_key = self.db.get_fact(key) is None
+        if is_new_key:
+            matched_key = self._find_duplicate_value(key, value)
+            if matched_key:
+                self.db.touch_fact(matched_key)
+                logger.info(
+                    "learn(): %r deduplicated against existing fact %r "
+                    "(value similarity >= %.2f); no new row written.",
+                    key, matched_key, self._DEDUP_VALUE_SIMILARITY,
+                )
+                return {"deduplicated": True, "matched_key": matched_key}
 
         self.db.set_fact(key, value, source)
 
@@ -355,6 +474,8 @@ class MnemosyneEngine(BaseModule):
                 self.vector_store.add(value, metadata, doc_id=key)
             except Exception:
                 logger.exception("Vector store add failed for key=%s", key)
+
+        return {"deduplicated": False, "matched_key": None}
 
     def forget(self, key: str) -> None:
         """Remove a fact from SQLite and the vector store."""
@@ -595,7 +716,7 @@ class MnemosyneEngine(BaseModule):
         
     def get_top_facts_for_context(self, limit: int = 5) -> str:
         try:
-            facts = self.db.get_top_facts(limit)
+            facts = self.get_top_facts_scored(limit)
         except Exception:
             logger.exception("Failed to fetch top facts")
             return ""
@@ -604,6 +725,396 @@ class MnemosyneEngine(BaseModule):
             return ""
 
         return "\n".join(f"- {f['key']}: {f['value']}" for f in facts)
+
+    # ------------------------------------------------------------------
+    # Importance-weighted fact ranking (backlog #45)
+    # ------------------------------------------------------------------
+    #
+    # Recency alone (the old ORDER BY updated_at DESC) means a fact
+    # mentioned once, six months ago, that happens to have been the last
+    # one touched, outranks a fact referenced constantly. Scoring blends
+    # three signals, computed here in Python (not as one large SQL
+    # expression) specifically so the weights are visible, unit-testable
+    # constants rather than buried in a query string.
+
+    # Tunable weights — see _score_fact for how each is combined. Kept as
+    # class attributes (not module constants) so a subclass or a future
+    # per-user config override could adjust them without editing this file.
+    _RECENCY_HALF_LIFE_DAYS = 14.0   # a fact's recency contribution halves every ~2 weeks
+    _WEIGHT_RECENCY = 0.4
+    _WEIGHT_FREQUENCY = 0.3
+    _WEIGHT_IMPORTANCE = 0.2
+    _WEIGHT_CONFIDENCE = 0.1
+
+    @classmethod
+    def _score_fact(cls, fact: dict, now: Optional[datetime] = None) -> float:
+        """
+        Blend recency, access frequency, explicit importance, and
+        confidence into one ranking score. Every component is normalised
+        to roughly [0, 1] before weighting, so the weights above are
+        directly comparable to each other rather than needing to also
+        absorb unit conversions.
+        """
+        import math
+
+        now = now or datetime.now(timezone.utc)
+
+        updated_at = fact.get("updated_at")
+        recency = 0.0
+        if updated_at:
+            try:
+                ts = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age_days = max((now - ts).total_seconds() / 86400.0, 0.0)
+                recency = 0.5 ** (age_days / cls._RECENCY_HALF_LIFE_DAYS)
+            except (TypeError, ValueError):
+                recency = 0.0
+
+        access_count = int(fact.get("access_count") or 0)
+        # log1p so the 1st->2nd reference matters far more than the
+        # 50th->51st — frequency should distinguish "never" from
+        # "sometimes" much more than it distinguishes "a lot" from "a lot
+        # more". Divided by log1p(20) so ~20 references saturates near 1.0.
+        frequency = min(math.log1p(access_count) / math.log1p(20), 1.0)
+
+        importance = max(0.0, min(1.0, float(fact.get("importance") if fact.get("importance") is not None else 0.5)))
+        confidence = max(0.0, min(1.0, float(fact.get("confidence") if fact.get("confidence") is not None else 1.0)))
+
+        return (
+            cls._WEIGHT_RECENCY * recency
+            + cls._WEIGHT_FREQUENCY * frequency
+            + cls._WEIGHT_IMPORTANCE * importance
+            + cls._WEIGHT_CONFIDENCE * confidence
+        )
+
+    def get_top_facts_scored(self, limit: int = 5) -> list[dict]:
+        """Facts ranked by _score_fact, highest first — the #45 replacement for pure recency."""
+        candidates = self.db.get_facts_for_scoring(limit=max(limit * 10, 50))
+        now = datetime.now(timezone.utc)
+        scored = sorted(candidates, key=lambda f: self._score_fact(f, now), reverse=True)
+        return [{"key": f["key"], "value": f["value"]} for f in scored[:limit]]
+
+    def set_fact_importance(self, key: str, importance: float) -> bool:
+        """Explicitly weight a fact's ranking (backlog #45). Returns False if the key doesn't exist."""
+        return self.db.set_fact_importance(key, importance)
+
+    # ------------------------------------------------------------------
+    # Fact expiry / decay (backlog #36)
+    # ------------------------------------------------------------------
+    #
+    # Decay FLAGS a fact for review; it never deletes one automatically —
+    # "not referenced in months" is a reasonable prompt to double-check a
+    # fact, not proof it's wrong or unwanted. Deletion stays an explicit
+    # forget()/forget_matching() call.
+
+    _DEFAULT_STALE_MONTHS = 6
+
+    def run_decay_check(self, months: float = _DEFAULT_STALE_MONTHS) -> list[dict]:
+        """
+        Flag facts not accessed in *months* months. Returns the newly-
+        flagged facts (empty if nothing qualified or everything
+        qualifying was already flagged from a previous run).
+        """
+        cutoff = (datetime.now(timezone.utc) - _months_delta(months)).isoformat()
+        try:
+            candidates = self.db.get_stale_facts(cutoff)
+        except Exception:
+            logger.exception("run_decay_check: could not query stale facts.")
+            return []
+        if not candidates:
+            return []
+        keys = [c["key"] for c in candidates]
+        self.db.flag_stale(keys)
+        logger.info("Decay check flagged %d fact(s) as stale: %s", len(keys), keys)
+        return candidates
+
+    def get_stale_facts_for_review(self, limit: int = 50) -> list[dict]:
+        """Previously-flagged stale facts, for a review UI or digest."""
+        try:
+            return self.db.get_flagged_stale_facts(limit)
+        except Exception:
+            logger.exception("get_stale_facts_for_review failed.")
+            return []
+
+    # ------------------------------------------------------------------
+    # Contradiction detection (backlog #37)
+    # ------------------------------------------------------------------
+    #
+    # Deliberately keyed off KEY similarity, not value-embedding
+    # similarity: two facts about genuinely different, unrelated topics
+    # can have similar embeddings just for being ordinary English
+    # sentences, which would make embedding-similarity-based contradiction
+    # detection fire constantly on unrelated pairs. A near-identical KEY
+    # ("favorite_color" vs "fav_colour") with a DIFFERENT value is a much
+    # stronger, lower-false-positive signal that the user is re-stating
+    # the same slot differently. Compare with _find_duplicate_value below,
+    # which is the mirror case: same VALUE, different key.
+
+    _CONTRADICTION_KEY_SIMILARITY = 0.8
+
+    def check_for_contradiction(self, key: str, value: str) -> Optional[dict]:
+        """
+        If an EXISTING fact has a similarly-named key but a different
+        value, return {"key": ..., "value": ...} for it — a candidate
+        contradiction to surface to the user, never to block on. None if
+        nothing looks like a conflict.
+        """
+        import difflib
+
+        try:
+            existing = self.db.get_all_facts(limit=1000)
+        except Exception:
+            logger.exception("check_for_contradiction: could not list facts.")
+            return None
+
+        norm_key = _normalise_key(key)
+        best: Optional[dict] = None
+        best_ratio = 0.0
+        for fact in existing:
+            other_key = fact.get("key", "")
+            if other_key == key:
+                continue  # same key = an update, not a contradiction
+            ratio = difflib.SequenceMatcher(
+                None, norm_key, _normalise_key(other_key)
+            ).ratio()
+            if ratio >= self._CONTRADICTION_KEY_SIMILARITY and ratio > best_ratio:
+                if str(fact.get("value", "")).strip().lower() != str(value).strip().lower():
+                    best, best_ratio = fact, ratio
+
+        return {"key": best["key"], "value": best["value"]} if best else None
+
+    # ------------------------------------------------------------------
+    # Semantic deduplication on ingest (backlog #42)
+    # ------------------------------------------------------------------
+    #
+    # Mirror case of contradiction detection above: same VALUE (high
+    # embedding similarity), different key — the user restating a fact
+    # they already told Hestia, under a new label. Rather than storing a
+    # near-identical second copy, the existing fact's reference count is
+    # bumped and no new row/embedding is written.
+
+    _DEDUP_VALUE_SIMILARITY = 0.92
+
+    def _find_duplicate_value(self, key: str, value: str) -> Optional[str]:
+        """Return an existing DIFFERENT key whose stored value closely matches *value*, or None."""
+        if not self.vector_store:
+            return None
+        try:
+            results = self.vector_store.search(value, n_results=3, where={"type": {"$eq": "fact"}})
+        except Exception:
+            logger.exception("_find_duplicate_value: vector search failed.")
+            return None
+        for r in results:
+            other_key = (r.get("metadata") or {}).get("key")
+            if other_key and other_key != key and r.get("score", 0) >= self._DEDUP_VALUE_SIMILARITY:
+                return other_key
+        return None
+
+    # ------------------------------------------------------------------
+    # Memory provenance (backlog #50)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _provenance_phrase(created_at: Optional[str], source: Optional[str]) -> str:
+        """
+        A short "(you told me this on Tuesday)" / "(inferred)" clause,
+        or "" when there's nothing useful to say (no timestamp, or a
+        malformed one — never raises trying to build this).
+        """
+        parts = []
+        if created_at:
+            try:
+                ts = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+                parts.append(f"mentioned {_relative_day(ts)}")
+            except (TypeError, ValueError):
+                pass
+        if source and source not in ("user",):
+            parts.append(source)
+        return f" ({', '.join(parts)})" if parts else ""
+
+    # ------------------------------------------------------------------
+    # Dated recall (backlog #48)
+    # ------------------------------------------------------------------
+
+    def recall_on_date(self, date_str: str) -> str:
+        """
+        A first-class dated query — "what did I say on Tuesday" —
+        distinct from semantic search (remember()), which has no notion
+        of "on this specific day" at all. *date_str* must already be
+        normalised to YYYY-MM-DD (callers resolve free text like
+        "last Tuesday" via dateparser before calling this — see
+        CoreModule/MnemosyneEngine's intent handler).
+        """
+        try:
+            interactions = self.db.get_interactions_on_date(date_str)
+            facts = self.db.get_facts_created_on_date(date_str)
+        except Exception:
+            logger.exception("recall_on_date failed for date=%s", date_str)
+            return ""
+
+        if not interactions and not facts:
+            return ""
+
+        lines: list[str] = []
+        for f in facts:
+            lines.append(f"You told me your {_readable(f['key'])} is {f['value']}.")
+        if interactions:
+            topics = ", ".join(
+                i["query"][:60] for i in interactions[:5] if i.get("query")
+            )
+            if topics:
+                lines.append(f"You also talked about: {topics}.")
+        return " ".join(lines)
+
+    # ------------------------------------------------------------------
+    # Bulk forget (backlog #41)
+    # ------------------------------------------------------------------
+
+    def find_matching_facts(self, pattern: str) -> list[str]:
+        """Fact keys containing *pattern* as a substring — candidates for bulk forget."""
+        try:
+            return self.db.search_fact_keys(pattern)
+        except Exception:
+            logger.exception("find_matching_facts failed for pattern=%s", pattern)
+            return []
+
+    def forget_matching(self, keys: list[str]) -> list[str]:
+        """
+        Forget every fact in *keys* (SQL row + vector store entry each).
+        Returns the keys actually removed. Reuses forget() per-key rather
+        than a bulk SQL statement so each deletion gets the same vector-
+        store cleanup and error isolation forget() already has — one bad
+        vector-store delete must not abort the rest of the batch.
+        """
+        removed = []
+        for key in keys:
+            try:
+                self.forget(key)
+                removed.append(key)
+            except Exception:
+                logger.exception("forget_matching: failed to forget key=%s", key)
+        return removed
+
+    # ------------------------------------------------------------------
+    # Memory export (backlog #44)
+    # ------------------------------------------------------------------
+
+    def export_memory(self, fmt: str = "json") -> str:
+        """
+        A full dump of facts, goals, and summaries — independent of the
+        sync API (that's for device-to-device delta sync; this is a
+        point-in-time backup/portability snapshot a person can read or
+        archive on its own).
+        """
+        facts = self.db.get_all_facts(limit=1000)
+        summaries = self.db.get_recent_summaries(n=1000)
+        goals = self.db.get_goals(status="active") + self.db.get_goals(status="completed")
+        payload = {
+            "exported_at": _utc_now(),
+            "facts": facts,
+            "summaries": summaries,
+            "goals": goals,
+        }
+
+        if fmt == "markdown":
+            lines = [f"# Hestia memory export", f"_Exported {payload['exported_at']}_", ""]
+            lines.append(f"## Facts ({len(facts)})")
+            for f in facts:
+                lines.append(f"- **{f['key']}**: {f['value']}")
+            lines.append("")
+            lines.append(f"## Summaries ({len(summaries)})")
+            for s in summaries:
+                lines.append(f"- _{s.get('period_start', '?')}_ ({s.get('topic', 'General')}): {s.get('content', '')}")
+            lines.append("")
+            lines.append(f"## Goals ({len(goals)})")
+            for g in goals:
+                lines.append(f"- [{g.get('status', '?')}] {g.get('text', '')}")
+            return "\n".join(lines)
+
+        return json.dumps(payload, indent=2, default=str)
+
+    # ------------------------------------------------------------------
+    # Memory dashboard (backlog #49)
+    # ------------------------------------------------------------------
+
+    def get_memory_dashboard(self) -> dict:
+        """
+        Facts/goals/summaries/interaction counts, stale-fact count, DB
+        size on disk, and embedding count — everything `get_memory_stats`
+        already had, plus the size/cost signals that method didn't cover.
+        """
+        try:
+            stats = self.db.get_memory_stats()
+        except Exception:
+            logger.exception("get_memory_dashboard: stats query failed.")
+            stats = {}
+
+        try:
+            db_size = self.db.get_db_size_bytes()
+        except Exception:
+            db_size = 0
+
+        embedding_count = None
+        if self.vector_store is not None:
+            try:
+                embedding_count = self.vector_store.collection.count()
+            except Exception:
+                logger.exception("get_memory_dashboard: embedding count failed.")
+
+        return {**stats, "db_size_bytes": db_size, "embedding_count": embedding_count}
+
+    # ------------------------------------------------------------------
+    # Weekly/monthly digest (backlog #40)
+    # ------------------------------------------------------------------
+    #
+    # Distinct from Summariser (count-based: every N raw interactions):
+    # this is a TIME-based rollup over already-generated summaries — the
+    # "what happened this week" digest, not "summarise these 20 messages".
+    # Called by core/heartbeat.py on a 7-day / 30-day rolling gap, the
+    # same pattern as the #6/#30 heartbeat jobs.
+
+    def generate_periodic_digest(self, period: str = "weekly") -> Optional[str]:
+        """
+        Roll up recent summaries into one higher-level digest via the LLM
+        and store it (topic="weekly_digest"/"monthly_digest") so it shows
+        up in recall/remember() like any other summary. Returns the
+        digest text, or None if there was nothing to summarise or
+        generation failed — logged either way, never raised.
+        """
+        n = 7 if period == "weekly" else 30
+        try:
+            recent = self.db.get_recent_summaries(n=n)
+        except Exception:
+            logger.exception("generate_periodic_digest: could not fetch summaries.")
+            return None
+        if not recent:
+            logger.info("generate_periodic_digest(%s): nothing to summarise.", period)
+            return None
+
+        joined = "\n".join(
+            f"- ({s.get('topic', 'General')}) {s.get('content', '')}" for s in recent
+        )
+        prompt = (
+            f"Here are the last {len(recent)} conversation summaries. Write one "
+            f"{period} digest paragraph (4-6 sentences) covering the recurring "
+            f"themes and anything notable. Return only the paragraph, no preamble."
+            f"\n\n{joined}"
+        )
+        try:
+            digest = self.hestia_llm.generate(prompt).strip()
+        except Exception:
+            logger.exception("generate_periodic_digest: LLM call failed.")
+            return None
+        if not digest:
+            return None
+
+        now = _utc_now()
+        self.add_summary(
+            period_start=now, period_end=now, content=digest,
+            topic=f"{period}_digest", interaction_count=len(recent),
+        )
+        return digest
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -619,11 +1130,14 @@ class MnemosyneEngine(BaseModule):
             return ""
 
         kind = meta.get("type")
+        provenance = MnemosyneEngine._provenance_phrase(
+            meta.get("created_at"), meta.get("source")
+        )
 
         if kind == "fact":
             key = meta.get("key", "")
             label = _readable(key) if key else "detail"
-            return f"Your {label} is {text}."
+            return f"Your {label} is {text}.{provenance}"
 
         if kind == "summary":
             topic = meta.get("topic", "")
@@ -632,6 +1146,6 @@ class MnemosyneEngine(BaseModule):
                 if topic and topic.lower() != "general"
                 else ""
             )
-            return f"{prefix}{text}"
+            return f"{prefix}{text}{provenance}"
 
         return text

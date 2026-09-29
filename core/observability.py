@@ -46,6 +46,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from core.language_detect import detect_script
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Deque, Optional
@@ -183,6 +184,45 @@ class _JsonlLog:
 # 2 + 3 + 4. Diagnostics
 # ---------------------------------------------------------------------------
 
+def _read_jsonl_since(path: Path, cutoff_ts: float) -> list[dict[str, Any]]:
+    """
+    Read *path* as JSONL, returning records whose ``ts`` field parses to a
+    timestamp at or after *cutoff_ts*.
+
+    Shared by every log-window query in this module
+    (`low_confidence_since`, `per_intent_accuracy`) so "how do we read a
+    rotating JSONL log and treat malformed lines" has exactly one answer:
+    skip lines that aren't valid JSON, skip records with no parseable
+    ``ts``, and return an empty list rather than raising if the file
+    doesn't exist yet (a brand-new install with no traffic yet).
+
+    Reads only *path* itself, not its rotated `.1`/`.2`/`.3` backups — see
+    `Diagnostics.low_confidence_since`'s docstring for why that's a
+    documented approximation rather than a bug for realistic personal-use
+    volume.
+    """
+    out: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(record["ts"]).timestamp()
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if ts >= cutoff_ts:
+                    out.append(record)
+    except OSError:
+        pass
+    return out
+
+
 class Diagnostics:
     """
     Single place Hestia records what it decided, and the single place the
@@ -242,6 +282,11 @@ class Diagnostics:
             "intent": intent,
             "confidence": round(float(confidence or 0.0), 3),
             "module": module,
+            # backlog #27: which Unicode script the query was written in
+            # (see core/language_detect.py). Lets a future accuracy
+            # breakdown ask "is classification worse for Devanagari input"
+            # from the log alone, without re-running anything.
+            "script": detect_script(query or ""),
             "reason": reason,
             "latency_ms": round(float(latency_ms or 0.0), 1),
             "source": source,
@@ -350,6 +395,209 @@ class Diagnostics:
         except OSError:
             return 0
 
+    # -- nightly low-confidence review (backlog #6) ---------------------
+
+    _REVIEW_QUEUE_FILE = "review_queue.jsonl"
+
+    def low_confidence_since(
+        self, hours: float = 24.0, threshold: float = 0.6
+    ) -> list[dict[str, Any]]:
+        """
+        Routing records from the last *hours* with confidence below
+        *threshold*, read straight from ``logs/routing.jsonl``.
+
+        Reads the log file rather than the in-memory ring buffer
+        deliberately: the ring only holds the last 50 decisions
+        (_RING_SIZE), nowhere near a full day's traffic, and this is
+        explicitly a "yesterday" report. Reads only the CURRENT log file,
+        not its rotated backups — a day's worth of classifications is
+        smaller than one rotation (5 MB) for any realistic personal-use
+        volume, so this is a documented approximation, not a bug: if the
+        file happens to have rotated mid-window, the oldest part of the
+        window is silently missed rather than the call failing.
+        """
+        path = _DEFAULT_LOG_DIR / "routing.jsonl"
+        cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
+        return [
+            record for record in _read_jsonl_since(path, cutoff)
+            if float(record.get("confidence", 1.0) or 0.0) < threshold
+        ]
+
+    def write_review_queue(
+        self, hours: float = 24.0, threshold: float = 0.6
+    ) -> int:
+        """
+        Append yesterday's low-confidence classifications to
+        ``logs/review_queue.jsonl`` for manual labelling, deduplicated
+        against what's already queued by request id.
+
+        Called once a day by ``core.heartbeat.HestiaHeartbeat`` (backlog
+        #6) rather than exposing this only as something you'd have to
+        remember to run — "surfaces them for you to manually label" only
+        works if surfacing doesn't depend on remembering to ask. Returns
+        the number of NEW entries appended (0 is not an error — it means
+        classification was confident all day, which is the goal, not a
+        failure of this method).
+        """
+        candidates = self.low_confidence_since(hours=hours, threshold=threshold)
+        if not candidates:
+            return 0
+
+        queue_path = _DEFAULT_LOG_DIR / self._REVIEW_QUEUE_FILE
+        existing_ids: set[str] = set()
+        try:
+            with queue_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        existing_ids.add(json.loads(line).get("request_id", ""))
+                    except (TypeError, ValueError):
+                        continue
+        except OSError:
+            pass  # queue file doesn't exist yet — nothing to dedup against
+
+        new_entries = [
+            c for c in candidates if c.get("request_id") not in existing_ids
+        ]
+        if not new_entries:
+            return 0
+
+        try:
+            _DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            with queue_path.open("a", encoding="utf-8") as fh:
+                for entry in new_entries:
+                    fh.write(json.dumps(entry, ensure_ascii=False, default=str))
+                    fh.write("\n")
+        except OSError as exc:
+            logger.debug("Could not write review queue: %s", exc)
+            return 0
+
+        return len(new_entries)
+
+    def review_queue_summary(self) -> str:
+        """
+        Prose summary of the review queue, for the heartbeat's log line
+        and for a future "review my low-confidence queue" intent to speak.
+        """
+        queue_path = _DEFAULT_LOG_DIR / self._REVIEW_QUEUE_FILE
+        try:
+            with queue_path.open("r", encoding="utf-8") as fh:
+                count = sum(1 for line in fh if line.strip())
+        except OSError:
+            return "No low-confidence classifications queued for review."
+        if count == 0:
+            return "No low-confidence classifications queued for review."
+        return (
+            f"{count} low-confidence classification(s) queued for review "
+            f"in logs/{self._REVIEW_QUEUE_FILE}."
+        )
+
+    # -- per-intent accuracy tracking (backlog #30) ---------------------
+
+    _MIN_SAMPLES_FOR_ACCURACY = 3
+
+    def per_intent_accuracy(
+        self, days: float = 7.0, min_samples: int = _MIN_SAMPLES_FOR_ACCURACY
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Per-intent accuracy estimate over the last *days*, derived from
+        two logs that already exist for other reasons: `routing.jsonl`
+        supplies how many times each intent was classified at all, and
+        `feedback.jsonl` supplies how many of those were explicitly
+        flagged wrong via the `report_mistake` intent (backlog #259) — an
+        explicit correction, not a guess at silent dissatisfaction.
+
+        This is an ESTIMATE, not ground truth, and the name says so:
+        accuracy_estimate = 1 - (flagged_wrong / total). It only reflects
+        mistakes the user bothered to report, so it's a lower bound on
+        the true error rate, not a measurement of it — a wrong
+        classification the user never mentioned counts as correct here.
+        Intents with fewer than *min_samples* total classifications in
+        the window are excluded entirely rather than reported with a
+        misleadingly precise-looking 0% or 100%, since a single
+        classification's outcome is not a rate.
+
+        Reads ONLY the current routing/feedback log files, same documented
+        approximation as `low_confidence_since` — see that method's
+        docstring for why.
+        """
+        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+
+        totals: dict[str, int] = {}
+        for path_name in ("routing.jsonl",):
+            for record in _read_jsonl_since(_DEFAULT_LOG_DIR / path_name, cutoff):
+                intent = record.get("intent")
+                if intent:
+                    totals[intent] = totals.get(intent, 0) + 1
+
+        flagged: dict[str, int] = {}
+        for record in _read_jsonl_since(_DEFAULT_LOG_DIR / "feedback.jsonl", cutoff):
+            intent = record.get("intent")
+            if intent:
+                flagged[intent] = flagged.get(intent, 0) + 1
+
+        out: dict[str, dict[str, Any]] = {}
+        for intent, total in totals.items():
+            if total < min_samples:
+                continue
+            wrong = flagged.get(intent, 0)
+            out[intent] = {
+                "total": total,
+                "flagged_wrong": wrong,
+                "accuracy_estimate": round(1 - (wrong / total), 3),
+            }
+        return out
+
+    def worst_performing_intents(
+        self,
+        days: float = 7.0,
+        min_samples: int = _MIN_SAMPLES_FOR_ACCURACY,
+        top_n: int = 5,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """
+        The *top_n* lowest-accuracy intents over the window, worst first.
+
+        Ties broken by sample count descending — a 70% estimate from 20
+        samples is a more useful thing to look at than a 70% estimate
+        from 3, even though the estimate itself is identical.
+        """
+        accuracy = self.per_intent_accuracy(days=days, min_samples=min_samples)
+        ranked = sorted(
+            accuracy.items(),
+            key=lambda kv: (kv[1]["accuracy_estimate"], -kv[1]["total"]),
+        )
+        return ranked[:top_n]
+
+    def weekly_accuracy_summary(self, days: float = 7.0) -> str:
+        """
+        Prose report for the heartbeat's weekly job and its log line —
+        the worst-performing intents in the window, or an honest "not
+        enough data" / "nothing flagged" when there's nothing to show.
+        """
+        accuracy = self.per_intent_accuracy(days=days)
+        if not accuracy:
+            return (
+                f"Not enough classification volume in the last "
+                f"{days:.0f} days to estimate per-intent accuracy."
+            )
+
+        worst = [
+            (intent, stats) for intent, stats in self.worst_performing_intents(days=days)
+            if stats["flagged_wrong"] > 0
+        ]
+        if not worst:
+            return f"No mistakes reported against any intent in the last {days:.0f} days."
+
+        lines = [f"Worst-performing intent(s) over the last {days:.0f} days:"]
+        for intent, stats in worst:
+            lines.append(
+                f"  {intent}: ~{stats['accuracy_estimate']:.0%} "
+                f"({stats['flagged_wrong']}/{stats['total']} flagged wrong)"
+            )
+        return "\n".join(lines)
+
     # -- module status (backlog #8) ------------------------------------
 
     def module_status(self) -> dict[str, dict[str, Any]]:
@@ -379,9 +627,17 @@ class Diagnostics:
             return {}
 
         out: dict[str, dict[str, Any]] = {}
+        breakers = getattr(orch, "circuit_breaker_status", None) or {}
         for name in names:
             module = getattr(orch, "_modules", {}).get(name)
             entry: dict[str, Any] = {"registered": True, "state": "unknown"}
+            if name in breakers:
+                # A breaker only exists once a module has been dispatched
+                # to at least once, so this is absent for most modules
+                # most of the time — that absence is itself informative
+                # (never called, or never failed) and left out rather than
+                # padded with a fake "closed" default.
+                entry["circuit"] = breakers[name]
             if module is None:
                 out[name] = entry
                 continue
@@ -406,6 +662,14 @@ class Diagnostics:
                     entry["state"] = "error"
                     entry["probe"] = probe_name
                     entry["detail"] = str(exc)[:200]
+
+            # An open circuit breaker means the module is currently being
+            # skipped regardless of what its own health probe says (the
+            # probe checks "can it work in principle"; the breaker tracks
+            # "has it actually been failing on real calls") — surface the
+            # more urgent signal without overwriting an existing "error".
+            if entry.get("circuit", {}).get("state") == "open" and entry["state"] != "error":
+                entry["state"] = "degraded"
             out[name] = entry
         return out
 

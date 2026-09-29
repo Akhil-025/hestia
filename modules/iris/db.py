@@ -44,7 +44,13 @@ class IrisDB:
         mood TEXT,
         is_sensitive BOOLEAN DEFAULT 0,
         blur_score REAL,
-        error TEXT
+        error TEXT,
+        date_taken TIMESTAMP,
+        gps_lat REAL,
+        gps_lon REAL,
+        camera_make TEXT,
+        camera_model TEXT,
+        caption_source TEXT DEFAULT 'ai'
     );
     CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash);
     CREATE INDEX IF NOT EXISTS idx_files_processed ON files(processed);
@@ -98,6 +104,38 @@ class IrisDB:
                     )
                 except sqlite3.OperationalError:
                     pass  # column already exists
+
+                # Migration: EXIF columns (backlog #74) and a caption_source
+                # marker (backlog #78) — same idempotent pattern, needed for
+                # any database that predates these columns being added to
+                # the CREATE TABLE above.
+                for column, coltype in (
+                    ("date_taken", "TIMESTAMP"),
+                    ("gps_lat", "REAL"),
+                    ("gps_lon", "REAL"),
+                    ("camera_make", "TEXT"),
+                    ("camera_model", "TEXT"),
+                    # 'ai' (default, set by IrisAnalyser) or 'user' (set by
+                    # correct_caption) — lets a future re-analysis pass
+                    # skip files a person has already manually corrected,
+                    # instead of silently overwriting their correction.
+                    ("caption_source", "TEXT DEFAULT 'ai'"),
+                ):
+                    try:
+                        self._conn.execute(f"ALTER TABLE files ADD COLUMN {column} {coltype}")
+                    except sqlite3.OperationalError:
+                        pass  # column already exists
+
+                # Only safe to create now — on a pre-existing database, the
+                # migration loop just above is what actually added
+                # date_taken; creating this index inside the earlier
+                # CREATE TABLE IF NOT EXISTS executescript (a no-op against
+                # an existing table) would fail with "no such column" on
+                # any database that predates this column.
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_files_date_taken "
+                    "ON files(date_taken) WHERE date_taken IS NOT NULL"
+                )
 
         # --- Files ---
         def file_exists(self, file_path: str) -> bool:
@@ -169,7 +207,143 @@ class IrisDB:
             cur = self._conn.execute("SELECT * FROM files WHERE caption LIKE ? ORDER BY ingested_at DESC LIMIT ?", (f"%{query}%", limit))
             return [dict(row) for row in cur.fetchall()]
 
-        # --- Queue ---
+        def update_file_exif(
+            self, file_id: int, date_taken=None, gps_lat=None, gps_lon=None,
+            camera_make=None, camera_model=None,
+        ) -> None:
+            """backlog #74 — called once per file during ingestion/analysis."""
+            with self._lock, self._conn:
+                self._conn.execute(
+                    """
+                    UPDATE files SET date_taken=?, gps_lat=?, gps_lon=?,
+                                      camera_make=?, camera_model=?
+                    WHERE id=?
+                    """,
+                    (date_taken, gps_lat, gps_lon, camera_make, camera_model, file_id),
+                )
+
+        def search_files_by_exif(
+            self, date_from=None, date_to=None, camera=None, has_location=None,
+            limit: int = 50,
+        ) -> List[dict]:
+            """
+            backlog #74. Any combination of filters may be given; all
+            supplied filters are ANDed together. `camera` matches against
+            either camera_make or camera_model (substring, case-insensitive
+            via LIKE's default collation).
+            """
+            clauses: List[str] = []
+            params: List[Any] = []
+            if date_from:
+                clauses.append("date_taken >= ?")
+                params.append(date_from)
+            if date_to:
+                clauses.append("date_taken <= ?")
+                params.append(date_to)
+            if camera:
+                clauses.append("(camera_make LIKE ? OR camera_model LIKE ?)")
+                params.extend([f"%{camera}%", f"%{camera}%"])
+            if has_location is True:
+                clauses.append("gps_lat IS NOT NULL AND gps_lon IS NOT NULL")
+            elif has_location is False:
+                clauses.append("(gps_lat IS NULL OR gps_lon IS NULL)")
+
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            cur = self._conn.execute(
+                f"SELECT * FROM files {where} ORDER BY date_taken DESC LIMIT ?",
+                (*params, limit),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        # --- Manual corrections (#78) ---
+        def correct_caption(
+            self, file_id: int, caption: Optional[str] = None, tags: Optional[str] = None,
+        ) -> bool:
+            """
+            Overwrite an AI-generated caption/tags with a user correction,
+            marking caption_source='user' so a future re-analysis pass
+            (should one ever be added) knows not to silently clobber it.
+            At least one of caption/tags must be given. Returns False if
+            the file doesn't exist.
+            """
+            if caption is None and tags is None:
+                return False
+            if not self.get_file(file_id):
+                return False
+            sets = ["caption_source = 'user'"]
+            params: List[Any] = []
+            if caption is not None:
+                sets.append("caption = ?")
+                params.append(caption)
+            if tags is not None:
+                sets.append("tags = ?")
+                params.append(tags)
+            params.append(file_id)
+            with self._lock, self._conn:
+                self._conn.execute(
+                    f"UPDATE files SET {', '.join(sets)} WHERE id = ?", params
+                )
+            return True
+
+        # --- Whole-library duplicate scan (#73) ---
+        def get_all_file_hashes(self) -> List[Tuple[int, str, str]]:
+            """(id, file_path, file_hash) for every ingested file — the
+            candidate set for an EXACT-hash whole-library duplicate scan,
+            as distinct from get_perceptual_hashes' near-duplicate one."""
+            cur = self._conn.execute("SELECT id, file_path, file_hash FROM files")
+            return [(row["id"], row["file_path"], row["file_hash"]) for row in cur.fetchall()]
+
+        # --- Storage budget (#80) ---
+        def get_total_ingested_bytes(self) -> int:
+            cur = self._conn.execute("SELECT COALESCE(SUM(file_size), 0) FROM files")
+            return cur.fetchone()[0]
+
+        # --- Albums / events (#79) ---
+        def create_event(self, name: str) -> int:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "INSERT INTO events (name, file_count) VALUES (?, 0)", (name,)
+                )
+                return cur.lastrowid
+
+        def add_files_to_event(self, event_id: int, file_ids: List[int]) -> None:
+            if not file_ids:
+                return
+            with self._lock, self._conn:
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO event_files (event_id, file_id) VALUES (?, ?)",
+                    [(event_id, fid) for fid in file_ids],
+                )
+                self._conn.execute(
+                    "UPDATE events SET file_count = "
+                    "(SELECT COUNT(*) FROM event_files WHERE event_id = ?) WHERE id = ?",
+                    (event_id, event_id),
+                )
+
+        def get_events(self, limit: int = 50) -> List[dict]:
+            cur = self._conn.execute(
+                "SELECT * FROM events ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        def get_files_in_event(self, event_id: int) -> List[dict]:
+            cur = self._conn.execute(
+                """
+                SELECT f.* FROM files f
+                JOIN event_files ef ON ef.file_id = f.id
+                WHERE ef.event_id = ?
+                """,
+                (event_id,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        def clear_all_events(self) -> None:
+            """Wipe existing album groupings before a fresh re-cluster (organize_into_albums re-runs from scratch each time, not incrementally)."""
+            with self._lock, self._conn:
+                self._conn.execute("DELETE FROM event_files")
+                self._conn.execute("DELETE FROM events")
+
+
         def enqueue(self, file_id: int, task_type: str = 'analyze', priority: int = 0) -> None:
             with self._lock, self._conn:
                 self._conn.execute(

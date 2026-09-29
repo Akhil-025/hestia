@@ -47,8 +47,8 @@ class _FixedToday:
         return self._fixed
 
 
-def make_heartbeat(mnemosyne=None) -> HestiaHeartbeat:
-    return HestiaHeartbeat(interval=1800, mnemosyne=mnemosyne)
+def make_heartbeat(mnemosyne=None, diagnostics=None) -> HestiaHeartbeat:
+    return HestiaHeartbeat(interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics)
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +275,240 @@ def test_run_heartbeat_without_mnemosyne_does_not_raise():
     hb = make_heartbeat(mnemosyne=None)
     with patch("os.path.exists", return_value=False):
         hb._run_heartbeat()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Nightly low-confidence review (backlog #6) — once per day, 00:00-05:59,
+# only when a Diagnostics is injected. Mirrors the morning-brief tests'
+# date-tracking pattern exactly (_last_review_date instead of
+# _last_brief_date).
+# ---------------------------------------------------------------------------
+
+def test_low_confidence_review_fires_within_window():
+    diag = MagicMock()
+    diag.write_review_queue.return_value = 3
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_low_confidence_review()
+
+    diag.write_review_queue.assert_called_once()
+    mock_bus.emit.assert_any_call(
+        "low_confidence_review_ready",
+        {"count": 3, "summary": diag.review_queue_summary.return_value},
+    )
+
+
+def test_low_confidence_review_does_not_fire_outside_window():
+    diag = MagicMock()
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(14))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_low_confidence_review()
+
+    diag.write_review_queue.assert_not_called()
+
+
+def test_low_confidence_review_does_not_fire_without_diagnostics():
+    hb = make_heartbeat(diagnostics=None)
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_low_confidence_review()  # must not raise
+    mock_bus.emit.assert_not_called()
+
+
+def test_low_confidence_review_only_fires_once_per_day():
+    diag = MagicMock()
+    diag.write_review_queue.return_value = 1
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_low_confidence_review()
+        hb._maybe_run_low_confidence_review()
+
+    assert diag.write_review_queue.call_count == 1
+
+
+def test_low_confidence_review_fires_again_on_a_new_day():
+    diag = MagicMock()
+    diag.write_review_queue.return_value = 1
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_low_confidence_review()
+
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 2))):
+        hb._maybe_run_low_confidence_review()
+
+    assert diag.write_review_queue.call_count == 2
+
+
+def test_low_confidence_review_with_nothing_new_does_not_emit():
+    diag = MagicMock()
+    diag.write_review_queue.return_value = 0
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_low_confidence_review()
+
+    mock_bus.emit.assert_not_called()
+
+
+def test_low_confidence_review_swallows_diagnostics_errors():
+    diag = MagicMock()
+    diag.write_review_queue.side_effect = RuntimeError("disk full")
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_low_confidence_review()  # must not raise
+
+    mock_bus.emit.assert_not_called()
+
+
+def test_low_confidence_review_is_invoked_from_run_heartbeat():
+    diag = MagicMock()
+    diag.write_review_queue.return_value = 0
+    hb = make_heartbeat(diagnostics=diag)
+    with patch("os.path.exists", return_value=False), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._run_heartbeat()
+    diag.write_review_queue.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Weekly per-intent accuracy review (backlog #30) — once every 7 days,
+# 00:00-05:59, only when a Diagnostics is injected. Uses a 7-day gap
+# rather than a calendar-day flag, unlike the daily jobs above.
+# ---------------------------------------------------------------------------
+
+def test_weekly_accuracy_review_fires_within_window():
+    diag = MagicMock()
+    diag.weekly_accuracy_summary.return_value = "worst: pluto_log_expense ~50%"
+    diag.worst_performing_intents.return_value = [
+        ("pluto_log_expense", {"total": 4, "flagged_wrong": 2, "accuracy_estimate": 0.5}),
+    ]
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_weekly_accuracy_review()
+
+    diag.weekly_accuracy_summary.assert_called_once()
+    assert mock_bus.emit.call_args[0][0] == "weekly_accuracy_review_ready"
+
+
+def test_weekly_accuracy_review_does_not_fire_outside_window():
+    diag = MagicMock()
+    hb = make_heartbeat(diagnostics=diag)
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(14))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_weekly_accuracy_review()
+    diag.weekly_accuracy_summary.assert_not_called()
+
+
+def test_weekly_accuracy_review_does_not_fire_without_diagnostics():
+    hb = make_heartbeat(diagnostics=None)
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_weekly_accuracy_review()  # must not raise
+    mock_bus.emit.assert_not_called()
+
+
+def test_weekly_accuracy_review_does_not_repeat_within_seven_days():
+    diag = MagicMock()
+    diag.worst_performing_intents.return_value = []
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_weekly_accuracy_review()
+
+    # Day 3: still within the 7-day gap.
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 4))):
+        hb._maybe_run_weekly_accuracy_review()
+
+    assert diag.weekly_accuracy_summary.call_count == 1
+
+
+def test_weekly_accuracy_review_fires_again_after_seven_days():
+    diag = MagicMock()
+    diag.worst_performing_intents.return_value = []
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_weekly_accuracy_review()
+
+    with patch("core.heartbeat.bus"), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 8))):
+        hb._maybe_run_weekly_accuracy_review()
+
+    assert diag.weekly_accuracy_summary.call_count == 2
+
+
+def test_weekly_accuracy_review_with_nothing_flagged_does_not_emit():
+    diag = MagicMock()
+    diag.weekly_accuracy_summary.return_value = "No mistakes reported."
+    diag.worst_performing_intents.return_value = [
+        ("chat", {"total": 10, "flagged_wrong": 0, "accuracy_estimate": 1.0}),
+    ]
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_weekly_accuracy_review()
+
+    mock_bus.emit.assert_not_called()
+
+
+def test_weekly_accuracy_review_swallows_diagnostics_errors():
+    diag = MagicMock()
+    diag.weekly_accuracy_summary.side_effect = RuntimeError("disk full")
+    hb = make_heartbeat(diagnostics=diag)
+
+    with patch("core.heartbeat.bus") as mock_bus, \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._maybe_run_weekly_accuracy_review()  # must not raise
+
+    mock_bus.emit.assert_not_called()
+
+
+def test_weekly_accuracy_review_is_invoked_from_run_heartbeat():
+    diag = MagicMock()
+    diag.write_review_queue.return_value = 0
+    diag.worst_performing_intents.return_value = []
+    hb = make_heartbeat(diagnostics=diag)
+    with patch("os.path.exists", return_value=False), \
+         patch("core.heartbeat.datetime", _FixedNow(_dt_at_hour(2))), \
+         patch("core.heartbeat.date", _FixedToday(date(2026, 1, 1))):
+        hb._run_heartbeat()
+    diag.weekly_accuracy_summary.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -22,9 +22,17 @@ class SourceDocument:
     module: Optional[str] = None
     chunk_number: Optional[int] = None
     score: Optional[float] = None
+    # backlog #64: the merged `score` above is what search/ranking
+    # actually uses; these two are the breakdown BEHIND it, populated
+    # only when the search that produced this document computed both
+    # (hybrid search always does — see MergedLocalRAG's docstring).
+    # Optional and defaulting to None rather than 0.0, so a caller can
+    # tell "not computed for this search" apart from "computed as zero".
+    semantic_score: Optional[float] = None
+    bm25_score: Optional[float] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
+    def to_dict(self, include_score_breakdown: bool = False) -> Dict[str, Any]:
+        d = {
             "text":         self.text,
             "file_name":    self.file_name,
             "file_path":    self.file_path,
@@ -34,6 +42,14 @@ class SourceDocument:
             "chunk_number": self.chunk_number,
             "score":        self.score,
         }
+        # Opt-in (backlog #64's "in debug mode") rather than always-on:
+        # the breakdown is genuinely useful for tuning retrieval but is
+        # noise in every normal search response, and doubles the field
+        # count of what's usually a list of several sources.
+        if include_score_breakdown:
+            d["semantic_score"] = self.semantic_score
+            d["bm25_score"] = self.bm25_score
+        return d
 
 
 # ── Wrapper around a raw RAG response ────────────────────────────────────────
@@ -75,8 +91,14 @@ class SearchResults:
         """Convert to a flat list of SourceDocument objects."""
         sources: List[SourceDocument] = []
         scores = self.scores or [0.0] * len(self.documents)
+        # These two are shorter than `documents` whenever the search that
+        # produced this SearchResults didn't compute a breakdown (a pure-
+        # semantic or pure-BM25 search, or an old-style dict response) —
+        # index past the end just means "not available for this one".
+        semantic = self.semantic_scores or []
+        bm25 = self.bm25_scores or []
 
-        for doc, md, score in zip(self.documents, self.metadatas, scores):
+        for i, (doc, md, score) in enumerate(zip(self.documents, self.metadatas, scores)):
             if not doc:
                 continue
             md = md or {}
@@ -89,6 +111,8 @@ class SearchResults:
                 module       = md.get("module"),
                 chunk_number = md.get("chunk_number"),
                 score        = float(score),
+                semantic_score = semantic[i] if i < len(semantic) else None,
+                bm25_score     = bm25[i] if i < len(bm25) else None,
             ))
         return sources
 

@@ -232,9 +232,13 @@ class HermesEngine(BaseModule):
         ).strip()
 
         if not to:
-            return _clarify("Who should I send it to?")
+            return _clarify(
+                "Who should I send it to?", slot="to", entities=entities
+            )
         if not body:
-            return _clarify("What should the email say?")
+            return _clarify(
+                "What should the email say?", slot="body", entities=entities
+            )
 
         if not entities.get("_confirmed"):
             preview = _truncate(body, 120)
@@ -301,7 +305,9 @@ class HermesEngine(BaseModule):
                 title = match.group(1).strip(" .!?\"'")
 
         if not title:
-            return _clarify("What should I call the event?")
+            return _clarify(
+                "What should I call the event?", slot="title", entities=entities
+            )
 
         date_str: str = (entities.get("date") or "today").strip()
         time_str: str = (entities.get("time") or _DEFAULT_EVENT_TIME).strip()
@@ -629,5 +635,27 @@ def _err(response: str) -> dict[str, Any]:
     return {"response": response, "data": {}, "confidence": 0.0}
 
 
-def _clarify(question: str) -> dict[str, Any]:
-    return {"response": question, "data": {"needs_clarification": True}, "confidence": 0.5}
+def _clarify(
+    question: str,
+    *,
+    slot: Optional[str] = None,
+    entities: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Ask for one missing piece of information.
+
+    `slot`/`entities` are optional (backlog #29): when supplied, the
+    orchestrator holds this as a PendingSlotFill and feeds the user's
+    verbatim next reply into `entities[slot]` before re-dispatching
+    straight back to this same handler — so "Who should I send it to?"
+    followed by "raj@example.com" actually completes the email instead of
+    the reply vanishing into a fresh, unrelated classification. Omit both
+    for a clarification that doesn't cleanly reduce to one entity key
+    (e.g. "I couldn't understand that date" — the fix isn't a single
+    verbatim slot value in the same way).
+    """
+    data: dict[str, Any] = {"needs_clarification": True}
+    if slot:
+        data["missing_slot"] = slot
+        data["slot_entities"] = dict(entities or {})
+    return {"response": question, "data": data, "confidence": 0.5}

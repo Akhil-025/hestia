@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 from modules.hecate.intent_registry import ALL_INTENTS as _REGISTRY_INTENTS
 from core.intent_aliases import IntentAliasResolver
 from core.nlu_cache import NLUCache
+from core.entity_confidence import score_entities
 
 # Fast-path intents: deterministic, no entities needed, no LLM round trip.
 # Kept intentionally small and conservative — only patterns that are
@@ -160,6 +161,7 @@ class HestiaNLU:
         self.base_url = f"http://{host}:{port}"
         self.temperature = 0.1
         self.max_tokens = 150
+        self._prompt_path = prompt_path  # kept for reload_prompt() (backlog #15)
         self.system_prompt = self._load_prompt(prompt_path)
         self.valid_intents = _CANONICAL_VALID_INTENTS
         self._warn_if_prompt_intents_drifted(self.system_prompt)
@@ -182,6 +184,45 @@ class HestiaNLU:
                 self._aliases.count, alias_path,
             )
         self._cache = NLUCache(ttl_seconds=cache_ttl_seconds)
+
+    def reload_prompt(self, path: Optional[str] = None) -> bool:
+        """
+        Re-read the system prompt from disk and rebuild everything derived
+        from it, without restarting Hestia (backlog #15).
+
+        This is the full reload path — every step `__init__` runs against
+        the prompt, run again in the same order:
+
+          1. re-read the file (`_load_prompt` already degrades to a
+             minimal built-in prompt on a read error, same as at startup);
+          2. re-check for registry drift, since the edit might have added
+             or removed an intent from the "Valid intents:" block;
+          3. rebuild the JSON schema sent to Ollama, which encodes the
+             valid-intent enum;
+          4. invalidate the classification cache — a cached answer
+             classified under the OLD prompt must not silently survive a
+             prompt change, or tuning the prompt to fix a misclassification
+             would appear to do nothing until the cache TTL expired.
+
+        Returns True if the prompt text actually changed, False if the
+        file's content was identical to what was already loaded (a no-op
+        reload, e.g. from a save that didn't change anything, still runs
+        the drift check but skips invalidating the cache for nothing).
+        """
+        target = path or self._prompt_path
+        new_prompt = self._load_prompt(target)
+        changed = new_prompt != self.system_prompt
+
+        self.system_prompt = new_prompt
+        self._warn_if_prompt_intents_drifted(self.system_prompt)
+        self._schema = self._build_schema(self.valid_intents)
+
+        if changed:
+            self._cache.invalidate()
+            logger.info("[NLU] Prompt reloaded from %s (cache invalidated).", target)
+        else:
+            logger.debug("[NLU] Prompt reload from %s: no change.", target)
+        return changed
 
     def _load_prompt(self, path: str) -> str:
         """Load system prompt and few-shot examples from file."""
@@ -379,12 +420,20 @@ class HestiaNLU:
         aliased = self._aliases.resolve_result(text)
         if aliased is not None:
             print(f"[NLU] Alias match -> {aliased['intent']!r}", file=sys.stderr)
+            # entities is always {} for an alias hit, so this is always
+            # {} too — set explicitly rather than omitted, so the result
+            # shape (which keys exist) is identical regardless of which
+            # path produced it (backlog #23).
+            aliased.setdefault("entity_confidence", {})
             self._cache.put(text, aliased, context)
             return aliased
 
         if not self._health_check():
             print("[NLU] Ollama unreachable", file=sys.stderr)
-            return {"intent": "chat", "entities": {}, "response": "My backend isn't responding right now.", "confidence": 0.0}
+            return {
+                "intent": "chat", "entities": {}, "entity_confidence": {},
+                "response": "My backend isn't responding right now.", "confidence": 0.0,
+            }
 
         base_prompt = self._build_prompt(text, context)
 
@@ -459,6 +508,12 @@ class HestiaNLU:
             parsed["entities"] = self._clean_amount_entities(resolved_intent, parsed["entities"])
             if resolved_intent == "learn_fact":
                 parsed["entities"] = self._repair_learn_fact(text or "", parsed["entities"])
+            # Per-entity confidence (backlog #23) — a separate question
+            # from the top-level `confidence` above: that scores whether
+            # the INTENT is right, this scores whether each EXTRACTED
+            # VALUE looks trustworthy. See core/entity_confidence.py for
+            # why this is heuristic rather than a second model call.
+            parsed["entity_confidence"] = score_entities(parsed["entities"], text or "")
             # Only fully-validated results reach here, so nothing the cache
             # returns later can be an intent the registry doesn't know.
             parsed.setdefault("source", "nlu")

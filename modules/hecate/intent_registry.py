@@ -104,6 +104,11 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "modules_status": "core",
     "explain_routing": "core",
     "report_mistake": "core",
+    # Confidence-weighted fallback (backlog #2). Assigned by Hecate's
+    # Tier 0.5, never emitted by the NLU itself, so it's registered here
+    # (the enum in _build_schema needs it to exist) but deliberately has
+    # no few-shot examples in config/nlu_prompt.txt.
+    "clarify_intent": "core",
 
     # --- Mnemosyne (long-term memory) ---
     # "recall"/"remember"/"get_facts" are internal intent names Hecate
@@ -133,6 +138,18 @@ INTENT_MODULE_MAP: dict[str, str] = {
     # Previously unreachable via classified intent — see module docstring.
     "athena_ingest": "athena",
     "athena_status": "athena",
+    # backlog #57 — dry preview of what a re-ingest would find.
+    "athena_check_updates": "athena",
+    # backlog #63 — mark a previously-returned source as (ir)relevant.
+    "athena_mark_feedback": "athena",
+    # backlog #54, #56, #65 — synthesis over already-ingested content;
+    # #55 — bibliography of a search/synthesis's sources.
+    "athena_literature_review": "athena",
+    "athena_research_gaps": "athena",
+    "athena_compare_documents": "athena",
+    "athena_get_citations": "athena",
+    # backlog #69 — translate an already-ingested document.
+    "athena_translate_document": "athena",
 
     # --- Iris (media search & ingestion) ---
     "iris_search": "iris",
@@ -141,6 +158,11 @@ INTENT_MODULE_MAP: dict[str, str] = {
     # Previously unreachable via classified intent — see module docstring.
     "iris_analyse": "iris",
     "iris_query": "iris",
+    # backlog #73, #78, #79, #76 — cleanup/organisation/comparison tools.
+    "iris_find_duplicates": "iris",
+    "iris_correct_caption": "iris",
+    "iris_organize_albums": "iris",
+    "iris_compare_photos": "iris",
 
     # --- Artemis (habits & goals) ---
     "add_goal": "artemis",
@@ -275,7 +297,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.1.0"
+REGISTRY_VERSION: str = "2.7.0"
 
 
 def registry_fingerprint() -> str:

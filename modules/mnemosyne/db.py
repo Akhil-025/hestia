@@ -59,13 +59,15 @@ class MnemosyneDB:
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO facts (key, value, source, confidence, created_at, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                INSERT INTO facts (key, value, source, confidence, created_at, updated_at, last_accessed)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(key) DO UPDATE SET
                     value=excluded.value,
                     source=excluded.source,
                     confidence=excluded.confidence,
-                    updated_at=CURRENT_TIMESTAMP
+                    updated_at=CURRENT_TIMESTAMP,
+                    last_accessed=CURRENT_TIMESTAMP,
+                    stale=0
                 """,
                 (key, value, source, confidence)
             )
@@ -77,6 +79,19 @@ class MnemosyneDB:
         )
         row = cur.fetchone()
         return row["value"] if row else None
+
+    def get_fact_row(self, key) -> Optional[dict]:
+        """Full metadata for one fact (value/source/confidence/created_at/...), not just its value."""
+        cur = self._conn.execute(
+            """
+            SELECT key, value, source, confidence, created_at, updated_at,
+                   last_accessed, access_count, importance, stale
+            FROM facts WHERE key = ?
+            """,
+            (key,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
 
     def get_all_facts(self, limit: int = 100, offset: int = 0) -> list[dict]:
         limit = max(1, min(limit, 1000))  # hard cap
@@ -95,6 +110,151 @@ class MnemosyneDB:
     def delete_fact(self, key) -> None:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM facts WHERE key = ?", (key,))
+
+    # -- fact lifecycle: access tracking, decay, importance (#36, #45) --
+
+    def touch_fact(self, key: str) -> None:
+        """
+        Record that *key* was just referenced/recalled: bump its access
+        count, refresh last_accessed, and clear any stale flag — being
+        recalled is direct evidence the fact is still relevant, which is
+        exactly the signal the decay job (get_stale_facts) needs to not
+        re-flag it next run.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE facts
+                SET access_count = access_count + 1,
+                    last_accessed = CURRENT_TIMESTAMP,
+                    stale = 0
+                WHERE key = ?
+                """,
+                (key,),
+            )
+
+    def get_stale_facts(self, cutoff_iso: str) -> list[dict]:
+        """Facts last accessed before *cutoff_iso* and not already flagged stale."""
+        cur = self._conn.execute(
+            """
+            SELECT key, value, last_accessed, access_count
+            FROM facts
+            WHERE COALESCE(last_accessed, created_at) < ? AND stale = 0
+            ORDER BY last_accessed ASC
+            """,
+            (cutoff_iso,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def flag_stale(self, keys: list[str]) -> int:
+        """Mark the given fact keys stale=1. Returns the number updated."""
+        if not keys:
+            return 0
+        with self._lock, self._conn:
+            cur = self._conn.executemany(
+                "UPDATE facts SET stale = 1 WHERE key = ? AND stale = 0",
+                [(k,) for k in keys],
+            )
+            return cur.rowcount if cur.rowcount is not None else len(keys)
+
+    def get_flagged_stale_facts(self, limit: int = 50) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT key, value, last_accessed
+            FROM facts WHERE stale = 1
+            ORDER BY last_accessed ASC LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def set_fact_importance(self, key: str, importance: float) -> bool:
+        """Set an explicit importance weight (0..1). Returns False if the key doesn't exist."""
+        importance = max(0.0, min(1.0, float(importance)))
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE facts SET importance = ? WHERE key = ?", (importance, key)
+            )
+            return cur.rowcount > 0
+
+    def get_facts_for_scoring(self, limit: int = 200) -> list[dict]:
+        """
+        A candidate pool for importance-based ranking (#45): every field
+        `MnemosyneEngine._score_fact` needs, capped at *limit* rows so the
+        Python-side scoring pass (see engine.py — deliberately NOT done
+        as a giant SQL expression, for testability and tunability) stays
+        cheap even with a large fact table.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT key, value, updated_at, access_count, importance, confidence
+            FROM facts
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    # -- bulk operations (#41) -------------------------------------------
+
+    def search_fact_keys(self, pattern: str) -> list[str]:
+        """
+        Keys matching *pattern* as a SQL LIKE substring (case-insensitive
+        by SQLite's default LIKE collation for ASCII). Used by "forget
+        everything about X" to find candidate keys before deleting.
+        """
+        cur = self._conn.execute(
+            "SELECT key FROM facts WHERE key LIKE ? ORDER BY key", (f"%{pattern}%",)
+        )
+        return [row["key"] for row in cur.fetchall()]
+
+    def delete_facts(self, keys: list[str]) -> int:
+        """Delete multiple fact rows by key. Returns the number actually deleted."""
+        if not keys:
+            return 0
+        with self._lock, self._conn:
+            cur = self._conn.executemany(
+                "DELETE FROM facts WHERE key = ?", [(k,) for k in keys]
+            )
+            return cur.rowcount if cur.rowcount is not None else 0
+
+    # -- dated queries (#48) ----------------------------------------------
+
+    def get_interactions_on_date(self, date_str: str) -> list[dict]:
+        """
+        Interactions whose pushed_at falls on the calendar date *date_str*
+        (YYYY-MM-DD), independent of what timezone pushed_at was recorded
+        in relative to the caller's — the comparison is a plain string
+        prefix match against the ISO timestamp, matching how pushed_at is
+        actually stored (CURRENT_TIMESTAMP, UTC, ISO-ish).
+        """
+        cur = self._conn.execute(
+            """
+            SELECT user_text, hestia_response, intent, pushed_at
+            FROM interaction_log
+            WHERE pushed_at LIKE ?
+            ORDER BY id ASC
+            """,
+            (f"{date_str}%",),
+        )
+        return [
+            {
+                "query": r["user_text"], "response": r["hestia_response"],
+                "intent": r["intent"], "pushed_at": r["pushed_at"],
+            }
+            for r in cur.fetchall()
+        ]
+
+    def get_facts_created_on_date(self, date_str: str) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT key, value, source, confidence, created_at
+            FROM facts WHERE created_at LIKE ? ORDER BY created_at ASC
+            """,
+            (f"{date_str}%",),
+        )
+        return [dict(row) for row in cur.fetchall()]
 
     # Summaries
     def add_summary(self, period_start, period_end, content, topic, interaction_count) -> int:
@@ -298,11 +458,53 @@ class MnemosyneDB:
         """Facts / active goals / summaries counts, queried under the DB lock."""
         with self._lock:
             facts = self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+            stale_facts = self._conn.execute(
+                "SELECT COUNT(*) FROM facts WHERE stale = 1"
+            ).fetchone()[0]
             goals = self._conn.execute(
                 "SELECT COUNT(*) FROM goals WHERE status = 'active'"
             ).fetchone()[0]
             summaries = self._conn.execute("SELECT COUNT(*) FROM summaries").fetchone()[0]
-            return {"facts": facts, "goals": goals, "summaries": summaries}
+            interactions = self._conn.execute(
+                "SELECT COUNT(*) FROM interaction_log"
+            ).fetchone()[0]
+        # File size read outside the lock — os.stat doesn't touch the
+        # connection, and WAL mode means the on-disk .db file is not the
+        # full picture anyway (see get_db_size_bytes below for the honest
+        # version that also counts -wal/-shm).
+        return {
+            "facts": facts,
+            "stale_facts": stale_facts,
+            "goals": goals,
+            "summaries": summaries,
+            "interactions": interactions,
+        }
+
+    def get_db_size_bytes(self) -> int:
+        """
+        Total on-disk size of the SQLite database, including the WAL and
+        shared-memory sidecar files (`-wal`/`-shm`) — this connection runs
+        in WAL mode (see __init__), so recently-written data can live in
+        those files rather than the main `.db` file until the next
+        checkpoint. Reporting only the main file's size would understate
+        actual disk usage right after a burst of writes.
+        """
+        import os
+
+        try:
+            main_path = self._conn.execute("PRAGMA database_list").fetchone()[2]
+        except Exception:
+            return 0
+        if not main_path:
+            return 0
+        total = 0
+        for suffix in ("", "-wal", "-shm"):
+            path = f"{main_path}{suffix}"
+            try:
+                total += os.path.getsize(path)
+            except OSError:
+                pass
+        return total
 
     # ── Reminders ─────────────────────────────────────
 

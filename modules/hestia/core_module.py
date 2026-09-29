@@ -31,6 +31,10 @@ class CoreModule(BaseModule):
         # module-specific state, so "are your modules up?" still works
         # when the module being asked about is the broken one.
         "modules_status", "explain_routing", "report_mistake",
+        # Confidence-weighted fallback (backlog #2). Hecate assigns this
+        # when a recognised intent's own NLU confidence is too low to act
+        # on blindly; it is never emitted by the NLU/prompt directly.
+        "clarify_intent",
     }
 
     def __init__(self, memory, ollama_cfg: dict, llm=None, timezone_name: str = "UTC",
@@ -103,6 +107,9 @@ class CoreModule(BaseModule):
         if intent == "report_mistake":
             return self._report_mistake(entities, raw)
 
+        if intent == "clarify_intent":
+            return self._clarify_intent(entities, raw)
+
         return {"response": "", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:
@@ -153,6 +160,29 @@ class CoreModule(BaseModule):
                 "confidence": 0.2,
             }
         return {"response": explanation, "data": data, "confidence": 0.95}
+
+    def _clarify_intent(self, entities: dict, raw: str) -> dict:
+        """
+        Ask rather than guess when the NLU recognised something concrete
+        but wasn't confident about it (backlog #2).
+
+        Deliberately does NOT try to name the guessed intent or module in
+        the question — surfacing "did you mean pluto_log_expense?" isn't a
+        clarifying question a person can answer, it's implementation
+        detail. The useful signal (which intent, which module, the actual
+        confidence score) is exactly what explain_routing and the routing
+        log already exist to surface for debugging; this handler's only
+        job is to give the user an easy way to just say it more plainly.
+        """
+        return {
+            "response": (
+                "I'm not quite sure I caught that right — could you say it "
+                "a bit more plainly, or tell me exactly what you'd like me "
+                "to do?"
+            ),
+            "data": {"raw_query": raw},
+            "confidence": 0.5,
+        }
 
     def _report_mistake(self, entities: dict, raw: str) -> dict:
         """

@@ -287,7 +287,9 @@ def test_get_user_info_with_real_key_still_works():
         engine, _ = make_engine(tmp)
         engine.learn("user_name", "Alex")
         r = engine.handle("get_user_info", {"key": "user_name"}, {})
-        assert r["response"] == "Your name is Alex."
+        # backlog #50: responses now carry a provenance clause ("(mentioned
+        # today)") — check the core content rather than the exact string.
+        assert r["response"].startswith("Your name is Alex.")
         assert r["confidence"] == 0.95
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
