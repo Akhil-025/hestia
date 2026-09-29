@@ -12,6 +12,73 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Metis & Orpheus (Writing)
+
+Completes all six items in section 15 (#164–#169) plus #270. New tests:
+`tests/test_writing_workflow.py`.
+
+### Added
+
+- **Writing session (#164).** `metis_writing_session` — one command that has
+  Orpheus draft a poem / story / song, then Metis critique it once and
+  polish it. The draft is kept as version 1 of the creation; the polished
+  text is version 2. `polish: false` gives critique only.
+- **Optional polish pass (#270).** Orpheus's `write_poem`, `write_story` and
+  `generate_lyrics` accept `polish: true` (or default it on with
+  `writing.polish_pass: true`). One critique, at most one revision, never
+  iterative. Creative text is edited as art (voice, imagery and line breaks
+  protected, personal style profile not applied). A revision that gutted or
+  ballooned the piece is rejected and the draft is kept. `metis_polish_text`
+  runs the same pass on any text.
+- **Style profile (#165).** `metis_learn_style` / `show_style_profile` /
+  `clear_style_profile`. Builds a profile from pasted samples (measured
+  habits such as sentence length, contractions and punctuation, plus a short
+  LLM voice summary). Correct, clarity, style, tone-shift, rewrite, draft,
+  expand and shorten respect it; `use_style: false` opts out. Samples are
+  stored in full locally and can be wiped.
+- **Length and readability targets (#166).** shorten / expand / summarise /
+  draft take `target_words`, `min_words`, `max_words` and `target_grade`. The
+  result is measured, retried once with the exact miss described, and
+  reported honestly if still off. Text is never truncated to hit a number.
+  `readability_report` now includes measured Flesch scores.
+- **Version history (#167).** Append-only `creation_versions` table. New
+  Orpheus intents `revise_creation`, `get_versions`, `restore_version`.
+  Restoring appends a copy, so nothing is ever lost. Existing databases are
+  upgraded on open, with each old creation's text recorded as version 1.
+- **Export (#168).** `orpheus_export_creation` and `metis_export_session`
+  write `.md` / `.txt` into `writing.export_dir` (default `data/exports`).
+  Filenames are reduced to a safe basename, existing files are never
+  overwritten, and poem line breaks survive in Markdown
+  (`core/text_export.py`).
+- **Plagiarism check surfaces sources (#169).** `check_plagiarism` now
+  searches distinctive passages as exact phrases, opens each returned page to
+  confirm the passage is really there, and lists title, URL and
+  confirmed/unverified status. It still gives no originality score. With no
+  browser it says so and returns the quoted passages for a manual check.
+- **Ten new intents** (four Orpheus, six Metis). Registry version bumped to
+  2.9.0 (minor: intents added); `config/nlu_prompt.txt` and
+  `config/intent_aliases.yaml` updated to match. New optional `writing:`
+  config block (`polish_pass`, `export_dir`, `plagiarism_web_check`),
+  validated in `core/config_validation.py`.
+
+### Fixed
+
+- `distinctive_phrases()` could return an all-stopword window as a search
+  query; such windows are now skipped.
+- Metis `_safe_db` discarded the new row id; it now returns it.
+- Metis / Orpheus listings order same-second rows by id, so "latest" is
+  deterministic.
+
+### Known gaps
+
+- Plagiarism spot-checks depend on the browser agent (DuckDuckGo via
+  Playwright). They sample a few passages, so "no matches" never proves a
+  text is original.
+- The style profile is measured plus LLM-summarised; it steers the model but
+  does not guarantee the output matches the user's voice.
+
+---
+
 ## [Unreleased] — Chronos (Time, Scheduling, Reminders)
 
 Completes nine of ten items (#81–#87, #89, #90); **#88 is partial** (see Known gaps). Chronos already contained most of the

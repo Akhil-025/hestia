@@ -397,12 +397,36 @@ class HestiaBuilder:
         orchestrator.register(
             AresEngine(memory=mnemosyne, ollama_cfg=self.ollama_cfg)
         )
-        orchestrator.register(
-            OrpheusEngine(ollama_cfg=self.ollama_cfg, memory=mnemosyne)
+        # Writing pair (backlog #164, #168, #169, #270). Orpheus and Metis
+        # are wired to each other so a writing session can chain
+        # draft -> critique/polish, and Orpheus can request Metis's optional
+        # polish pass. Options live under `writing:` in laptop_config.yaml.
+        writing_cfg = self.config.get("writing", {}) or {}
+        orpheus = OrpheusEngine(
+            ollama_cfg=self.ollama_cfg, memory=mnemosyne,
+            export_dir=writing_cfg.get("export_dir"),
+            polish_default=bool(writing_cfg.get("polish_pass", False)),
         )
-        orchestrator.register(
-            MetisEngine(ollama_cfg=self.ollama_cfg, memory=mnemosyne)
+        metis = MetisEngine(
+            ollama_cfg=self.ollama_cfg, memory=mnemosyne,
+            export_dir=writing_cfg.get("export_dir"),
         )
+        orpheus.attach_metis(metis)
+        metis.attach_orpheus(orpheus)
+        # Plagiarism spot-check needs a live search. Read-only, no
+        # confirmation needed; without a browser Metis falls back to
+        # handing you the passages to search yourself.
+        if (
+            browser_agent is not None
+            and bool(writing_cfg.get("plagiarism_web_check", True))
+            and hasattr(browser_agent, "search_web_results")
+        ):
+            metis.attach_web_search(
+                browser_agent.search_web_results,
+                getattr(browser_agent, "get_page_text", None),
+            )
+        orchestrator.register(orpheus)
+        orchestrator.register(metis)
         dionysus = DionysusEngine(
             ollama_cfg=self.ollama_cfg,
             browser_agent=browser_agent,

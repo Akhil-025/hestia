@@ -8,6 +8,11 @@ or rewriting it in a different style. Also surfaces the module's own
 history so past creations can be recalled, not just written once and
 forgotten.
 
+Beyond first drafts, Orpheus keeps an append-only version history for every
+creation (revise / restore never overwrite the original draft), can export a
+piece to a plain-text or Markdown file, and can hand a fresh draft to Metis
+for a single critique-and-polish pass before you see it.
+
 Design notes
 ------------
 - All LLM calls are isolated behind typed helpers that never raise; failures
@@ -31,6 +36,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ollama_client import generate
+from core.text_export import (
+    DEFAULT_EXPORT_DIR,
+    VERSE_TYPES,
+    normalise_format,
+    render_document,
+    safe_stem,
+    slugify,
+    write_export,
+)
 from modules.base import BaseModule
 from .db import OrpheusDB
 
@@ -98,6 +112,14 @@ _MAX_NAME_COUNT = 20
 _DEFAULT_CREATIONS_LIMIT = 5
 _MAX_CREATIONS_LIMIT = 20
 _MAX_INPUT_TEXT_LEN = 4000
+# Revising rewrites a *saved* piece in full, so (unlike the 4000-char
+# clamp on pasted input, which just truncates the prompt) it must never
+# silently cut the text: a truncated revision would become the newest
+# version. Anything longer is refused instead.
+_MAX_REVISE_LEN = 12_000
+_NOTE_MAX_LEN = 120
+_TRUE_WORDS: frozenset[str] = frozenset({"true", "yes", "y", "on", "1", "enable", "enabled"})
+_FALSE_WORDS: frozenset[str] = frozenset({"false", "no", "n", "off", "0", "disable", "disabled", "none"})
 _MEMORY_KEY_MAX_LEN = 40
 _MEMORY_VALUE_MAX_LEN = 500
 
@@ -264,6 +286,20 @@ Respond with ONLY valid JSON:
 }}
 JSON only."""
 
+_REVISE_PROMPT = """\
+You are Orpheus, a careful creative editor.
+Revise the piece below by applying ONLY this instruction: {instruction}
+
+Change what the instruction implies and nothing else. Keep everything the \
+instruction does not touch — the voice, imagery, form, line breaks and \
+section labels — exactly as written.
+
+--- CURRENT TEXT ---
+{text}
+--- END CURRENT TEXT ---
+
+Write only the full revised text. No explanation, no commentary."""
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -313,6 +349,15 @@ class OrpheusEngine(BaseModule):
         Optional Mnemosyne memory engine for persisting notable creations.
     db_path:
         Override the default SQLite database path (useful in tests).
+    llm:
+        Optional pre-built HestiaLLM instance.
+    export_dir:
+        Directory ``export_creation`` writes into (default ``data/exports``).
+    polish_default:
+        When True, every new poem/story/lyrics goes through one Metis
+        critique-and-polish pass unless the request says ``polish: false``.
+        Needs Metis attached via :meth:`attach_metis`; without it the pass
+        is skipped and the draft is returned as written.
     """
 
     name = "orpheus"
@@ -329,6 +374,10 @@ class OrpheusEngine(BaseModule):
             "rewrite_style",
             "generate_names",
             "get_creations",
+            "revise_creation",
+            "get_versions",
+            "restore_version",
+            "export_creation",
         }
     )
 
@@ -338,10 +387,15 @@ class OrpheusEngine(BaseModule):
         memory: Any = None,
         db_path: Optional[Path] = None,
         llm: Optional[Any] = None,
+        export_dir: Optional[Path | str] = None,
+        polish_default: bool = False,
     ) -> None:
         self._cfg = OllamaConfig.from_dict(ollama_cfg or {})
         self._memory = memory
         self._llm_instance = llm  # HestiaLLM | None — preferred path
+        self._metis: Any = None   # attached by main.py; optional
+        self._export_dir = Path(export_dir) if export_dir else DEFAULT_EXPORT_DIR
+        self._polish_default = bool(polish_default)
         resolved = (db_path or _DB_PATH).resolve()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db = OrpheusDB(str(resolved))
@@ -384,6 +438,26 @@ class OrpheusEngine(BaseModule):
             return {}
 
     # ------------------------------------------------------------------
+    # Wiring (called once from main.py)
+    # ------------------------------------------------------------------
+
+    def attach_metis(self, metis: Any) -> None:
+        """
+        Give Orpheus a Metis instance to use for the optional polish pass
+        (backlog #270). Any object with ``polish_pass(text, kind=...)``
+        works, which keeps this testable without a real Metis.
+        """
+        self._metis = metis
+
+    def set_polish_default(self, enabled: bool) -> None:
+        """Turn the automatic polish pass on or off at runtime."""
+        self._polish_default = bool(enabled)
+
+    @property
+    def polish_default(self) -> bool:
+        return self._polish_default
+
+    # ------------------------------------------------------------------
     # Dispatcher (private)
     # ------------------------------------------------------------------
 
@@ -408,6 +482,14 @@ class OrpheusEngine(BaseModule):
             return self._generate_names(entities)
         if intent == "get_creations":
             return self._get_creations(entities)
+        if intent == "revise_creation":
+            return self._revise_creation(entities)
+        if intent == "get_versions":
+            return self._get_versions(entities)
+        if intent == "restore_version":
+            return self._restore_version(entities)
+        if intent == "export_creation":
+            return self._export_creation(entities)
         return _err(f"Unknown intent: {intent!r}")
 
     # ------------------------------------------------------------------
@@ -486,6 +568,71 @@ class OrpheusEngine(BaseModule):
             logger.exception("_persist() failed for key=%r; continuing.", key)
 
     # ------------------------------------------------------------------
+    # Finalising a new creation: save v1, optional polish pass (private)
+    # ------------------------------------------------------------------
+
+    def _wants_polish(self, entities: dict) -> bool:
+        for key in ("polish", "polish_pass"):
+            if key in entities and entities.get(key) not in (None, ""):
+                return _truthy(entities[key], default=self._polish_default)
+        return self._polish_default
+
+    def _finalize_creation(
+        self, type_: str, draft: str, title: str, metadata: dict,
+        entities: dict,
+    ) -> tuple[str, Optional[int], dict]:
+        """
+        Save *draft* as version 1 and, if asked, run one Metis polish pass.
+
+        The draft is always stored first, so a polished result becomes
+        version 2 and the original stays retrievable. Returns
+        ``(final_text, creation_id, polish_info)``; *polish_info* is
+        ``{"requested": False}`` when no pass was wanted.
+        """
+        creation_id = _safe_db(
+            self.db.save, type_, draft,
+            title=title, metadata=json.dumps(metadata),
+        )
+        info: dict[str, Any] = {"requested": False}
+        if not self._wants_polish(entities):
+            return draft, creation_id, info
+
+        info = {"requested": True, "applied": False, "changed": False}
+        if self._metis is None or not hasattr(self._metis, "polish_pass"):
+            info["reason"] = "Metis isn't connected"
+            return draft, creation_id, info
+        try:
+            result = self._metis.polish_pass(draft, kind="creative")
+        except Exception:
+            logger.exception("_finalize_creation: polish pass raised; keeping draft.")
+            info["reason"] = "the polish pass failed"
+            return draft, creation_id, info
+        if not isinstance(result, dict) or not result.get("ok"):
+            info["reason"] = (result or {}).get("reason") if isinstance(result, dict) else None
+            info["reason"] = info["reason"] or "the polish pass didn't return anything usable"
+            return draft, creation_id, info
+
+        info["applied"] = True
+        info["issues"] = list(result.get("issues") or [])
+        polished = str(result.get("polished") or "").strip()
+        if not result.get("changed") or not polished or polished == draft.strip():
+            return draft, creation_id, info
+
+        info["changed"] = True
+        if creation_id is not None:
+            try:
+                version = self.db.add_version(
+                    creation_id, polished, note="Metis polish pass",
+                )
+                info["version"] = version
+            except Exception:
+                logger.exception("_finalize_creation: could not store polished version.")
+                info["changed"] = False
+                info["reason"] = "the polished text couldn't be saved"
+                return draft, creation_id, info
+        return polished, creation_id, info
+
+    # ------------------------------------------------------------------
     # Intent handlers (private)
     # ------------------------------------------------------------------
 
@@ -516,17 +663,16 @@ class OrpheusEngine(BaseModule):
 
         title = f"{style.title()} — {topic.title()}"
 
-        _safe_db(
-            self.db.save,
-            "poem", poem,
-            title=title,
-            metadata=json.dumps({"style": style, "tone": tone, "topic": topic}),
+        final, creation_id, polish = self._finalize_creation(
+            "poem", poem, title,
+            {"style": style, "tone": tone, "topic": topic}, entities,
         )
-        self._persist(f"poem_{topic}", poem)
+        self._persist(f"poem_{topic}", final)
 
         return _ok(
-            f"{title}\n\n{poem}",
-            data={"title": title, "poem": poem, "style": style, "tone": tone},
+            f"{title}\n\n{final}" + _polish_note(polish),
+            data={"title": title, "poem": final, "style": style, "tone": tone,
+                  "creation_id": creation_id, "polish": polish},
             confidence=0.95,
         )
 
@@ -631,22 +777,20 @@ class OrpheusEngine(BaseModule):
 
         title = f"{genre.title()} — {topic.title()}"
 
-        _safe_db(
-            self.db.save,
-            "lyrics", lyrics,
-            title=title,
-            metadata=json.dumps(
-                {"genre": genre, "tone": tone,
-                 "rhyme": rhyme, "structure": structure, "topic": topic}
-            ),
+        final, creation_id, polish = self._finalize_creation(
+            "lyrics", lyrics, title,
+            {"genre": genre, "tone": tone, "rhyme": rhyme,
+             "structure": structure, "topic": topic},
+            entities,
         )
-        self._persist(f"lyrics_{topic}", lyrics)
+        self._persist(f"lyrics_{topic}", final)
 
         return _ok(
-            f"{title}\n\n{lyrics}",
+            f"{title}\n\n{final}" + _polish_note(polish),
             data={
-                "title": title, "lyrics": lyrics,
+                "title": title, "lyrics": final,
                 "genre": genre, "structure": structure, "rhyme": rhyme,
+                "creation_id": creation_id, "polish": polish,
             },
             confidence=0.95,
         )
@@ -677,17 +821,17 @@ class OrpheusEngine(BaseModule):
 
         title = f"{genre.title()} Story — {topic.title()}"
 
-        _safe_db(
-            self.db.save,
-            "story", story,
-            title=title,
-            metadata=json.dumps({"genre": genre, "pov": pov, "tone": tone, "topic": topic}),
+        final, creation_id, polish = self._finalize_creation(
+            "story", story, title,
+            {"genre": genre, "pov": pov, "tone": tone, "topic": topic},
+            entities,
         )
-        self._persist(f"story_{topic}", story)
+        self._persist(f"story_{topic}", final)
 
         return _ok(
-            f"{title}\n\n{story}",
-            data={"title": title, "story": story, "genre": genre, "pov": pov, "tone": tone},
+            f"{title}\n\n{final}" + _polish_note(polish),
+            data={"title": title, "story": final, "genre": genre, "pov": pov,
+                  "tone": tone, "creation_id": creation_id, "polish": polish},
             confidence=0.95,
         )
 
@@ -872,6 +1016,240 @@ class OrpheusEngine(BaseModule):
 
         return _ok(_format_creations(rows), data={"creations": rows}, confidence=0.9)
 
+    # ------------------------------------------------------------------
+    # Version history (#167) and export (#168)
+    # ------------------------------------------------------------------
+
+    def _resolve_creation(self, entities: dict) -> tuple[Optional[dict], Optional[dict]]:
+        """
+        Pick the creation an intent refers to.
+
+        Order: explicit id (``creation_id`` / ``id``) -> newest match for
+        the ``type`` / ``keyword`` filters -> newest creation overall.
+        Returns ``(row, None)`` or ``(None, error_or_clarify_response)``.
+        """
+        raw_id = entities.get("creation_id")
+        if raw_id in (None, ""):
+            raw_id = entities.get("id")
+        if raw_id not in (None, ""):
+            cid = _to_int(raw_id)
+            if cid is None or cid < 1:
+                return None, _clarify(
+                    ["Which creation do you mean? Give me its number, "
+                     "e.g. 'creation 12'."]
+                )
+            try:
+                row = self.db.get(cid)
+            except Exception:
+                logger.exception("_resolve_creation: DB read failed.")
+                return None, _err("I couldn't look that creation up right now.")
+            if row is None:
+                return None, _ok(
+                    f"I can't find a creation numbered {cid}.",
+                    data={"found": False}, confidence=0.7,
+                )
+            return row, None
+
+        raw_type = (entities.get("type") or entities.get("creation_type") or "")
+        raw_type = str(raw_type).strip().lower()
+        type_ = raw_type if raw_type in _VALID_CREATION_TYPES else None
+        keyword = _extract(entities, "keyword", "query", "search")
+        try:
+            rows = self.db.search(type_=type_, keyword=keyword or None, limit=1)
+        except Exception:
+            logger.exception("_resolve_creation: DB read failed.")
+            return None, _err("I couldn't look that creation up right now.")
+        if not rows:
+            return None, _ok(
+                "I don't have a matching creation saved yet.",
+                data={"found": False}, confidence=0.7,
+            )
+        return rows[0], None
+
+    def _revise_creation(self, entities: dict) -> dict:
+        """
+        Revise a saved creation as a NEW version; the original is kept.
+        """
+        instruction = _extract(entities, "instruction", "direction", "change", "raw_query")
+        row, problem = self._resolve_creation(entities)
+        if problem is not None:
+            return problem
+        if not instruction:
+            return _clarify(["How should I change it?"])
+
+        current = str(row.get("content") or "")
+        if len(current) > _MAX_REVISE_LEN:
+            return _err(
+                "That piece is too long for me to revise in one go without "
+                "risking cutting it off. Try revising a section of it instead."
+            )
+
+        try:
+            revised = self._llm_text(
+                _REVISE_PROMPT.format(instruction=instruction, text=current)
+            )
+        except LLMResponseError:
+            logger.exception("_revise_creation: LLM call failed.")
+            return _err("I had trouble revising that. Nothing was changed.")
+
+        try:
+            version = self.db.add_version(
+                row["id"], revised, note=f"revision: {instruction}"[:_NOTE_MAX_LEN],
+                metadata=json.dumps({"instruction": instruction}),
+            )
+        except Exception:
+            logger.exception("_revise_creation: could not store new version.")
+            return _err("I revised it but couldn't save the new version, so nothing was changed.")
+
+        title = row.get("title") or str(row.get("type", "")).title()
+        return _ok(
+            f"{title} (version {version})\n\n{revised}\n\n"
+            f"Your earlier versions are kept — version 1 is still the original.",
+            data={"creation_id": row["id"], "version": version,
+                  "previous_version": version - 1, "revised": revised,
+                  "title": title},
+            confidence=0.9,
+        )
+
+    def _get_versions(self, entities: dict) -> dict:
+        """List a creation's versions, or show the full text of one."""
+        row, problem = self._resolve_creation(entities)
+        if problem is not None:
+            return problem
+        try:
+            versions = self.db.get_versions(row["id"])
+        except Exception:
+            logger.exception("_get_versions: DB read failed.")
+            return _err("I couldn't pull up that version history right now.")
+
+        title = row.get("title") or str(row.get("type", "")).title()
+        wanted = entities.get("version")
+        if wanted not in (None, ""):
+            number = _to_int(wanted)
+            match = next((v for v in versions if v["version"] == number), None)
+            if match is None:
+                have = ", ".join(f"v{v['version']}" for v in versions)
+                return _ok(
+                    f"'{title}' has no version {wanted}. It has: {have}.",
+                    data={"creation_id": row["id"], "found": False},
+                    confidence=0.7,
+                )
+            label = _version_label(match)
+            return _ok(
+                f"{title} — {label}\n\n{match['content']}",
+                data={"creation_id": row["id"], "version": match["version"],
+                      "content": match["content"]},
+                confidence=0.9,
+            )
+
+        return _ok(
+            _format_versions(title, row["id"], versions),
+            data={"creation_id": row["id"], "title": title, "versions": versions,
+                  "current_version": row.get("current_version", len(versions))},
+            confidence=0.9,
+        )
+
+    def _restore_version(self, entities: dict) -> dict:
+        """
+        Make an earlier version current again — by appending a copy, so
+        the history stays complete and nothing is lost.
+        """
+        row, problem = self._resolve_creation(entities)
+        if problem is not None:
+            return problem
+        number = _to_int(entities.get("version"))
+        if number is None or number < 1:
+            return _clarify(["Which version should I restore? (e.g. 'version 1')"])
+        try:
+            target = self.db.get_version(row["id"], number)
+            if target is None:
+                versions = self.db.get_versions(row["id"])
+                have = ", ".join(f"v{v['version']}" for v in versions)
+                return _ok(
+                    f"There's no version {number} of that piece. It has: {have}.",
+                    data={"creation_id": row["id"], "found": False},
+                    confidence=0.7,
+                )
+            if str(target["content"]).strip() == str(row.get("content", "")).strip():
+                return _ok(
+                    f"Version {number} is already the current text — nothing to restore.",
+                    data={"creation_id": row["id"], "version": row.get("current_version"),
+                          "restored": False},
+                    confidence=0.8,
+                )
+            new_version = self.db.add_version(
+                row["id"], target["content"], note=f"restored from v{number}",
+            )
+        except Exception:
+            logger.exception("_restore_version: DB operation failed.")
+            return _err("I couldn't restore that version right now.")
+
+        title = row.get("title") or str(row.get("type", "")).title()
+        return _ok(
+            f"Restored version {number} of '{title}' as version {new_version}. "
+            f"Every earlier version is still in the history.",
+            data={"creation_id": row["id"], "restored_from": number,
+                  "version": new_version, "restored": True},
+            confidence=0.9,
+        )
+
+    def _export_creation(self, entities: dict) -> dict:
+        """Write a creation to a .md or .txt file inside the export directory."""
+        row, problem = self._resolve_creation(entities)
+        if problem is not None:
+            return problem
+
+        fmt = normalise_format(entities.get("format") or entities.get("file_format"))
+        title = row.get("title") or str(row.get("type", "")).title()
+        content = str(row.get("content") or "")
+        version = row.get("current_version") or 1
+
+        try:
+            versions = self.db.get_versions(row["id"])
+        except Exception:
+            logger.exception("_export_creation: could not read versions.")
+            versions = []
+
+        wanted = entities.get("version")
+        if wanted not in (None, ""):
+            number = _to_int(wanted)
+            match = next((v for v in versions if v["version"] == number), None)
+            if match is None:
+                return _ok(
+                    f"'{title}' has no version {wanted} to export.",
+                    data={"creation_id": row["id"], "found": False}, confidence=0.7,
+                )
+            content, version = match["content"], match["version"]
+
+        sections: list[tuple[str, str]] = []
+        if _truthy(entities.get("include_history"), default=False) and len(versions) > 1:
+            sections.append(("Version history", _format_history_lines(versions)))
+
+        doc = render_document(
+            title, content, fmt,
+            meta=[("Type", str(row.get("type", ""))),
+                  ("Version", str(version)),
+                  ("Created", str(row.get("logged_at", "")))],
+            sections=sections,
+            preserve_lines=str(row.get("type", "")) in VERSE_TYPES,
+        )
+
+        requested = _extract(entities, "filename", "file_name", "name")
+        stem = safe_stem(requested, "") if requested else ""
+        stem = stem or f"orpheus-{row['id']}-{slugify(title, 'creation')}"
+        try:
+            path = write_export(self._export_dir, stem, fmt, doc)
+        except OSError:
+            logger.exception("_export_creation: could not write export file.")
+            return _err("I couldn't write the export file. Check the export folder is writable.")
+
+        return _ok(
+            f"Exported '{title}' (version {version}) to {path}",
+            data={"path": str(path), "format": fmt, "creation_id": row["id"],
+                  "version": version},
+            confidence=0.92,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Module-level pure helpers
@@ -925,6 +1303,84 @@ def _normalise_pov(value: str) -> str:
         if stripped.startswith(alias):
             return canonical
     return _DEFAULT_POV
+
+
+def _truthy(value: Any, default: bool = False) -> bool:
+    """
+    Interpret a loosely-typed flag from NLU entities ("yes", "off", True).
+
+    Unrecognised values fall back to *default* rather than guessing.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    word = str(value or "").strip().lower()
+    if word in _TRUE_WORDS:
+        return True
+    if word in _FALSE_WORDS:
+        return False
+    return default
+
+
+def _to_int(value: Any) -> Optional[int]:
+    """Parse "12", 12, "v2" or "version 3" to an int; None if there isn't one."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    import re
+    m = re.search(r"\d+", str(value or ""))
+    return int(m.group()) if m else None
+
+
+def _polish_note(polish: dict) -> str:
+    """One-line footer describing what the optional polish pass did."""
+    if not polish or not polish.get("requested"):
+        return ""
+    if not polish.get("applied"):
+        reason = polish.get("reason") or "it couldn't run"
+        return f"\n\n(Polish pass skipped: {reason}.)"
+    if polish.get("changed"):
+        return ("\n\n(Polished by Metis. Your original draft is saved as "
+                "version 1 — ask for the version history to see it.)")
+    return "\n\n(Metis's polish pass found nothing worth changing.)"
+
+
+def _version_label(v: dict) -> str:
+    label = f"version {v.get('version')}"
+    note = (v.get("note") or "").strip()
+    return f"{label} ({note})" if note else label
+
+
+def _format_history_lines(versions: list[dict]) -> str:
+    lines = []
+    for v in versions:
+        note = (v.get("note") or "").strip()
+        when = v.get("created_at", "")
+        chars = len(str(v.get("content") or ""))
+        lines.append(
+            f"- v{v.get('version')}"
+            + (f" — {note}" if note else "")
+            + f" ({when}, {chars} chars)"
+        )
+    return "\n".join(lines)
+
+
+def _format_versions(title: str, creation_id: int, versions: list[dict]) -> str:
+    lines = [f"Version history — {title} (#{creation_id})", ""]
+    for v in versions:
+        note = (v.get("note") or "").strip()
+        when = v.get("created_at", "")
+        chars = len(str(v.get("content") or ""))
+        entry = f"  • v{v.get('version')}"
+        if note:
+            entry += f" — {note}"
+        entry += f"  ({when}, {chars} chars)"
+        lines.append(entry)
+    if len(versions) > 1:
+        lines += ["", "Say 'show version N' to read one, or 'restore version N' to bring it back."]
+    return "\n".join(lines)
 
 
 def _collect_missing(*checks: tuple[str, str, str]) -> list[str]:
@@ -1079,20 +1535,25 @@ def _format_creations(rows: list[dict]) -> str:
         creation_type = r.get("type", "")
         title = r.get("title") or creation_type.title()
         logged_at = r.get("logged_at", "")
-        lines.append(f"  • [{creation_type}] {title}  ({logged_at})")
+        version = r.get("current_version") or 1
+        tag = f" v{version}" if version > 1 else ""
+        prefix = f"#{r['id']} " if r.get("id") is not None else ""
+        lines.append(f"  • {prefix}[{creation_type}] {title}{tag}  ({logged_at})")
     return "\n".join(lines).strip()
 
 
-def _safe_db(fn: Any, *args: Any, **kwargs: Any) -> None:
+def _safe_db(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """
     Call a DB function, logging and swallowing any exception.
 
     Creative output must never be withheld because the DB write failed.
+    Returns the function's result (e.g. the new row id), or None on failure.
     """
     try:
-        fn(*args, **kwargs)
+        return fn(*args, **kwargs)
     except Exception:
         logger.exception("DB write failed (fn=%s); creative output unaffected.", fn)
+        return None
 
 
 def _ok(

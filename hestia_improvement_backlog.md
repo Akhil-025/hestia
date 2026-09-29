@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 67 ✅ + 3 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90) and 26, plus #259 and #275.
+**Tally: 74 ✅ + 3 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90), 15 (Metis & Orpheus, #164–#169) and 26, plus #259, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -20,9 +20,10 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 4. Athena | 11 of 20 |
 | 5. Iris | 6 of 10 |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
+| 15. Metis & Orpheus | 6 of 6 |
 | 26. Docs | 2 of 6 (`#245`, `#249`) |
 | 29. Judgment testing | 1 of 3 (`#259`) |
-| 30. Outside ideas | 1 of 20 (`#275`) |
+| 30. Outside ideas | 2 of 20 (`#270`, `#275`) |
 
 Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs `reportlab`), #58 / #59 / #68 (need `fitz`, which was unavailable to test), #70 (not reached), #72 (needs a face-detection library), #32 (needs the knowledge graph from #31). Items it called **out of scope** as multi-week `[L]` projects: #4, #10, #16, #20, #25, #31, #33, #39, #43, #47, #51, #52, #60, #66, #71, #77.
 
@@ -235,12 +236,12 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 15. Metis & Orpheus — Writing
 
-164. `[Q]` Add a "writing session" wrapper that chains Orpheus draft → Metis critique/polish in one command instead of two separate intents.
-165. `[M]` Add style-profile learning — build a lightweight profile of the user's own writing voice from samples, and have Metis's rewrite/correct respect it instead of a generic tone.
-166. `[Q]` Add word-count/readability targets as parameters to Metis's shorten/expand instead of fixed heuristics.
-167. `[M]` Add version history for Orpheus creations so edits don't overwrite the original draft.
-168. `[Q]` Add export of a creation/writing session to a plain text or markdown file directly from the CLI.
-169. `[M]` Add plagiarism-check source citation (currently `_check_plagiarism` exists — confirm it surfaces sources, not just a similarity score).
+164. ✅ `[Q]` Add a "writing session" wrapper that chains Orpheus draft → Metis critique/polish in one command instead of two separate intents.
+165. ✅ `[M]` Add style-profile learning — build a lightweight profile of the user's own writing voice from samples, and have Metis's rewrite/correct respect it instead of a generic tone.
+166. ✅ `[Q]` Add word-count/readability targets as parameters to Metis's shorten/expand instead of fixed heuristics.
+167. ✅ `[M]` Add version history for Orpheus creations so edits don't overwrite the original draft.
+168. ✅ `[Q]` Add export of a creation/writing session to a plain text or markdown file directly from the CLI.
+169. ✅ `[M]` Add plagiarism-check source citation (currently `_check_plagiarism` exists — confirm it surfaces sources, not just a similarity score).
 
 ## 16. Voice Pipeline (STT / TTS / Wake Word / Barge-in)
 
@@ -386,7 +387,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 267. `[M]` Borrow from note-taking tools (Roam/Logseq): add backlinks between Mnemosyne facts and Athena documents that reference the same concept.
 268. `[Q]` Borrow from CLI tool design: add `--help` text and examples to every module's exposed commands, not just the top-level CLI.
 269. `[M]` Borrow from recommender systems: add explicit "more like this / less like this" feedback buttons to Dionysus recommendations instead of only binary dismiss.
-270. `[L]` Borrow from multi-agent research (AutoGPT-style critique loops): let Metis automatically critique Orpheus's output once before showing it to you, as an optional "polish pass" toggle.
+270. ✅ `[L]` Borrow from multi-agent research (AutoGPT-style critique loops): let Metis automatically critique Orpheus's output once before showing it to you, as an optional "polish pass" toggle.
 271. `[Q]` Borrow from habit-tracker apps (Streaks, Loop): add a "why did I break this streak" optional note field so the habit log captures context, not just pass/fail.
 272. `[M]` Borrow from RSS readers: add a unified "inbox" view merging new papers (Athena), new reminders (Chronos), new recommendations (Dionysus) into one triage list instead of five separate places to check.
 273. `[Q]` Borrow from password managers: add a "data you've given Hestia" audit screen broken down by module, for periodic review/cleanup.

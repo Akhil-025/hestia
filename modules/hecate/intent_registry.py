@@ -224,6 +224,11 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "orpheus_rewrite_style": "orpheus",
     "orpheus_generate_names": "orpheus",
     "orpheus_get_creations": "orpheus",
+    # Version history and export (backlog #167, #168).
+    "orpheus_revise_creation": "orpheus",
+    "orpheus_get_versions": "orpheus",
+    "orpheus_restore_version": "orpheus",
+    "orpheus_export_creation": "orpheus",
 
     # --- Metis (writing assistance & editing) ---
     "metis_correct_text": "metis",
@@ -241,6 +246,13 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "metis_check_consistency": "metis",
     "metis_readability_report": "metis",
     "metis_writing_stats": "metis",
+    # Writing workflow (backlog #164, #165, #168, #270).
+    "metis_polish_text": "metis",
+    "metis_writing_session": "metis",
+    "metis_learn_style": "metis",
+    "metis_show_style_profile": "metis",
+    "metis_clear_style_profile": "metis",
+    "metis_export_session": "metis",
 
     # --- Dionysus (entertainment/leisure) ---
     "dionysus_recommend_movie": "dionysus",
@@ -308,7 +320,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.8.0"
+REGISTRY_VERSION: str = "2.9.0"
 
 
 def registry_fingerprint() -> str:

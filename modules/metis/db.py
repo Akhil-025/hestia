@@ -42,6 +42,26 @@ CREATE TABLE IF NOT EXISTS items (
 
 CREATE INDEX IF NOT EXISTS idx_items_type      ON items(type);
 CREATE INDEX IF NOT EXISTS idx_items_logged_at ON items(logged_at);
+
+-- Samples of the user's own writing, used to learn a voice profile (#165).
+-- Unlike `items` (which stores only a short preview of input), these are
+-- kept in full because they ARE the data the profile is built from; the
+-- user supplies them deliberately and can wipe them with clear_style().
+CREATE TABLE IF NOT EXISTS style_samples (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    label      TEXT,
+    text       TEXT    NOT NULL,
+    word_count INTEGER DEFAULT 0,
+    added_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Exactly one row (id = 1): the current derived profile.
+CREATE TABLE IF NOT EXISTS style_profile (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    profile_json TEXT    NOT NULL,
+    sample_count INTEGER DEFAULT 0,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """)
 
     def save(self, type_: str, content: str, title: str = "",
@@ -65,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_items_logged_at ON items(logged_at);
             """
             SELECT * FROM items
             WHERE type=?
-            ORDER BY logged_at DESC LIMIT ?
+            ORDER BY logged_at DESC, id DESC LIMIT ?
             """,
             (type_, limit),
         )
@@ -75,11 +95,73 @@ CREATE INDEX IF NOT EXISTS idx_items_logged_at ON items(logged_at);
         cur = self._conn.execute(
             """
             SELECT * FROM items
-            ORDER BY logged_at DESC LIMIT ?
+            ORDER BY logged_at DESC, id DESC LIMIT ?
             """,
             (limit,),
         )
         return [dict(r) for r in cur.fetchall()]
+
+    def get_item(self, item_id: int) -> dict | None:
+        cur = self._conn.execute("SELECT * FROM items WHERE id=?", (item_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def get_latest(self, type_: str) -> dict | None:
+        """Newest item of *type_* (id breaks same-second ties)."""
+        cur = self._conn.execute(
+            "SELECT * FROM items WHERE type=? ORDER BY logged_at DESC, id DESC LIMIT 1",
+            (type_,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Style profile (#165)
+    # ------------------------------------------------------------------
+
+    def add_style_sample(self, text: str, label: str = "",
+                         word_count: int = 0) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO style_samples (label, text, word_count) VALUES (?, ?, ?)",
+                (label, text, word_count),
+            )
+            return cur.lastrowid
+
+    def get_style_samples(self, limit: int = 200) -> list[dict]:
+        """Samples oldest-first, so a profile rebuild is order-stable."""
+        cur = self._conn.execute(
+            "SELECT * FROM style_samples ORDER BY id ASC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def save_style_profile(self, profile_json: str, sample_count: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO style_profile (id, profile_json, sample_count, updated_at)
+                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    profile_json = excluded.profile_json,
+                    sample_count = excluded.sample_count,
+                    updated_at   = CURRENT_TIMESTAMP
+                """,
+                (profile_json, sample_count),
+            )
+
+    def get_style_profile(self) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM style_profile WHERE id=1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def clear_style(self) -> int:
+        """Delete every sample and the profile. Returns samples removed."""
+        with self._lock, self._conn:
+            n = self._conn.execute("SELECT COUNT(*) AS n FROM style_samples").fetchone()["n"]
+            self._conn.execute("DELETE FROM style_samples")
+            self._conn.execute("DELETE FROM style_profile")
+            return n
 
     def get_stats(self) -> dict:
         """

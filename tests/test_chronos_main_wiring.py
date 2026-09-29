@@ -30,6 +30,10 @@ def _module_mock(name):
     m = MagicMock(spec=BaseModule)
     m.name = name
     m.can_handle.return_value = False
+    # Orpheus/Metis are cross-wired by main.py (backlog #164, #270); a
+    # spec=BaseModule mock doesn't know those extra hooks.
+    for hook in ("attach_metis", "attach_orpheus", "attach_web_search"):
+        setattr(m, hook, MagicMock())
     return m
 
 

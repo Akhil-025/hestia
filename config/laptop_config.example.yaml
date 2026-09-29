@@ -101,6 +101,12 @@ chronos:
   proactive_weather: false           # warn once each morning if rain threatens an outdoor plan
   exports_dir: "data/exports"        # where ICS exports are written
 
+# Writing (Metis + Orpheus) — all optional; defaults shown.
+writing:
+  polish_pass: false                 # give every new poem/story/lyrics one Metis critique-and-polish pass
+  export_dir: "data/exports"         # where "export my last poem" / "export that session" write .md/.txt files
+  plagiarism_web_check: true         # let Metis spot-check passages with a web search (needs the browser)
+
 # LLM providers (priority order)
 llm:
   providers:

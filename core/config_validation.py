@@ -95,6 +95,12 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("mnemosyne", (dict,), False),
     ("hecate", (dict,), False),
     ("hecate.session_ttl_seconds", (int, float), False),
+
+    # Writing modules (Metis + Orpheus): backlog #168, #270. All optional.
+    ("writing", (dict,), False),
+    ("writing.polish_pass", (bool,), False),
+    ("writing.export_dir", (str,), False),
+    ("writing.plagiarism_web_check", (bool,), False),
 )
 
 # Top-level keys the app knows about. Anything else is reported as a
@@ -104,7 +110,7 @@ _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
     "google", "telegram", "sync", "athena", "iris", "mnemosyne", "hecate", "stt",
     "tts", "wake_word", "barge_in", "scheduler", "heartbeat", "skills",
     "hephaestus", "pluto", "dionysus", "apollo", "artemis", "logging",
-    "observability",
+    "observability", "writing",
 })
 
 

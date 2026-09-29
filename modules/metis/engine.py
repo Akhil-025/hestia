@@ -23,6 +23,23 @@ rewritten, or drafted text. It deliberately does NOT own:
     intentionally honest about that limitation rather than pretending to
     scan the internet locally.
 
+Writing-workflow features
+-------------------------
+- ``writing_session`` chains an Orpheus draft into a Metis critique and
+  (optionally) a polish pass in one command; ``polish_text`` runs the same
+  pass on text you supply. Orpheus can also request the pass itself via
+  ``polish_pass()`` (see ``attach_orpheus``).
+- ``learn_style`` builds a profile of the user's own voice from pasted
+  samples (measured habits plus a short LLM summary). Rewrite / correct /
+  clarity / draft / expand / shorten then respect it, unless the request
+  says ``use_style: false``.
+- shorten / expand / summarise / draft accept exact targets
+  (``target_words``, ``max_words``, ``min_words``, ``target_grade``) and
+  verify the result, retrying once if it missed.
+- ``export_session`` writes a session or any saved item to .md / .txt.
+- ``check_plagiarism`` spot-checks distinctive passages against a web
+  search when one is attached, and reports the sources it found.
+
 Design notes (mirrors modules/orpheus/engine.py conventions)
 --------------------------------------------------------------
 - All LLM calls are isolated behind typed helpers that never raise;
@@ -46,7 +63,27 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ollama_client import generate
+from core.text_export import (
+    DEFAULT_EXPORT_DIR,
+    VERSE_TYPES,
+    normalise_format,
+    render_document,
+    safe_stem,
+    slugify,
+    write_export,
+)
 from modules.base import BaseModule
+from .analysis import (
+    LengthTarget,
+    compute_style_stats,
+    count_words,
+    describe_style_stats,
+    distinctive_phrases,
+    ease_label,
+    normalise_for_match,
+    parse_length_target,
+    text_metrics,
+)
 from .db import MetisDB
 
 logger = logging.getLogger(__name__)
@@ -95,12 +132,47 @@ _INPUT_PREVIEW_MAX_LEN = 200
 # same as Orpheus's _persist for poems/lyrics).
 _MEMORY_WORTHY_TYPES: frozenset[str] = frozenset({"rewrite", "draft", "citation"})
 
+# Style profile (#165)
+_MIN_STYLE_SAMPLE_WORDS = 40
+_MAX_STYLE_SAMPLE_CHARS = 20_000
+_MAX_STYLE_SAMPLES = 200
+_STYLE_NOTES_INPUT_CHARS = 3_000
+_TRUE_WORDS: frozenset[str] = frozenset({"true", "yes", "y", "on", "1", "enable", "enabled"})
+_FALSE_WORDS: frozenset[str] = frozenset({"false", "no", "n", "off", "0", "disable", "disabled", "none"})
+
+# Writing session / polish (#164, #270)
+_MAX_POLISH_ISSUES = 5
+_SESSION_KIND_TO_ORPHEUS: dict[str, str] = {
+    "poem": "write_poem",
+    "lyrics": "generate_lyrics",
+    "story": "write_story",
+}
+_SESSION_KIND_ALIASES: dict[str, str] = {
+    "poem": "poem", "poetry": "poem", "haiku": "poem", "sonnet": "poem",
+    "verse": "poem", "limerick": "poem", "ode": "poem",
+    "lyrics": "lyrics", "lyric": "lyrics", "song": "lyrics", "songs": "lyrics",
+    "story": "story", "stories": "story", "tale": "story", "fable": "story",
+    "fiction": "story", "narrative": "story",
+}
+# Entities forwarded to Orpheus for the draft step.
+_SESSION_PASSTHROUGH: tuple[str, ...] = (
+    "style", "tone", "length", "rhyme", "genre", "pov", "point_of_view",
+    "rhyme_scheme", "structure",
+)
+
+# Plagiarism spot-check (#169)
+_DEFAULT_PLAGIARISM_PHRASES = 4
+_MAX_PLAGIARISM_PHRASES = 6
+_MAX_PLAGIARISM_TEXT_CHARS = 20_000
+_PLAGIARISM_RESULTS_PER_PHRASE = 3
+_MAX_PLAGIARISM_FETCHES = 6
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
 
 _CORRECT_PROMPT = """\
-You are Metis, a meticulous copy editor.
+You are Metis, a meticulous copy editor.{style_block}
 Correct grammar, spelling, punctuation, subject-verb agreement, verb tense \
 consistency, pronoun usage, and sentence structure in the text below. \
 Do not change the meaning, tone, or voice — fix errors only.
@@ -120,7 +192,7 @@ If there are no errors, return the text unchanged in "corrected" and an \
 empty "changes" list. JSON only."""
 
 _CLARITY_PROMPT = """\
-You are Metis, a clarity editor.
+You are Metis, a clarity editor.{style_block}
 Simplify complex sentences, remove unnecessary words, and reduce wordiness \
 in the text below, without losing meaning.
 
@@ -135,7 +207,7 @@ Respond with ONLY valid JSON:
 JSON only."""
 
 _STYLE_PROMPT = """\
-You are Metis, a writing-style coach.
+You are Metis, a writing-style coach.{style_block}
 Review the text below for vocabulary, sentence variety, active vs. passive \
 voice, word choice, and stylistic consistency.
 
@@ -171,7 +243,7 @@ Respond with ONLY valid JSON:
 JSON only."""
 
 _TONE_SHIFT_PROMPT = """\
-You are Metis, a tone editor.
+You are Metis, a tone editor.{style_block}
 Rewrite the text below so it reads as {target_tone}, preserving its \
 core meaning and factual content.
 
@@ -181,7 +253,7 @@ Text:
 Write only the rewritten text. No explanation, no preamble."""
 
 _REWRITE_PROMPT = """\
-You are Metis, a rewriting assistant.
+You are Metis, a rewriting assistant.{style_block}
 Rewrite the text below to optimise for: {goal}.
 
 Text:
@@ -190,11 +262,11 @@ Text:
 Write only the rewritten text. No explanation, no preamble."""
 
 _DRAFT_PROMPT = """\
-You are Metis, a professional writing assistant.
+You are Metis, a professional writing assistant.{style_block}
 Draft a {content_type} based on this brief: {brief}
 Desired tone: {tone}
 Desired length: {length}
-
+{target_block}
 Write only the drafted content. No explanation, no preamble."""
 
 _SUMMARY_PROMPT = """\
@@ -203,27 +275,27 @@ Summarise the text below at {length} length, preserving the key points.
 
 Text:
 {text}
-
+{target_block}
 Write only the summary. No explanation, no preamble."""
 
 _EXPAND_PROMPT = """\
-You are Metis, a writing assistant.
+You are Metis, a writing assistant.{style_block}
 Expand the text below with relevant supporting detail, examples, or \
 context, roughly {length} in additional length. Keep the original voice.
 
 Text:
 {text}
-
+{target_block}
 Write only the expanded text. No explanation, no preamble."""
 
 _SHORTEN_PROMPT = """\
-You are Metis, a writing assistant.
+You are Metis, a writing assistant.{style_block}
 Shorten the text below to a {length} length while preserving its key \
 meaning and tone.
 
 Text:
 {text}
-
+{target_block}
 Write only the shortened text. No explanation, no preamble."""
 
 _OUTLINE_PROMPT = """\
@@ -287,6 +359,69 @@ Respond with ONLY valid JSON:
 If key details are missing, make reasonable placeholder assumptions and \
 note them inside "reference_entry" in [brackets]. JSON only."""
 
+_STYLE_NOTES_PROMPT = """\
+You are Metis, a writing-voice analyst.
+Read the writing samples below, all by the same person, and describe how \
+this person writes so that an editor could imitate their voice. Describe \
+habits (sentence rhythm, formality, humour, typical openings, favourite \
+constructions, punctuation quirks) — do not summarise what the samples are \
+about.
+
+Samples:
+{samples}
+
+Respond with ONLY valid JSON:
+{{
+  "voice_summary": "two sentences describing this person's voice",
+  "signature_traits": ["short trait", "short trait"],
+  "avoid": ["thing this writer would never do, e.g. 'stiff corporate phrasing'"]
+}}
+Give 3-6 signature_traits and 0-3 avoid items. JSON only."""
+
+_POLISH_CRITIQUE_PROMPT = """\
+You are Metis, a tough but fair editor giving ONE round of feedback.
+{kind_note}
+Text:
+{text}
+
+List only concrete, fixable weaknesses (clichés, vague or flat wording, \
+awkward rhythm, repetition, unclear passages, weak opening or ending). Do \
+not list nitpicks. If the text is already strong, say so.
+
+Respond with ONLY valid JSON:
+{{
+  "verdict": "good|needs_work",
+  "issues": ["specific issue and where it occurs"]
+}}
+Give at most {max_issues} issues. If verdict is "good", issues may be empty. JSON only."""
+
+_POLISH_REVISE_PROMPT = """\
+You are Metis, an editor applying feedback.{style_block}
+{kind_note}
+Revise the text below to fix ONLY these issues:
+{issues}
+
+Keep everything that isn't a problem exactly as written.
+
+Text:
+{text}
+
+Write only the full revised text. No explanation, no preamble."""
+
+_POLISH_KIND_NOTES: dict[str, tuple[str, str]] = {
+    "creative": (
+        "This is a piece of creative writing (verse, lyrics or fiction). "
+        "Judge it as art: protect its voice, imagery, form, line breaks and "
+        "any section labels. Do not flatten it into plain prose.",
+        "This is creative writing. Preserve its voice, imagery, form, line "
+        "breaks and section labels. Do not turn it into plain prose.",
+    ),
+    "prose": (
+        "This is functional writing (email, essay, report, etc.).",
+        "This is functional writing. Keep the meaning and facts unchanged.",
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -342,6 +477,8 @@ class MetisEngine(BaseModule):
     llm:
         Optional pre-built HestiaLLM instance (preferred path, same as
         Orpheus) — falls back to ``core.ollama_client.generate`` if absent.
+    export_dir:
+        Directory ``export_session`` writes into (default ``data/exports``).
     """
 
     name = "metis"
@@ -363,6 +500,12 @@ class MetisEngine(BaseModule):
             "check_consistency",
             "readability_report",
             "writing_stats",
+            "polish_text",
+            "writing_session",
+            "learn_style",
+            "show_style_profile",
+            "clear_style_profile",
+            "export_session",
         }
     )
 
@@ -372,10 +515,15 @@ class MetisEngine(BaseModule):
         memory: Any = None,
         db_path: Optional[Path] = None,
         llm: Optional[Any] = None,
+        export_dir: Optional[Path | str] = None,
     ) -> None:
         self._cfg = OllamaConfig.from_dict(ollama_cfg or {})
         self._memory = memory
         self._llm_instance = llm  # HestiaLLM | None — preferred path
+        self._orpheus: Any = None       # attached by main.py; optional
+        self._search_fn: Any = None     # plagiarism spot-check; optional
+        self._fetch_fn: Any = None
+        self._export_dir = Path(export_dir) if export_dir else DEFAULT_EXPORT_DIR
         resolved = (db_path or _DB_PATH).resolve()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db = MetisDB(str(resolved))
@@ -416,6 +564,28 @@ class MetisEngine(BaseModule):
             return {}
 
     # ------------------------------------------------------------------
+    # Wiring (called once from main.py)
+    # ------------------------------------------------------------------
+
+    def attach_orpheus(self, orpheus: Any) -> None:
+        """Let ``writing_session`` hand drafting to Orpheus (#164)."""
+        self._orpheus = orpheus
+
+    def attach_web_search(self, search_fn: Any, fetch_fn: Any = None) -> None:
+        """
+        Give ``check_plagiarism`` a way to look passages up (#169).
+
+        *search_fn(query, max_results=N)* must return a list of
+        ``{"title": ..., "url": ...}`` dicts (``HestiaBrowserAgent
+        .search_web_results`` fits). *fetch_fn(url)* — optional — returns a
+        page's text (``get_page_text``) and lets Metis confirm that a
+        passage really appears on the page a search returned, instead of
+        reporting every search hit as a match.
+        """
+        self._search_fn = search_fn
+        self._fetch_fn = fetch_fn
+
+    # ------------------------------------------------------------------
     # Dispatcher (private)
     # ------------------------------------------------------------------
 
@@ -450,6 +620,18 @@ class MetisEngine(BaseModule):
             return self._readability_report(entities)
         if intent == "writing_stats":
             return self._writing_stats()
+        if intent == "polish_text":
+            return self._polish_text(entities)
+        if intent == "writing_session":
+            return self._writing_session(entities)
+        if intent == "learn_style":
+            return self._learn_style(entities)
+        if intent == "show_style_profile":
+            return self._show_style_profile()
+        if intent == "clear_style_profile":
+            return self._clear_style_profile()
+        if intent == "export_session":
+            return self._export_session(entities)
         return _err(f"Unknown intent: {intent!r}")
 
     # ------------------------------------------------------------------
@@ -498,9 +680,14 @@ class MetisEngine(BaseModule):
             logger.exception("_persist() failed for key=%r; continuing.", key)
 
     def _save(self, type_: str, content: str, title: str, input_text: str,
-               metadata: dict) -> None:
-        """Fire-and-forget DB write. Never withholds output on failure."""
-        _safe_db(
+               metadata: dict) -> Optional[int]:
+        """
+        Fire-and-forget DB write. Never withholds output on failure.
+
+        Returns the new row id (or None if the write failed) so callers
+        that need to refer back to the item — sessions, exports — can.
+        """
+        item_id = _safe_db(
             self.db.save, type_, content,
             title=title,
             input_preview=input_text[:_INPUT_PREVIEW_MAX_LEN],
@@ -510,6 +697,71 @@ class MetisEngine(BaseModule):
         )
         if type_ in _MEMORY_WORTHY_TYPES:
             self._persist(f"{type_}_{title}", content)
+        return item_id
+
+    # ------------------------------------------------------------------
+    # Style profile helpers (#165)
+    # ------------------------------------------------------------------
+
+    def _load_profile(self) -> Optional[dict]:
+        """The stored voice profile as a dict, or None (never raises)."""
+        try:
+            row = self.db.get_style_profile()
+            if not row:
+                return None
+            profile = json.loads(row["profile_json"])
+            return profile if isinstance(profile, dict) else None
+        except Exception:
+            logger.exception("_load_profile() failed; continuing without a style profile.")
+            return None
+
+    def _style_block(self, entities: dict) -> str:
+        """
+        Prompt text asking the model to respect the user's learned voice.
+
+        Empty when there is no profile, or when the request opted out with
+        ``use_style: false``. Always safe to interpolate: the templates
+        place it directly after the role line.
+        """
+        if "use_style" in entities and not _truthy(entities.get("use_style"), default=True):
+            return ""
+        profile = self._load_profile()
+        return _style_clause(profile) if profile else ""
+
+    # ------------------------------------------------------------------
+    # Length-target helper (#166)
+    # ------------------------------------------------------------------
+
+    def _generate_with_target(
+        self, prompt: str, target: Optional[LengthTarget]
+    ) -> tuple[str, bool, int]:
+        """
+        Generate text and, if a target is set, check it and retry once.
+
+        Returns ``(text, target_met, attempts)``. The retry tells the model
+        exactly how it missed. If the retry is no closer, the first attempt
+        is kept. A target that still can't be hit is reported by the caller,
+        never hidden and never enforced by truncating the text.
+        """
+        text = self._llm_text(prompt)
+        if target is None or not target.is_set:
+            return text, True, 1
+        issue = target.violation(text)
+        if not issue:
+            return text, True, 1
+
+        retry_prompt = (
+            f"{prompt}\n\nYour previous attempt was:\n{text}\n\n"
+            f"Problem: {issue} Rewrite it so it satisfies every hard "
+            f"requirement above. Write only the text."
+        )
+        try:
+            second = self._llm_text(retry_prompt)
+        except LLMResponseError:
+            logger.warning("_generate_with_target: retry failed; keeping first attempt.")
+            return text, False, 1
+        best = second if target.score(second) <= target.score(text) else text
+        return best, not target.violation(best), 2
 
     # ------------------------------------------------------------------
     # Intent handlers (private)
@@ -521,8 +773,11 @@ class MetisEngine(BaseModule):
         if missing:
             return _clarify(missing)
 
+        style_block = self._style_block(entities)
         try:
-            result = self._llm_json(_CORRECT_PROMPT.format(text=text))
+            result = self._llm_json(
+                _CORRECT_PROMPT.format(text=text, style_block=style_block)
+            )
         except LLMResponseError:
             logger.exception("_correct_text: LLM call failed.")
             return _err("I had trouble correcting that. Please try again.")
@@ -538,7 +793,9 @@ class MetisEngine(BaseModule):
         self._save("correction", corrected, "Correction", text,
                     {"num_changes": len(changes)})
 
-        return _ok(response, data={"corrected": corrected, "changes": changes},
+        return _ok(response,
+                    data={"corrected": corrected, "changes": changes,
+                          "style_applied": bool(style_block)},
                     confidence=0.93)
 
     def _improve_clarity(self, entities: dict) -> dict:
@@ -547,8 +804,11 @@ class MetisEngine(BaseModule):
         if missing:
             return _clarify(missing)
 
+        style_block = self._style_block(entities)
         try:
-            result = self._llm_json(_CLARITY_PROMPT.format(text=text))
+            result = self._llm_json(
+                _CLARITY_PROMPT.format(text=text, style_block=style_block)
+            )
         except LLMResponseError:
             logger.exception("_improve_clarity: LLM call failed.")
             return _err("I had trouble simplifying that. Please try again.")
@@ -564,7 +824,10 @@ class MetisEngine(BaseModule):
 
         self._save("clarity", revised, "Clarity pass", text, {"num_notes": len(notes)})
 
-        return _ok(response, data={"revised": revised, "notes": notes}, confidence=0.92)
+        return _ok(response,
+                    data={"revised": revised, "notes": notes,
+                          "style_applied": bool(style_block)},
+                    confidence=0.92)
 
     def _suggest_style(self, entities: dict) -> dict:
         text = _extract(entities, "text", "content", "raw_query")
@@ -572,8 +835,11 @@ class MetisEngine(BaseModule):
         if missing:
             return _clarify(missing)
 
+        style_block = self._style_block(entities)
         try:
-            result = self._llm_json(_STYLE_PROMPT.format(text=text))
+            result = self._llm_json(
+                _STYLE_PROMPT.format(text=text, style_block=style_block)
+            )
         except LLMResponseError:
             logger.exception("_suggest_style: LLM call failed.")
             return _err("I had trouble reviewing that. Please try again.")
@@ -585,7 +851,9 @@ class MetisEngine(BaseModule):
         self._save("style", revised or text, "Style review", text,
                     {"num_suggestions": len(suggestions)})
 
-        return _ok(response, data={"suggestions": suggestions, "revised": revised},
+        return _ok(response,
+                    data={"suggestions": suggestions, "revised": revised,
+                          "style_applied": bool(style_block)},
                     confidence=0.9)
 
     def _detect_tone(self, entities: dict) -> dict:
@@ -613,7 +881,10 @@ class MetisEngine(BaseModule):
         if target:
             try:
                 rewritten = self._llm_text(
-                    _TONE_SHIFT_PROMPT.format(target_tone=target, text=text)
+                    _TONE_SHIFT_PROMPT.format(
+                        target_tone=target, text=text,
+                        style_block=self._style_block(entities),
+                    )
                 )
             except LLMResponseError:
                 logger.exception("_detect_tone: tone-shift LLM call failed.")
@@ -643,15 +914,22 @@ class MetisEngine(BaseModule):
         if missing:
             return _clarify(missing)
 
+        style_block = self._style_block(entities)
         try:
-            rewritten = self._llm_text(_REWRITE_PROMPT.format(goal=goal, text=text))
+            rewritten = self._llm_text(
+                _REWRITE_PROMPT.format(goal=goal, text=text, style_block=style_block)
+            )
         except LLMResponseError:
             logger.exception("_rewrite_text: LLM call failed.")
             return _err("I had trouble rewriting that. Please try again.")
 
-        self._save("rewrite", rewritten, f"Rewrite ({goal})", text, {"goal": goal})
+        self._save("rewrite", rewritten, f"Rewrite ({goal})", text,
+                    {"goal": goal, "style_applied": bool(style_block)})
 
-        return _ok(rewritten, data={"rewritten": rewritten, "goal": goal}, confidence=0.93)
+        return _ok(rewritten,
+                    data={"rewritten": rewritten, "goal": goal,
+                          "style_applied": bool(style_block)},
+                    confidence=0.93)
 
     def _draft_content(self, entities: dict) -> dict:
         brief = _extract(entities, "brief", "topic", "raw_query")
@@ -667,13 +945,20 @@ class MetisEngine(BaseModule):
         )
         if missing:
             return _clarify(missing)
+        target, target_problem = parse_length_target(entities)
+        if target_problem:
+            return _clarify([target_problem])
 
+        style_block = self._style_block(entities)
         try:
-            draft = self._llm_text(
+            draft, met, attempts = self._generate_with_target(
                 _DRAFT_PROMPT.format(
                     content_type=content_type.replace("_", " "),
                     brief=brief, tone=tone, length=length,
-                )
+                    style_block=style_block,
+                    target_block=_target_block(target),
+                ),
+                target,
             )
         except LLMResponseError:
             logger.exception("_draft_content: LLM call failed.")
@@ -682,11 +967,14 @@ class MetisEngine(BaseModule):
         title = f"{content_type.replace('_', ' ').title()} — {brief[:40]}"
 
         self._save("draft", draft, title, brief,
-                    {"content_type": content_type, "tone": tone, "length": length})
+                    {"content_type": content_type, "tone": tone, "length": length,
+                     "style_applied": bool(style_block)})
 
         return _ok(
-            f"{title}\n\n{draft}",
-            data={"title": title, "draft": draft, "content_type": content_type},
+            f"{title}\n\n{draft}" + _target_footer(draft, target, met),
+            data={"title": title, "draft": draft, "content_type": content_type,
+                  "style_applied": bool(style_block),
+                  **_target_data(draft, brief, target, met, attempts)},
             confidence=0.92,
         )
 
@@ -696,16 +984,27 @@ class MetisEngine(BaseModule):
         missing = _collect_missing(("text", text, "What text should I summarise?"))
         if missing:
             return _clarify(missing)
+        target, target_problem = parse_length_target(entities)
+        if target_problem:
+            return _clarify([target_problem])
 
         try:
-            summary = self._llm_text(_SUMMARY_PROMPT.format(length=length, text=text))
+            summary, met, attempts = self._generate_with_target(
+                _SUMMARY_PROMPT.format(
+                    length=length, text=text, target_block=_target_block(target)
+                ),
+                target,
+            )
         except LLMResponseError:
             logger.exception("_summarize_text: LLM call failed.")
             return _err("I had trouble summarising that. Please try again.")
 
         self._save("summary", summary, "Summary", text, {"length": length})
 
-        return _ok(summary, data={"summary": summary}, confidence=0.93)
+        return _ok(summary + _target_footer(summary, target, met),
+                    data={"summary": summary,
+                          **_target_data(summary, text, target, met, attempts)},
+                    confidence=0.93)
 
     def _expand_text(self, entities: dict) -> dict:
         text = _extract(entities, "text", "content", "raw_query")
@@ -713,16 +1012,29 @@ class MetisEngine(BaseModule):
         missing = _collect_missing(("text", text, "What text should I expand?"))
         if missing:
             return _clarify(missing)
+        target, target_problem = parse_length_target(entities)
+        if target_problem:
+            return _clarify([target_problem])
 
+        style_block = self._style_block(entities)
         try:
-            expanded = self._llm_text(_EXPAND_PROMPT.format(length=length, text=text))
+            expanded, met, attempts = self._generate_with_target(
+                _EXPAND_PROMPT.format(
+                    length=length, text=text, style_block=style_block,
+                    target_block=_target_block(target),
+                ),
+                target,
+            )
         except LLMResponseError:
             logger.exception("_expand_text: LLM call failed.")
             return _err("I had trouble expanding that. Please try again.")
 
         self._save("expansion", expanded, "Expanded text", text, {"length": length})
 
-        return _ok(expanded, data={"expanded": expanded}, confidence=0.9)
+        return _ok(expanded + _target_footer(expanded, target, met),
+                    data={"expanded": expanded, "style_applied": bool(style_block),
+                          **_target_data(expanded, text, target, met, attempts)},
+                    confidence=0.9)
 
     def _shorten_text(self, entities: dict) -> dict:
         text = _extract(entities, "text", "content", "raw_query")
@@ -730,16 +1042,29 @@ class MetisEngine(BaseModule):
         missing = _collect_missing(("text", text, "What text should I shorten?"))
         if missing:
             return _clarify(missing)
+        target, target_problem = parse_length_target(entities)
+        if target_problem:
+            return _clarify([target_problem])
 
+        style_block = self._style_block(entities)
         try:
-            shortened = self._llm_text(_SHORTEN_PROMPT.format(length=length, text=text))
+            shortened, met, attempts = self._generate_with_target(
+                _SHORTEN_PROMPT.format(
+                    length=length, text=text, style_block=style_block,
+                    target_block=_target_block(target),
+                ),
+                target,
+            )
         except LLMResponseError:
             logger.exception("_shorten_text: LLM call failed.")
             return _err("I had trouble shortening that. Please try again.")
 
         self._save("shortened", shortened, "Shortened text", text, {"length": length})
 
-        return _ok(shortened, data={"shortened": shortened}, confidence=0.9)
+        return _ok(shortened + _target_footer(shortened, target, met),
+                    data={"shortened": shortened, "style_applied": bool(style_block),
+                          **_target_data(shortened, text, target, met, attempts)},
+                    confidence=0.9)
 
     def _generate_outline(self, entities: dict) -> dict:
         topic = _extract(entities, "topic", "raw_query")
@@ -767,16 +1092,101 @@ class MetisEngine(BaseModule):
 
     def _check_plagiarism(self, entities: dict) -> dict:
         """
-        Best-effort only: this module has no live web index to check
-        against, so it's honest about that rather than faking a scan.
-        Suggests Hephaestus (search_web) as a manual spot-check path for
-        any single distinctive phrase the user is worried about.
+        Spot-check a text's most distinctive passages and report sources.
+
+        Metis has no web-scale index, so this never claims an originality
+        score. What it does instead (#169):
+
+        - pick a few distinctive passages (uncommon words, names, numbers);
+        - if a web search is attached, look each one up as an exact-phrase
+          query and, when page fetching is available, confirm the passage
+          really appears on the returned page;
+        - report the *sources* it found — title, URL and whether the match
+          was confirmed — rather than a bare similarity number.
+
+        With no search attached it says so honestly and hands back the
+        passages as ready-made quoted queries for a manual check.
         """
         text = _extract(entities, "text", "content", "raw_query")
         missing = _collect_missing(("text", text, "What text should I check?"))
         if missing:
             return _clarify(missing)
 
+        try:
+            wanted = int(entities.get("max_phrases", _DEFAULT_PLAGIARISM_PHRASES))
+        except (TypeError, ValueError):
+            wanted = _DEFAULT_PLAGIARISM_PHRASES
+        wanted = max(1, min(wanted, _MAX_PLAGIARISM_PHRASES))
+        phrases = distinctive_phrases(text[:_MAX_PLAGIARISM_TEXT_CHARS], k=wanted)
+
+        if self._search_fn is None or not phrases:
+            return self._plagiarism_unsupported(text, phrases)
+
+        sources: list[dict[str, Any]] = []
+        matched_phrases: set[str] = set()
+        checked = 0
+        fetches = 0
+        any_results = False
+        for phrase in phrases:
+            try:
+                results = self._search_fn(
+                    f'"{phrase}"', max_results=_PLAGIARISM_RESULTS_PER_PHRASE
+                )
+            except Exception:
+                logger.exception("_check_plagiarism: search failed for one passage.")
+                continue
+            checked += 1
+            any_results = any_results or bool(results)
+            for hit in (results or [])[:_PLAGIARISM_RESULTS_PER_PHRASE]:
+                if not isinstance(hit, dict):
+                    continue
+                url = str(hit.get("url") or "").strip()
+                title = str(hit.get("title") or "").strip()
+                status = "possible"
+                if self._fetch_fn is not None and url and fetches < _MAX_PLAGIARISM_FETCHES:
+                    fetches += 1
+                    try:
+                        page = self._fetch_fn(url) or ""
+                        if normalise_for_match(phrase) in normalise_for_match(page):
+                            status = "confirmed"
+                        elif page.strip():
+                            # The engine returned it, but the passage isn't
+                            # on the page: a false lead, so don't report it.
+                            continue
+                    except Exception:
+                        logger.debug("_check_plagiarism: could not fetch %r.", url)
+                sources.append({"phrase": phrase, "title": title,
+                                "url": url, "status": status})
+                matched_phrases.add(phrase)
+
+        if checked == 0:
+            return self._plagiarism_unsupported(text, phrases, search_failed=True)
+
+        response = _format_plagiarism(checked, sources, matched_phrases)
+        if not any_results:
+            # Zero hits for every passage is also what an unavailable
+            # browser looks like from here, so don't over-claim.
+            response += ("\n\nEvery search came back empty. That can mean the "
+                         "passages are unique — or that web search isn't working "
+                         "right now (e.g. the browser isn't available).")
+        self._save("plagiarism_check", response, "Plagiarism spot-check", text,
+                    {"checked": checked, "matched": len(matched_phrases)})
+
+        return _ok(
+            response,
+            data={
+                "supported": True,
+                "phrases_checked": checked,
+                "phrases_matched": len(matched_phrases),
+                "match_ratio": round(len(matched_phrases) / checked, 2),
+                "sources": sources,
+            },
+            confidence=0.75,
+        )
+
+    def _plagiarism_unsupported(self, text: str, phrases: list[str],
+                                search_failed: bool = False) -> dict:
+        """Honest fallback: no live search available (or it failed)."""
         response = (
             "I don't have a live web index to run a real plagiarism scan against, "
             "so I can't give you a reliable originality score. If you're worried "
@@ -784,9 +1194,22 @@ class MetisEngine(BaseModule):
             "sentence from it to spot-check for matches — or I can help make sure "
             "any borrowed material is properly cited instead."
         )
-        self._save("plagiarism_check", response, "Plagiarism check (limited)", text, {})
-
-        return _ok(response, data={"supported": False}, confidence=0.6)
+        if search_failed:
+            response = ("I tried to search the web for your text's most distinctive "
+                        "passages but the searches didn't work. ") + response
+        if phrases:
+            response += (
+                "\n\nTo check by hand, paste these passages into a search engine "
+                "with the quotes:\n" + "\n".join(f'  • "{p}"' for p in phrases)
+            )
+        self._save("plagiarism_check", response, "Plagiarism check (limited)", text,
+                    {"phrases": len(phrases)})
+        return _ok(
+            response,
+            data={"supported": False, "phrases": phrases,
+                  "queries": [f'"{p}"' for p in phrases]},
+            confidence=0.6,
+        )
 
     def _generate_citation(self, entities: dict) -> dict:
         source = _extract(entities, "source", "raw_query")
@@ -848,12 +1271,14 @@ class MetisEngine(BaseModule):
             logger.exception("_readability_report: LLM call failed.")
             return _err("I had trouble assessing readability. Please try again.")
 
-        response = _format_readability(result if isinstance(result, dict) else {})
+        metrics = text_metrics(text)
+        response = _format_readability(result if isinstance(result, dict) else {}, metrics)
 
         self._save("readability", response, "Readability report", text, {})
 
-        return _ok(response, data=result if isinstance(result, dict) else {},
-                    confidence=0.88)
+        data = dict(result) if isinstance(result, dict) else {}
+        data["metrics"] = metrics
+        return _ok(response, data=data, confidence=0.88)
 
     def _writing_stats(self) -> dict:
         try:
@@ -864,6 +1289,385 @@ class MetisEngine(BaseModule):
 
         response = _format_stats(stats)
         return _ok(response, data=stats, confidence=0.97)
+
+    # ------------------------------------------------------------------
+    # Polish pass and writing session (#164, #270)
+    # ------------------------------------------------------------------
+
+    def polish_pass(
+        self,
+        text: str,
+        kind: str = "prose",
+        entities: Optional[dict] = None,
+        revise: bool = True,
+    ) -> dict[str, Any]:
+        """
+        One round of critique, then (optionally) one revision.
+
+        This is the public hook Orpheus calls for its polish-pass toggle and
+        that ``writing_session`` / ``polish_text`` use. It never raises.
+
+        Returns a dict with:
+          ok        False if a step failed (see ``reason``); True otherwise
+          polished  the revised text (the input unchanged if nothing to fix)
+          changed   whether ``polished`` differs from the input
+          issues    the concrete weaknesses the critique found
+          verdict   "good" (nothing worth fixing) or "needs_work"
+
+        ``kind="creative"`` tells the model to protect voice, imagery and
+        line breaks, and skips the personal style profile: a poem should
+        not be edited toward the user's email voice. Only a single round
+        is ever run — the critique loop is deliberately not iterative.
+        """
+        entities = entities or {}
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "polished": "", "changed": False,
+                    "issues": [], "verdict": "good",
+                    "reason": "there was no text to polish"}
+
+        kind = kind if kind in _POLISH_KIND_NOTES else "prose"
+        critique_note, revise_note = _POLISH_KIND_NOTES[kind]
+
+        try:
+            critique = self._llm_json(
+                _POLISH_CRITIQUE_PROMPT.format(
+                    kind_note=critique_note, text=text, max_issues=_MAX_POLISH_ISSUES,
+                )
+            )
+        except LLMResponseError:
+            logger.exception("polish_pass: critique step failed.")
+            return {"ok": False, "polished": text, "changed": False,
+                    "issues": [], "verdict": "good",
+                    "reason": "the critique step failed"}
+        if not isinstance(critique, dict):
+            return {"ok": False, "polished": text, "changed": False,
+                    "issues": [], "verdict": "good",
+                    "reason": "the critique came back malformed"}
+
+        issues = _str_list(critique.get("issues"), _MAX_POLISH_ISSUES)
+        # The listed issues are the ground truth: a model that says
+        # "needs_work" with nothing concrete gives us nothing to apply.
+        verdict = "needs_work" if issues else "good"
+        result: dict[str, Any] = {"ok": True, "polished": text, "changed": False,
+                                   "issues": issues, "verdict": verdict}
+        if not issues or not revise:
+            return result
+
+        style_block = self._style_block(entities) if kind == "prose" else ""
+        try:
+            revised = self._llm_text(
+                _POLISH_REVISE_PROMPT.format(
+                    style_block=style_block, kind_note=revise_note,
+                    issues="\n".join(f"- {i}" for i in issues), text=text,
+                )
+            )
+        except LLMResponseError:
+            logger.exception("polish_pass: revision step failed.")
+            return {**result, "ok": False, "reason": "the revision step failed"}
+
+        # A revision that gutted or ballooned the piece is the model
+        # ignoring "fix only these issues" — keep the original instead.
+        before, after = count_words(text), count_words(revised)
+        if before >= 10 and not (0.5 * before <= after <= 2.5 * before):
+            return {**result, "ok": False,
+                    "reason": "the revision drifted too far from the draft, so I kept the original"}
+
+        result["polished"] = revised
+        result["changed"] = revised.strip() != text
+        return result
+
+    def _polish_text(self, entities: dict) -> dict:
+        text = _extract(entities, "text", "content", "raw_query")
+        missing = _collect_missing(("text", text, "What text should I polish?"))
+        if missing:
+            return _clarify(missing)
+
+        kind = str(entities.get("kind", "")).strip().lower()
+        kind = kind if kind in _POLISH_KIND_NOTES else "prose"
+        result = self.polish_pass(text, kind=kind, entities=entities)
+        if not result["ok"]:
+            return _err(f"I couldn't polish that: {result.get('reason', 'something went wrong')}.")
+
+        if result["changed"]:
+            issues = result["issues"]
+            response = result["polished"]
+            if issues:
+                response += "\n\nWhat I fixed:\n" + "\n".join(f"  • {i}" for i in issues)
+        else:
+            response = "That already reads well — I'd leave it as it is."
+
+        self._save("polish", result["polished"], "Polish pass", text,
+                    {"changed": result["changed"], "num_issues": len(result["issues"]),
+                     "kind": kind})
+        return _ok(
+            response,
+            data={"polished": result["polished"], "changed": result["changed"],
+                  "issues": result["issues"], "verdict": result["verdict"]},
+            confidence=0.9,
+        )
+
+    def _writing_session(self, entities: dict) -> dict:
+        """
+        One command: Orpheus drafts, Metis critiques once and polishes.
+
+        The original Orpheus draft is always kept (as version 1 of the
+        creation); the polished text is added as version 2, so the session
+        never costs you the draft.
+        """
+        topic = _extract(entities, "topic", "brief", "subject", "raw_query")
+        kind = _session_kind(entities)
+        missing = _collect_missing(
+            ("topic", topic, "What should it be about?"),
+            ("kind", kind, "Should I write a poem, a story, or song lyrics?"),
+        )
+        if missing:
+            return _clarify(missing)
+
+        if self._orpheus is None or not hasattr(self._orpheus, "handle"):
+            return _err(
+                "The creative writing module isn't available, so I can't start "
+                "a writing session right now."
+            )
+
+        o_entities: dict[str, Any] = {"topic": topic, "polish": False}
+        for key in _SESSION_PASSTHROUGH:
+            if entities.get(key):
+                o_entities[key] = entities[key]
+        try:
+            drafted = self._orpheus.handle(_SESSION_KIND_TO_ORPHEUS[kind], o_entities, {})
+        except Exception:
+            logger.exception("_writing_session: Orpheus draft raised.")
+            return _err("I couldn't get a draft started. Please try again.")
+
+        data = drafted.get("data", {}) if isinstance(drafted, dict) else {}
+        if data.get("needs_clarification"):
+            return drafted
+        draft = str(data.get(kind) or "").strip()
+        if not draft:
+            return _err(
+                (drafted.get("response") if isinstance(drafted, dict) else "")
+                or "I couldn't get a draft started. Please try again."
+            )
+        creation_id = data.get("creation_id")
+        title = f"Writing session — {kind}: {topic[:40]}"
+
+        do_polish = _truthy(entities.get("polish"), default=True)
+        result = self.polish_pass(draft, kind="creative", entities=entities, revise=do_polish)
+        issues = result.get("issues", [])
+        final = result["polished"] if result.get("ok") and result.get("changed") else draft
+        changed = final != draft
+
+        if changed and creation_id is not None:
+            try:
+                self._orpheus.db.add_version(
+                    creation_id, final, note="Metis polish pass (writing session)"
+                )
+            except Exception:
+                logger.exception("_writing_session: could not store polished version.")
+
+        session_id = self._save(
+            "session", final, title, topic,
+            {"kind": kind, "topic": topic, "draft": draft, "issues": issues,
+             "verdict": result.get("verdict", "good"), "polished": changed,
+             "orpheus_creation_id": creation_id},
+        )
+
+        lines = [title, "", final]
+        if issues:
+            lines += ["", "Metis's notes:"] + [f"  • {i}" for i in issues]
+        lines += ["", _session_status(result, changed, do_polish, creation_id)]
+        return _ok(
+            "\n".join(lines).strip(),
+            data={"session_id": session_id, "title": title, "kind": kind,
+                  "topic": topic, "draft": draft, "final": final,
+                  "issues": issues, "verdict": result.get("verdict", "good"),
+                  "polished": changed, "creation_id": creation_id},
+            confidence=0.9,
+        )
+
+    # ------------------------------------------------------------------
+    # Style profile (#165)
+    # ------------------------------------------------------------------
+
+    def _learn_style(self, entities: dict) -> dict:
+        text = _extract(entities, "text", "content", "sample", "raw_query")
+        if not text:
+            return _clarify([
+                "Paste a sample of your own writing — a few paragraphs works "
+                "best — and I'll learn your voice from it."
+            ])
+        text = text[:_MAX_STYLE_SAMPLE_CHARS]
+        n_words = count_words(text)
+        if n_words < _MIN_STYLE_SAMPLE_WORDS:
+            return _ok(
+                f"That's only {n_words} words — I need at least "
+                f"{_MIN_STYLE_SAMPLE_WORDS} to say anything real about your style. "
+                "Paste a longer sample.",
+                data={"needs_more": True, "words": n_words}, confidence=0.6,
+            )
+
+        try:
+            existing = self.db.get_style_samples()
+            if len(existing) >= _MAX_STYLE_SAMPLES:
+                return _ok(
+                    f"I'm already holding {_MAX_STYLE_SAMPLES} samples. Say "
+                    "'forget my writing style' to start over.",
+                    data={"at_limit": True}, confidence=0.6,
+                )
+            self.db.add_style_sample(text, label=_extract(entities, "label", "name"),
+                                     word_count=n_words)
+            samples = self.db.get_style_samples()
+        except Exception:
+            logger.exception("_learn_style: DB operation failed.")
+            return _err("I couldn't save that sample right now.")
+
+        profile, notes_ok = self._build_profile(samples)
+        try:
+            self.db.save_style_profile(json.dumps(profile), len(samples))
+        except Exception:
+            logger.exception("_learn_style: could not save profile.")
+            return _err("I couldn't save your style profile right now.")
+
+        response = (
+            f"Learned from your sample ({n_words} words). "
+            f"I now have {len(samples)} sample(s), ~{profile['total_words']} words in total.\n\n"
+            + _format_style_profile(profile)
+        )
+        if not notes_ok:
+            response += ("\n\n(I couldn't get a written summary of your voice this "
+                         "time, so this is based on measurements only.)")
+        return _ok(response, data={"profile": profile, "samples": len(samples),
+                                    "summary_available": notes_ok}, confidence=0.9)
+
+    def _build_profile(self, samples: list[dict]) -> tuple[dict, bool]:
+        """Measure every sample; add an LLM voice summary from the latest few."""
+        texts = [str(x["text"]) for x in samples]
+        stats = compute_style_stats(texts)
+        profile: dict[str, Any] = {
+            "sample_count": len(texts),
+            "total_words": stats.get("total_words", 0),
+            "stats": stats,
+            "traits": describe_style_stats(stats),
+            "voice_summary": "",
+            "signature_traits": [],
+            "avoid": [],
+        }
+        recent = "\n\n---\n\n".join(texts[-3:])[-_STYLE_NOTES_INPUT_CHARS:]
+        try:
+            notes = self._llm_json(_STYLE_NOTES_PROMPT.format(samples=recent))
+        except LLMResponseError:
+            logger.exception("_build_profile: voice-summary call failed.")
+            return profile, False
+        if not isinstance(notes, dict):
+            return profile, False
+        profile["voice_summary"] = str(notes.get("voice_summary") or "").strip()[:400]
+        profile["signature_traits"] = _str_list(notes.get("signature_traits"), 6)
+        profile["avoid"] = _str_list(notes.get("avoid"), 3)
+        return profile, bool(profile["voice_summary"] or profile["signature_traits"])
+
+    def _show_style_profile(self) -> dict:
+        profile = self._load_profile()
+        if not profile:
+            return _ok(
+                "I haven't learned your writing style yet. Paste a sample of your "
+                "own writing and say 'learn my writing style'.",
+                data={"has_profile": False}, confidence=0.8,
+            )
+        return _ok(
+            f"Your writing voice (from {profile.get('sample_count', 0)} sample(s), "
+            f"~{profile.get('total_words', 0)} words)\n\n" + _format_style_profile(profile)
+            + "\n\nI apply this when I correct, rewrite, clarify, draft, expand or "
+              "shorten your text. Say 'forget my writing style' to reset it.",
+            data={"has_profile": True, "profile": profile}, confidence=0.95,
+        )
+
+    def _clear_style_profile(self) -> dict:
+        try:
+            removed = self.db.clear_style()
+        except Exception:
+            logger.exception("_clear_style_profile: DB operation failed.")
+            return _err("I couldn't clear your style profile right now.")
+        if not removed:
+            return _ok("There was no style profile to clear.",
+                        data={"removed": 0}, confidence=0.8)
+        return _ok(f"Done — I've forgotten your writing style and deleted {removed} "
+                    "sample(s).", data={"removed": removed}, confidence=0.95)
+
+    # ------------------------------------------------------------------
+    # Export (#168)
+    # ------------------------------------------------------------------
+
+    def _export_session(self, entities: dict) -> dict:
+        """
+        Write a writing session (or any saved Metis item) to .md or .txt.
+
+        Picks, in order: the item ``session_id`` / ``id`` names; otherwise
+        the latest writing session; otherwise the latest item of any kind.
+        """
+        raw_id = entities.get("session_id")
+        if raw_id in (None, ""):
+            raw_id = entities.get("id")
+        try:
+            if raw_id not in (None, ""):
+                item_id = _to_int(raw_id)
+                if item_id is None or item_id < 1:
+                    return _clarify(["Which session do you mean? Give me its number."])
+                item = self.db.get_item(item_id)
+                if item is None:
+                    return _ok(f"I can't find a saved item numbered {item_id}.",
+                                data={"found": False}, confidence=0.7)
+            else:
+                item = self.db.get_latest("session")
+                if item is None:
+                    recent = self.db.get_all(limit=1)
+                    item = recent[0] if recent else None
+                if item is None:
+                    return _ok("There's nothing to export yet.",
+                                data={"found": False}, confidence=0.7)
+        except Exception:
+            logger.exception("_export_session: DB read failed.")
+            return _err("I couldn't look that up right now.")
+
+        try:
+            meta = json.loads(item.get("metadata") or "{}")
+            if not isinstance(meta, dict):
+                meta = {}
+        except (TypeError, ValueError):
+            meta = {}
+
+        fmt = normalise_format(entities.get("format") or entities.get("file_format"))
+        title = item.get("title") or str(item.get("type", "")).title() or "Metis export"
+        kind = str(meta.get("kind") or "")
+
+        sections: list[tuple[str, str]] = []
+        if item.get("type") == "session":
+            if meta.get("polished") and meta.get("draft"):
+                sections.append(("Original draft", str(meta["draft"])))
+            issues = _str_list(meta.get("issues"), _MAX_POLISH_ISSUES)
+            if issues:
+                sections.append(("Metis's notes", "\n".join(f"- {i}" for i in issues)))
+
+        doc = render_document(
+            title, str(item.get("content") or ""), fmt,
+            meta=[("Type", str(item.get("type", ""))), ("Kind", kind),
+                  ("Created", str(item.get("logged_at", "")))],
+            sections=sections,
+            preserve_lines=kind in VERSE_TYPES or kind == "poem",
+        )
+
+        requested = _extract(entities, "filename", "file_name", "name")
+        stem = safe_stem(requested, "") if requested else ""
+        stem = stem or f"metis-{item['id']}-{slugify(title, 'session')}"
+        try:
+            path = write_export(self._export_dir, stem, fmt, doc)
+        except OSError:
+            logger.exception("_export_session: could not write export file.")
+            return _err("I couldn't write the export file. Check the export folder is writable.")
+
+        return _ok(f"Exported '{title}' to {path}",
+                    data={"path": str(path), "format": fmt, "item_id": item["id"]},
+                    confidence=0.92)
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +1681,186 @@ def _extract(entities: dict, *keys: str) -> str:
         if value and str(value).strip():
             return str(value).strip()
     return ""
+
+
+def _truthy(value: Any, default: bool = False) -> bool:
+    """Interpret a loosely-typed flag from NLU entities; unknown -> *default*."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    word = str(value or "").strip().lower()
+    if word in _TRUE_WORDS:
+        return True
+    if word in _FALSE_WORDS:
+        return False
+    return default
+
+
+def _to_int(value: Any) -> Optional[int]:
+    """Parse 12, "12" or "session 12" to an int; None if there isn't one."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    import re
+    m = re.search(r"\d+", str(value or ""))
+    return int(m.group()) if m else None
+
+
+def _str_list(value: Any, limit: int) -> list[str]:
+    """Keep only non-empty strings from an LLM-supplied list, capped at *limit*."""
+    if not isinstance(value, list):
+        return []
+    out = [str(v).strip() for v in value if isinstance(v, str) and v.strip()]
+    return out[:limit]
+
+
+def _session_kind(entities: dict) -> str:
+    """Resolve poem / lyrics / story from entities, or from words in raw_query."""
+    for key in ("kind", "type", "form", "medium", "content_type"):
+        word = str(entities.get(key, "")).strip().lower()
+        if word in _SESSION_KIND_ALIASES:
+            return _SESSION_KIND_ALIASES[word]
+    import re
+    for token in re.findall(r"[a-z]+", str(entities.get("raw_query", "")).lower()):
+        if token in _SESSION_KIND_ALIASES:
+            return _SESSION_KIND_ALIASES[token]
+    return ""
+
+
+def _session_status(result: dict, changed: bool, do_polish: bool,
+                    creation_id: Any) -> str:
+    """One-line footer saying what the session did with the draft."""
+    ref = f" (creation #{creation_id})" if creation_id is not None else ""
+    if not result.get("ok"):
+        reason = result.get("reason") or "it couldn't run"
+        return f"(Polish pass skipped: {reason}. Draft kept as written{ref}.)"
+    if changed:
+        return (f"(Polished from the original draft — the draft is saved as "
+                f"version 1{ref}.)")
+    if not do_polish:
+        return f"(Critique only — draft left as written{ref}.)"
+    return f"(Metis found nothing worth changing. Draft saved{ref}.)"
+
+
+def _style_clause(profile: dict) -> str:
+    """
+    Build the prompt fragment that carries a learned voice profile.
+
+    Starts with a newline and has no trailing newline, so the templates can
+    place it right after the role line; returns "" when the profile has
+    nothing usable in it.
+    """
+    summary = str(profile.get("voice_summary") or "").strip()
+    traits = _str_list(profile.get("signature_traits"), 6) + _str_list(profile.get("traits"), 8)
+    avoid = _str_list(profile.get("avoid"), 3)
+    if not (summary or traits):
+        return ""
+    lines = ["", "Match the user's personal writing voice and do not flatten it "
+                 "into a generic style. Only change what the task requires."]
+    if summary:
+        lines.append(f"Voice: {summary}")
+    if traits:
+        lines.append("Habits to keep: " + "; ".join(traits) + ".")
+    if avoid:
+        lines.append("This writer would not: " + "; ".join(avoid) + ".")
+    return "\n".join(lines)
+
+
+def _format_style_profile(profile: dict) -> str:
+    lines: list[str] = []
+    summary = str(profile.get("voice_summary") or "").strip()
+    if summary:
+        lines += [summary, ""]
+    traits = _str_list(profile.get("traits"), 12)
+    if traits:
+        lines.append("Measured habits:")
+        lines += [f"  • {t}" for t in traits]
+    signature = _str_list(profile.get("signature_traits"), 6)
+    if signature:
+        lines += ["", "Signature traits:"] + [f"  • {t}" for t in signature]
+    avoid = _str_list(profile.get("avoid"), 3)
+    if avoid:
+        lines += ["", "Would not: " + "; ".join(avoid)]
+    return "\n".join(lines).strip() or "Not enough text yet to say much."
+
+
+def _target_block(target: Optional[LengthTarget]) -> str:
+    """Prompt fragment for a length target ("" when none)."""
+    return target.instructions() if target is not None and target.is_set else ""
+
+
+def _describe_target(target: LengthTarget) -> str:
+    parts: list[str] = []
+    if target.target_words is not None:
+        parts.append(f"about {target.target_words} words")
+    if target.min_words is not None:
+        parts.append(f"at least {target.min_words} words")
+    if target.max_words is not None:
+        parts.append(f"at most {target.max_words} words")
+    if target.grade is not None:
+        parts.append(f"grade {target.grade:g} reading level")
+    return " and ".join(parts)
+
+
+def _target_footer(text: str, target: Optional[LengthTarget], met: bool = True) -> str:
+    """Short, honest note on whether a requested target was hit."""
+    if target is None or not target.is_set:
+        return ""
+    m = text_metrics(text)
+    measured = f"{m['words']} words"
+    if target.grade is not None:
+        measured += f", grade {m['grade']:g}"
+    if met:
+        return f"\n\n({measured} — target met.)"
+    return (f"\n\n({measured} — I couldn't quite reach {_describe_target(target)}; "
+            "ask me to try again or loosen the target.)")
+
+
+def _target_data(output: str, source: str, target: Optional[LengthTarget],
+                 met: bool, attempts: int) -> dict[str, Any]:
+    """Structured target results for `data` (empty when no target was set)."""
+    if target is None or not target.is_set:
+        return {}
+    m = text_metrics(output)
+    return {
+        "target": target.as_dict(),
+        "target_met": met,
+        "attempts": attempts,
+        "output_words": m["words"],
+        "input_words": count_words(source),
+        "reading_grade": m["grade"],
+    }
+
+
+def _format_plagiarism(checked: int, sources: list[dict],
+                       matched: set[str]) -> str:
+    """Render the spot-check outcome, sources first, with honest caveats."""
+    caveat = (
+        "This only samples a few passages — it isn't a full scan, so no matches "
+        "doesn't prove the text is original, and a match can just be a quotation "
+        "or a common phrase. If anything here is borrowed, cite it (I can format "
+        "the citation for you)."
+    )
+    if not sources:
+        return (f"I spot-checked {checked} distinctive passage(s) against a web "
+                f"search and found no matching pages.\n\n{caveat}")
+    lines = [f"I spot-checked {checked} distinctive passage(s) against a web "
+             f"search; {len(matched)} of {checked} turned up elsewhere:", ""]
+    by_phrase: dict[str, list[dict]] = {}
+    for src in sources:
+        by_phrase.setdefault(src["phrase"], []).append(src)
+    for phrase, hits in by_phrase.items():
+        lines.append(f'  “{phrase}”')
+        for hit in hits:
+            label = hit.get("title") or hit.get("url") or "(untitled)"
+            status = "confirmed on the page" if hit["status"] == "confirmed" else \
+                "search match, not verified"
+            url = f" — {hit['url']}" if hit.get("url") else ""
+            lines.append(f"      → {label}{url} ({status})")
+    lines += ["", caveat]
+    return "\n".join(lines)
 
 
 def _normalise(value: str, valid: frozenset[str], default: str) -> str:
@@ -955,13 +1939,22 @@ def _format_consistency(issues: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_readability(result: dict) -> str:
+def _format_readability(result: dict, metrics: Optional[dict] = None) -> str:
     ease = result.get("reading_ease", "unknown")
     variety = result.get("sentence_variety", "unknown")
     issues = [i for i in (result.get("issues") or []) if isinstance(i, str)]
     suggestions = [s for s in (result.get("suggestions") or []) if isinstance(s, str)]
 
-    lines = [f"Reading ease: {ease}", f"Sentence variety: {variety}"]
+    lines: list[str] = []
+    if metrics and metrics.get("words"):
+        lines += [
+            f"Measured: {metrics['words']} words, {metrics['sentences']} sentence(s), "
+            f"{metrics['avg_sentence_words']:g} words per sentence on average",
+            f"Flesch reading ease {metrics['reading_ease']:g} "
+            f"({ease_label(metrics['reading_ease'])}), grade level ≈ {metrics['grade']:g}",
+            "",
+        ]
+    lines += [f"Reading ease: {ease}", f"Sentence variety: {variety}"]
     if issues:
         lines.append("")
         lines.append("Issues:")
@@ -987,12 +1980,17 @@ def _format_stats(stats: dict) -> str:
     return "\n".join(lines)
 
 
-def _safe_db(fn: Any, *args: Any, **kwargs: Any) -> None:
-    """Call a DB function, logging and swallowing any exception."""
+def _safe_db(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """
+    Call a DB function, logging and swallowing any exception.
+
+    Returns the function's result (e.g. the new row id), or None on failure.
+    """
     try:
-        fn(*args, **kwargs)
+        return fn(*args, **kwargs)
     except Exception:
         logger.exception("DB write failed (fn=%s); writing output unaffected.", fn)
+        return None
 
 
 def _ok(response: str, data: Optional[dict[str, Any]] = None,

@@ -56,10 +56,13 @@ apollo_log_weight, apollo_log_water, apollo_set_health_goal, apollo_get_goal_pro
 orpheus_write_poem, orpheus_brainstorm, orpheus_creative_prompt, orpheus_generate_lyrics,
 orpheus_write_story, orpheus_continue_writing, orpheus_critique_writing, orpheus_rewrite_style,
 orpheus_generate_names, orpheus_get_creations,
+orpheus_revise_creation, orpheus_get_versions, orpheus_restore_version, orpheus_export_creation,
 metis_correct_text, metis_improve_clarity, metis_suggest_style, metis_detect_tone,
 metis_rewrite_text, metis_draft_content, metis_summarize_text, metis_expand_text,
 metis_shorten_text, metis_generate_outline, metis_check_plagiarism, metis_generate_citation,
 metis_check_consistency, metis_readability_report, metis_writing_stats,
+metis_polish_text, metis_writing_session, metis_learn_style, metis_show_style_profile,
+metis_clear_style_profile, metis_export_session,
 dionysus_recommend_movie, dionysus_find_restaurant, dionysus_recommend_music, dionysus_plan_outing,
 dionysus_dismiss_recommendation, dionysus_mark_seen,
 pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report,
@@ -549,6 +552,24 @@ User: give me 5 fantasy character names
 User: show me poems I've written before
 {"intent": "orpheus_get_creations", "entities": {"type": "poem"}, "response": "Pulling up your past poems.", "confidence": 0.9}
 
+# "polish"/"clean it up" on a NEW piece is the optional Metis polish pass
+# (entity polish: true). Editing a piece you already saved is
+# orpheus_revise_creation, which adds a new version and keeps the original.
+User: write me a poem about autumn and polish it
+{"intent": "orpheus_write_poem", "entities": {"topic": "autumn", "polish": true}, "response": "Writing and polishing a poem.", "confidence": 0.92}
+
+User: revise my last poem to make the ending more hopeful
+{"intent": "orpheus_revise_creation", "entities": {"type": "poem", "instruction": "make the ending more hopeful"}, "response": "Revising it as a new version.", "confidence": 0.9}
+
+User: show me the version history of my last story
+{"intent": "orpheus_get_versions", "entities": {"type": "story"}, "response": "Pulling up the versions.", "confidence": 0.9}
+
+User: go back to version 1 of creation 12
+{"intent": "orpheus_restore_version", "entities": {"creation_id": 12, "version": 1}, "response": "Restoring that version.", "confidence": 0.9}
+
+User: export my last poem as markdown
+{"intent": "orpheus_export_creation", "entities": {"type": "poem", "format": "md"}, "response": "Exporting it.", "confidence": 0.9}
+
 ---
 
 # ---- METIS (WRITING ASSISTANCE / EDITING) ----
@@ -596,6 +617,15 @@ User: expand this paragraph with more detail
 User: shorten this to fit in a tweet
 {"intent": "metis_shorten_text", "entities": {"length": "short"}, "response": "Shortening that.", "confidence": 0.88}
 
+# Exact numbers become targets, not the vague "length" entity:
+# max_words / min_words / target_words (whole numbers) and target_grade
+# (a U.S. grade level).
+User: cut this down to under 100 words
+{"intent": "metis_shorten_text", "entities": {"max_words": 100}, "response": "Shortening that.", "confidence": 0.9}
+
+User: expand this to about 300 words at an 8th grade reading level
+{"intent": "metis_expand_text", "entities": {"target_words": 300, "target_grade": 8}, "response": "Expanding that.", "confidence": 0.9}
+
 User: give me an outline for a report on renewable energy
 {"intent": "metis_generate_outline", "entities": {"topic": "renewable energy"}, "response": "Building an outline.", "confidence": 0.91}
 
@@ -613,6 +643,26 @@ User: how readable is this piece
 
 User: how much writing have I had you help with
 {"intent": "metis_writing_stats", "entities": {}, "response": "Pulling up your writing stats.", "confidence": 0.9}
+
+User: polish this paragraph
+{"intent": "metis_polish_text", "entities": {}, "response": "Polishing that.", "confidence": 0.9}
+
+# A writing session is ONE request that both drafts (Orpheus) and then
+# critiques/polishes (Metis). Extract the form (poem/story/lyrics) as "kind".
+User: start a writing session for a short story about a lighthouse keeper
+{"intent": "metis_writing_session", "entities": {"kind": "story", "topic": "a lighthouse keeper"}, "response": "Starting a writing session.", "confidence": 0.9}
+
+User: learn my writing style from this: I never really trusted mornings. They always arrive too loud, too bright, and far too sure of themselves.
+{"intent": "metis_learn_style", "entities": {"text": "I never really trusted mornings. They always arrive too loud, too bright, and far too sure of themselves."}, "response": "Learning your style.", "confidence": 0.9}
+
+User: what's my writing style profile
+{"intent": "metis_show_style_profile", "entities": {}, "response": "Here's your style profile.", "confidence": 0.9}
+
+User: forget my writing style
+{"intent": "metis_clear_style_profile", "entities": {}, "response": "Clearing your style profile.", "confidence": 0.9}
+
+User: export that writing session as a text file
+{"intent": "metis_export_session", "entities": {"format": "txt"}, "response": "Exporting the session.", "confidence": 0.9}
 
 ---
 

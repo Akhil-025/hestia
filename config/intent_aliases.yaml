@@ -260,6 +260,47 @@ take_note:
   - "ye likh lo"
   - "yaad rakho ki"
 
+# --- Metis / Orpheus: writing workflow (backlog #164-#168) ------------------
+# Only phrasings that are unambiguous on their own. "revise my last poem",
+# "export my last poem" etc. deliberately stay with the NLU: they need a
+# type/instruction entity to pick the right creation, which an alias can't
+# supply (an alias sets the intent only).
+metis_writing_session:
+  - "start a writing session"
+  - "begin a writing session"
+  - "new writing session"
+
+metis_export_session:
+  - "export my writing session"
+  - "export the writing session"
+  - "export that writing session"
+  - "export the last writing session"
+
+metis_learn_style:
+  - "learn my writing style"
+  - "learn my style"
+  - "learn how i write"
+
+metis_show_style_profile:
+  - "show my style profile"
+  - "show my writing style"
+  - "what's my writing style"
+  - "what is my writing style"
+
+metis_clear_style_profile:
+  - "forget my writing style"
+  - "clear my style profile"
+  - "reset my style profile"
+
+orpheus_get_versions:
+  - "version history"
+  - "show version history"
+  - "show me the version history"
+
+orpheus_restore_version:
+  - "restore version"
+  - "go back to version"
+
 # --- Diagnostics (see modules/hestia/core_module.py) -----------------------
 modules_status:
   - phrase: "module status"
