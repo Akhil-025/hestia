@@ -408,3 +408,46 @@ report_mistake:
   - "that was the wrong"
   - "you got that wrong"
   - "wrong answer"
+
+# --- Mnemosyne: study, quizzes, graph, papers (backlog #31-#47) -------------
+start_quiz:
+  - "quiz me on"
+  - "quiz me about"
+  - "test me on"
+  - "start a quiz on"
+
+quiz_performance:
+  - phrase: "my weak subjects"
+    match: contains
+  - phrase: "my quiz results"
+    match: contains
+  - phrase: "my quiz score"
+    match: contains
+
+review_study:
+  - "review my study"
+  - "review my flashcards"
+  - "what's due for review"
+  - "whats due for review"
+  - "study cards"
+
+add_study_fact:
+  - "add to my study material"
+  - "add this to my study"
+
+graph_connections:
+  - "what connects to"
+  - "what's connected to"
+  - "whats connected to"
+  - "rebuild the knowledge graph"
+
+obsidian_sync:
+  - "sync my obsidian"
+  - "sync obsidian"
+  - "sync my vault"
+
+watch_papers:
+  - "watch arxiv for"
+  - "stop watching arxiv"
+  - "check for new papers"
+  - "any new papers"

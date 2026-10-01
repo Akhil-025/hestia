@@ -240,6 +240,15 @@ class HestiaBuilder:
         instance; no other memory object is created.
         """
         mnemosyne = MnemosyneEngine(llm)
+        # Optional features (Obsidian sync, arXiv monitoring, episode
+        # embeddings) live under `mnemosyne:` in laptop_config.yaml and are
+        # all off by default — see MnemosyneEngine.configure_extensions.
+        configure = getattr(mnemosyne, "configure_extensions", None)
+        if callable(configure):
+            try:
+                configure(self.config.get("mnemosyne") or {})
+            except Exception:
+                logger.exception("Mnemosyne extension config failed; using defaults.")
         logger.info("Mnemosyne engine initialised.")
         return mnemosyne
 
@@ -775,6 +784,12 @@ class Hestia:
         self.iris           = optional_modules["iris"]
         self.google_agent   = optional_modules["google_agent"]
         self.browser_agent: Optional[HestiaBrowserAgent] = optional_modules["browser_agent"]
+
+        # Quizzes (#34) draw their questions from Athena's documents, and the
+        # arXiv monitor (#47) hands new papers to Athena's ingest.
+        attach_athena = getattr(self.mnemosyne, "attach_athena", None)
+        if self.athena is not None and callable(attach_athena):
+            attach_athena(self.athena)
 
         self.orchestrator, self.apollo, self.pluto, self.artemis, self.chronos = (
             builder.build_orchestrator(

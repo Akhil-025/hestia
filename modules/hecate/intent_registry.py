@@ -118,6 +118,20 @@ INTENT_MODULE_MAP: dict[str, str] = {
     # real NLU-classified intents.
     "learn_fact": "mnemosyne",
     "forget_fact": "mnemosyne",
+    # backlog #34/#35 — quizzes from ingested material + the weak-spot map.
+    "start_quiz": "mnemosyne",
+    "answer_quiz": "mnemosyne",
+    "quiz_performance": "mnemosyne",
+    # backlog #33 — SM-2 spaced repetition for facts tagged as study material.
+    "add_study_fact": "mnemosyne",
+    "review_study": "mnemosyne",
+    # backlog #31 — "what connects to X" over the knowledge graph.
+    "graph_connections": "mnemosyne",
+    # backlog #43 — recall a past stretch of related conversation.
+    "recall_episode": "mnemosyne",
+    # backlog #39 / #47 — opt-in Obsidian sync and arXiv monitoring.
+    "obsidian_sync": "mnemosyne",
+    "watch_papers": "mnemosyne",
 
     # --- Chronos (time / date / weather / reminders) ---
     "get_time": "chronos",
@@ -334,7 +348,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.10.0"
+REGISTRY_VERSION: str = "2.11.0"
 
 
 def registry_fingerprint() -> str:

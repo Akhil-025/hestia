@@ -12,6 +12,52 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Mnemosyne: study, graph, episodes, vault, papers
+
+Finishes section 3 apart from the IEEE half of #47: #31-#35, #39, #43 and
+the arXiv half of #47. Registry version 2.11.0 (minor: 9 intents added).
+New tests: `tests/test_mnemosyne_study_graph.py`,
+`tests/test_mnemosyne_quiz_flow.py`,
+`tests/test_mnemosyne_episodes_obsidian_papers.py`,
+`tests/test_mnemosyne_web_heartbeat.py`,
+`tests/test_mnemosyne_orchestrated_flows.py`.
+
+### Added
+
+- **Quizzes and the weak-spot map (#34, #35).** `start_quiz`, `answer_quiz`
+  and `quiz_performance` drive the existing quiz engine as a multi-turn
+  conversation on the slot-fill mechanism (#29). Spoken answers are parsed
+  ("B", "bee", "the second one", or the choice text); an unclear answer is
+  asked again rather than guessed, so a misheard reply never corrupts the
+  stats. Questions come from Athena documents, then Obsidian notes, then
+  facts. The map ranks subjects weakest-first and reports an improving or
+  declining trend once there are 10 attempts.
+- **Spaced repetition (#33).** SM-2 scheduling for facts tagged as study
+  material (`add_study_fact`, `review_study`). Recall is auto-graded from
+  your answer and the correct answer is always shown. The morning brief
+  says how many cards are due. Forgetting a fact removes its card.
+- **Knowledge graph (#31, #32).** Facts become relations as you learn them
+  ("sister name" links You to Priya). `graph_connections` answers "what
+  connects to X" and "how is X related to Y". Every edge remembers its
+  source, so forgetting a fact removes exactly what only it contributed. A
+  new Graph page in the dashboard draws it with D3.
+- **Episodes (#43).** Related interactions are grouped into episodes
+  (hourly, incremental). `recall_episode` answers "what were we doing about
+  X".
+- **Obsidian sync (#39).** Off by default. Wikilink-aware, heading-aware
+  chunks; incremental by content hash; deleted notes are removed. Write-back
+  is a second switch and only creates new notes in a `Hestia/` subfolder.
+- **arXiv monitoring (#47, arXiv only).** `watch_papers` saves topics; a
+  daily check summarises new papers with the local model and writes them
+  into Athena's documents folder. IEEE is not implemented (needs an API key).
+
+### Changed
+
+- Quiz choices are shuffled after validation (small models put the answer
+  at "A" most of the time) and `correct_index` is remapped.
+- The heartbeat calls `run_background_jobs` each tick; each job keeps its own
+  cadence and failure isolation.
+
 ## [Unreleased] — Apollo (health) and its cross-module items
 
 Completes section 9 (#111–#120) and the six items that depend on Apollo's

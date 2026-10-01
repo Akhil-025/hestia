@@ -73,6 +73,7 @@ class HestiaWebUI:
         self._register_apollo_routes()
         self._register_chronos_routes()
         self._register_athena_routes()
+        self._register_mnemosyne_routes()
 
     # ── Startup ─────────────────────────────────────────
 
@@ -726,6 +727,43 @@ class HestiaWebUI:
             except Exception:
                 logger.exception("[WebUI] athena query error")
                 return jsonify({"error": "Failed"}), 500
+
+    # ── MNEMOSYNE (knowledge graph, study, quizzes) ──────
+
+    def _register_mnemosyne_routes(self) -> None:
+        app = self.app
+
+        @app.route("/api/mnemosyne/graph")
+        def api_mnemosyne_graph():
+            """Nodes and links for the force-directed graph view (backlog #32)."""
+            getter = getattr(self.memory, "get_graph_data", None)
+            if not callable(getter):
+                return jsonify({"nodes": [], "links": []})
+            try:
+                max_nodes = max(1, min(int(request.args.get("max_nodes", 150)), 500))
+                return jsonify(getter(max_nodes))
+            except Exception:
+                logger.exception("[WebUI] mnemosyne graph error")
+                return jsonify({"nodes": [], "links": []})
+
+        @app.route("/api/mnemosyne/learning")
+        def api_mnemosyne_learning():
+            """Study-card counts plus the per-subject quiz strength/weakness map."""
+            out: dict = {"study": {"total": 0, "due": 0, "new": 0}, "quiz": {}}
+            try:
+                store = getattr(self.memory, "study_store", None)
+                if store is not None:
+                    out["study"] = store.stats()
+                    out["study"]["upcoming"] = [
+                        {"key": c["fact_key"], "due": c["due_date"]}
+                        for c in store.list_cards(limit=10)
+                    ]
+                quiz = getattr(self.memory, "quiz_engine", None)
+                if quiz is not None:
+                    out["quiz"] = quiz.get_strength_weakness_map()
+            except Exception:
+                logger.exception("[WebUI] mnemosyne learning error")
+            return jsonify(out)
 
     # ── STATS ───────────────────────────────────────────
 

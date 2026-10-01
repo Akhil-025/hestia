@@ -10,13 +10,13 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 88 ✅ + 5 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #126, #149, #159, #161, #183, #233, #259, #270 and #275.
+**Tally: 95 ✅ + 4 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #126, #149, #159, #161, #183, #233, #259, #270 and #275.
 
 | Section | Done |
 |---|---|
 | 1. Core Architecture | 16 of 20 (the 4 `[L]` items are out of scope) |
 | 2. NLU | 9 of 10 (`#25` `[L]` out of scope) |
-| 3. Mnemosyne | 12 done, 2 partial, of 20 |
+| 3. Mnemosyne | 19 done, 1 partial (`#47`), of 20 |
 | 4. Athena | 11 of 20 |
 | 5. Iris | 6 of 10 |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
@@ -69,23 +69,23 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 3. Mnemosyne — Memory & Knowledge
 
-31. `[L]` Build the knowledge graph HEARTH.txt describes: extract entities/concepts from facts and notes, store relationships, expose "what connects to X."
-32. `[M]` Add a lightweight graph visualization in the web UI (even a force-directed D3 graph of facts/concepts) rather than the full 3D vision.
-33. `[L]` Add spaced-repetition scheduling (SM-2 algorithm) for facts tagged as "study material," with due-today surfacing in the morning brief.
-34. 🟡 `[M]` Add quiz generation from ingested notes/documents (pull N facts, generate multiple-choice via Ollama, track score history). — *Engine built and tested (`core/quiz_engine.py`); NOT yet wired to any voice/chat intent.*
-35. 🟡 `[M]` Add "strength/weakness map" per subject by tracking quiz performance over time. — *Same as #34: engine only, no user-facing intent yet.*
+31. ✅ `[L]` Build the knowledge graph HEARTH.txt describes: extract entities/concepts from facts and notes, store relationships, expose "what connects to X." — *`modules/mnemosyne/knowledge_graph.py`; the `graph_connections` intent answers "what connects to X" and "how is X related to Y". Extraction is rule-based inline when a fact is learned, with an optional LLM triple extractor for a rebuild.*
+32. ✅ `[M]` Add a lightweight graph visualization in the web UI (even a force-directed D3 graph of facts/concepts) rather than the full 3D vision. — *"Graph" page in the dashboard (`/api/mnemosyne/graph`, D3 loaded on first open). Endpoints are tested; the rendered layout has not been seen in a browser.*
+33. ✅ `[L]` Add spaced-repetition scheduling (SM-2 algorithm) for facts tagged as "study material," with due-today surfacing in the morning brief. — *`modules/mnemosyne/spaced_repetition.py`; intents `add_study_fact` and `review_study`; the morning brief speaks the due count.*
+34. ✅ `[M]` Add quiz generation from ingested notes/documents (pull N facts, generate multiple-choice via Ollama, track score history). — *Engine in `core/quiz_engine.py`; wired via the `start_quiz` / `answer_quiz` intents as a multi-turn slot-fill conversation, sourcing questions from Athena, Obsidian notes and facts. Choices are now shuffled (small models favour "A").*
+35. ✅ `[M]` Add "strength/weakness map" per subject by tracking quiz performance over time. — *`quiz_performance` intent ranks subjects weakest-first with an improving/declining trend once there are enough attempts.*
 36. ✅ `[Q]` Add fact expiry/decay — facts not reinforced or referenced in N months get flagged for review instead of living forever.
 37. ✅ `[M]` Add contradiction detection: when learning a new fact, check semantic similarity against existing facts and flag conflicts ("you said X before, now Y — update?").
 38. ✅ `[M]` Add per-fact confidence/source tracking (user-stated vs. inferred vs. imported) so recall can express uncertainty appropriately.
-39. `[L]` Add Obsidian vault sync: watch a configured vault folder, ingest markdown notes with wikilink-aware chunking, and write back structured notes Hestia generates.
+39. ✅ `[L]` Add Obsidian vault sync: watch a configured vault folder, ingest markdown notes with wikilink-aware chunking, and write back structured notes Hestia generates. — *`modules/mnemosyne/obsidian.py`; OFF by default. Write-back is a separate opt-in, only creates new files in a `Hestia/` subfolder and never edits existing notes.*
 40. ✅ `[M]` Add weekly/monthly auto-summarization of interactions (you have `add_summary`/`get_recent_summaries` — wire this into an actual heartbeat-triggered digest).
 41. ✅ `[Q]` Add a "forget everything about X" bulk-delete flow beyond single-fact `forget_fact`.
 42. ✅ `[M]` Add semantic deduplication on ingest — don't store near-identical facts twice, merge them with a reference count.
-43. `[L]` Add episodic memory clustering: group related interactions into "episodes" (e.g. all messages about a specific project) for better long-range recall.
+43. ✅ `[L]` Add episodic memory clustering: group related interactions into "episodes" (e.g. all messages about a specific project) for better long-range recall. — *`modules/mnemosyne/episodes.py`; online clustering (bag-of-words by default, embeddings optional); `recall_episode` intent.*
 44. ✅ `[M]` Expose a "memory export" (JSON/Markdown dump of all facts+summaries) for backup and portability, independent of the sync API.
 45. ✅ `[M]` Add importance scoring so `get_top_facts_for_context` weighs recency, frequency of reference, and explicit user emphasis, not just recency.
 46. ✅ `[Q]` Add unit tests around embedding drift — if you ever change embedding models, verify old vectors are re-embedded, not silently stale.
-47. `[L]` Add arXiv/IEEE monitoring: scheduled fetch of new papers matching saved interest queries, auto-summarized and queued in Athena.
+47. 🟡 `[L]` Add arXiv/IEEE monitoring: scheduled fetch of new papers matching saved interest queries, auto-summarized and queued in Athena. — *arXiv is done (`paper_monitor.py`, `watch_papers` intent, daily check, files land in Athena's documents folder for ingest). IEEE is NOT: it needs an API key and an unverifiable response format; the parser is per-source so an adapter can be added. Live fetching has not been run (no network in the build environment); parsing is tested on a sample Atom feed.*
 48. ✅ `[M]` Add "recall what I said on X date" as a first-class dated query, not just semantic search (you may already partially have this — confirm date-range filtering works on ChromaDB metadata).
 49. ✅ `[Q]` Add a memory size/cost dashboard (# facts, DB size, embedding count) surfaced via `get_memory_stats`.
 50. ✅ `[M]` Add memory provenance in responses — when Hestia recalls something, cite roughly when/how it learned it ("you mentioned this on Tuesday").

@@ -212,6 +212,31 @@ athena:
 mnemosyne:
   enabled: true
 
+  # Everything below is optional and OFF by default.
+
+  # Obsidian vault sync (backlog #39). Reading is always read-only. Hestia
+  # only ever CREATES new notes in <vault>/<subfolder>/ and never edits or
+  # overwrites existing ones; `writeback` is its own switch.
+  obsidian:
+    enabled: false
+    vault_path: "C:/Users/YOUR_USERNAME/Documents/MyVault"
+    subfolder: "Hestia"
+    writeback: false          # weekly digests and new-paper lists become notes
+
+  # arXiv monitoring (backlog #47). Add topics by voice: "watch arxiv for ...".
+  # New papers are written as markdown into Athena's documents folder
+  # (<athena data_dir>/arxiv unless docs_dir is set) and indexed by its ingest.
+  papers:
+    enabled: false
+    max_new_per_query: 5
+    lookback_days: 14
+    # docs_dir: "data/athena/documents/arxiv"
+
+  # Episodic clustering (backlog #43). Bag-of-words by default; embeddings are
+  # more accurate but load the sentence-transformer model.
+  episodes:
+    use_embeddings: false
+
 iris:
   enabled: true
   source_dir: "C:/Users/YOUR_USERNAME/Pictures"  # e.g. "/home/you/Pictures" on Linux/macOS

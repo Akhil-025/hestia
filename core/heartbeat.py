@@ -69,6 +69,7 @@ class HestiaHeartbeat:
         self._maybe_run_weekly_accuracy_review()
         self._maybe_run_apollo_checkins()
         self._maybe_run_db_maintenance()
+        self._maybe_run_mnemosyne_jobs()
 
         try:
             root = os.path.dirname(os.path.abspath(__file__))
@@ -121,6 +122,22 @@ class HestiaHeartbeat:
                 continue
             if isinstance(text, str) and text.strip():
                 bus.emit("speak", {"text": text})
+
+    def _maybe_run_mnemosyne_jobs(self) -> None:
+        """Backlog #39/#43/#47: episode clustering, Obsidian sync, paper check.
+
+        The cadence of each job (hourly / 30 min / daily) lives in
+        MnemosyneEngine.run_background_jobs, so this is safe to call on
+        every tick. A heartbeat built with a bare mock (as in the existing
+        tests) or an older engine without the method simply skips it.
+        """
+        job = getattr(self.mnemosyne, "run_background_jobs", None) if self.mnemosyne else None
+        if not callable(job):
+            return
+        try:
+            job()
+        except Exception:
+            logger.exception("Mnemosyne background jobs failed.")
 
     def _maybe_run_db_maintenance(self) -> None:
         """Backlog #233: SQLite housekeeping in the 0-5am off-peak window.
@@ -186,6 +203,17 @@ class HestiaHeartbeat:
         date_str = now.strftime("Today is %A, %B %d, %Y. The time is %I:%M %p.")
         bus.emit("speak", {"text": "Good morning! Here is your morning brief."})
         bus.emit("speak", {"text": date_str})
+        # Backlog #33: spaced-repetition cards due today. Spoken before the
+        # full brief is generated so it is never lost if that step fails.
+        study = getattr(self.mnemosyne, "get_study_brief", None) if self.mnemosyne else None
+        if callable(study):
+            try:
+                line = study()
+            except Exception:
+                logger.exception("Study brief failed.")
+                line = ""
+            if isinstance(line, str) and line.strip():
+                bus.emit("speak", {"text": line})
         bus.emit("morning_brief_requested", {})
 
     def _maybe_run_low_confidence_review(self) -> None:

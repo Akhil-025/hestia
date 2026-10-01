@@ -1666,6 +1666,9 @@
     <a href="#" role="tab" aria-selected="false" data-section="facts">
       <span class="nav-icon"><img src="/static/img/motifs/warrior_diamond.png" alt=""></span> Facts
     </a>
+    <a href="#" role="tab" aria-selected="false" data-section="graph">
+      <span class="nav-icon"><img src="/static/img/motifs/warrior_diamond.png" alt=""></span> Graph
+    </a>
     <a href="#" role="tab" aria-selected="false" data-section="moods">
       <span class="nav-icon"><img src="/static/img/motifs/apple.png" alt=""></span> Moods
     </a>
@@ -1852,6 +1855,30 @@
           <div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div>
         </div>
       </div>
+    </section>
+
+    <!-- Knowledge graph (Mnemosyne, backlog #31/#32) -->
+    <section id="graph" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Mnemosyne</div>
+          <h1 class="page-title">Knowledge <em>Graph</em></h1>
+        </div>
+        <div class="page-actions">
+          <input id="graph-search" type="search" placeholder="Find a node…" aria-label="Find a node"
+                 style="padding:6px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--surface);color:var(--text);">
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/athena.png" alt="">
+        </div>
+      </div>
+      <div id="graph-summary" class="empty-text" style="margin-bottom:8px;"></div>
+      <div id="graph-legend" style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:8px;font-size:12px;color:var(--muted);"></div>
+      <div id="graph-stage" style="position:relative;height:60vh;min-height:360px;border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden;">
+        <svg id="graph-svg" role="img" aria-label="Knowledge graph" style="width:100%;height:100%;display:block;"></svg>
+        <div id="graph-empty" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;"></div>
+      </div>
+      <div class="empty-text" style="margin-top:8px;">Drag nodes to rearrange, scroll to zoom, hover a link for its relation.</div>
     </section>
 
     <!-- Facts -->
@@ -2509,7 +2536,110 @@
   }
 
   // ── Section loaders ──────────────────────────────────
+  // ── Knowledge graph (Mnemosyne, backlog #32) ─────────
+  const GRAPH_COLORS = {
+    person: '#c1502e', place: '#2e7d6b', organisation: '#8a5cc2', concept: '#d19a2a',
+    thing: '#7a8a99', tag: '#4b86c2', note: '#b85c38', paper: '#2e6f9e'
+  };
+
+  function loadD3() {
+    if (window.d3) return Promise.resolve(window.d3);
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js';
+      s.onload = () => resolve(window.d3);
+      s.onerror = () => reject(new Error('d3 failed to load'));
+      document.head.appendChild(s);
+    });
+  }
+
+  function graphMessage(html) {
+    const el = document.getElementById('graph-empty');
+    el.innerHTML = html;
+    el.style.display = html ? 'flex' : 'none';
+  }
+
+  function loadGraph() {
+    graphMessage('<div class="empty-text">Loading…</div>');
+    Promise.all([fetchJSON('/api/mnemosyne/graph?max_nodes=150'), loadD3()]).then(([data, d3]) => {
+      if (!data.nodes || !data.nodes.length) {
+        graphMessage('<div class="empty-text">The graph is empty so far. Tell Hestia facts, or sync your notes, and connections will appear here.</div>');
+        document.getElementById('graph-summary').textContent = '';
+        return;
+      }
+      graphMessage('');
+      drawGraph(d3, data);
+    }).catch(() => {
+      graphMessage('<div class="empty-text">Could not load the graph (the D3 library needs internet access the first time).</div>');
+    });
+  }
+
+  function drawGraph(d3, data) {
+    const svg = d3.select('#graph-svg');
+    svg.selectAll('*').remove();
+    const stage = document.getElementById('graph-stage');
+    const width = stage.clientWidth || 800, height = stage.clientHeight || 480;
+    svg.attr('viewBox', [0, 0, width, height]);
+
+    document.getElementById('graph-summary').textContent =
+      `${data.nodes.length} things, ${data.links.length} connections` +
+      (data.nodes.length >= 150 ? ' (showing the best-connected 150)' : '');
+    const types = [...new Set(data.nodes.map(n => n.type))];
+    document.getElementById('graph-legend').innerHTML = types.map(t =>
+      `<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${GRAPH_COLORS[t] || '#7a8a99'};margin-right:4px;"></span>${esc(t)}</span>`
+    ).join('');
+
+    const nodes = data.nodes.map(n => ({ ...n }));
+    const links = data.links.map(l => ({ ...l }));
+    const root = svg.append('g');
+    svg.call(d3.zoom().scaleExtent([0.2, 4]).on('zoom', e => root.attr('transform', e.transform)));
+
+    const sim = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id(d => d.id).distance(70))
+      .force('charge', d3.forceManyBody().strength(-160))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collide', d3.forceCollide().radius(d => 8 + Math.sqrt(d.degree) * 3));
+
+    const link = root.append('g').selectAll('line').data(links).join('line')
+      .attr('stroke', 'var(--border2)').attr('stroke-opacity', 0.9)
+      .attr('stroke-width', d => 1 + Math.min(d.weight, 4) * 0.5);
+    link.append('title').text(d => d.relation);
+
+    const node = root.append('g').selectAll('g').data(nodes).join('g').style('cursor', 'grab')
+      .call(d3.drag()
+        .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+    node.append('circle')
+      .attr('r', d => 5 + Math.sqrt(d.degree) * 3)
+      .attr('fill', d => GRAPH_COLORS[d.type] || '#7a8a99')
+      .attr('stroke', 'var(--surface)').attr('stroke-width', 1.5);
+    node.append('text').text(d => d.name)
+      .attr('x', d => 8 + Math.sqrt(d.degree) * 3).attr('y', 4)
+      .style('font-size', '11px').style('fill', 'var(--text)').style('pointer-events', 'none');
+    node.append('title').text(d => `${d.name} (${d.type}) — ${d.degree} connection(s)`);
+
+    sim.on('tick', () => {
+      link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+    const search = document.getElementById('graph-search');
+    search.value = '';
+    search.oninput = () => {
+      const q = search.value.trim().toLowerCase();
+      node.style('opacity', d => (!q || d.name.toLowerCase().includes(q)) ? 1 : 0.15);
+      link.style('opacity', q ? 0.15 : 1);
+    };
+  }
+
   function loadSection(section) {
+    if (section === 'graph') {
+      loadGraph();
+      return;
+    }
+
     if (section === 'overview') {
       fetchJSON('/api/history?limit=10').then(data => {
         const el = document.getElementById('recent-list');
@@ -3147,6 +3277,7 @@
     { section: 'history',   label: 'History',    desc: 'Memory',       icon: 'sun.png' },
     { section: 'notes',     label: 'Notes',      desc: 'Mnemosyne',    icon: 'book_man.png' },
     { section: 'facts',     label: 'Facts',      desc: 'Mnemosyne',    icon: 'warrior_diamond.png' },
+    { section: 'graph',     label: 'Graph',      desc: 'Mnemosyne',    icon: 'warrior_diamond.png' },
     { section: 'moods',     label: 'Moods',      desc: 'Wellbeing',    icon: 'apple.png' },
     { section: 'health',    label: 'Health',     desc: 'Apollo',       icon: 'apple.png' },
     { section: 'heatmap',   label: 'Heatmap',    desc: 'Artemis',      icon: 'sun.png' },

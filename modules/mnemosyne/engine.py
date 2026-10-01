@@ -13,6 +13,7 @@ from typing import Any, Optional
 from modules.base import BaseModule
 from .config import get_config
 from .db import MnemosyneDB
+from .extensions import EXTENSION_INTENTS, MnemosyneExtensionsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def _miss(response: str = "I don't have anything on that.") -> dict:
 # Engine
 # ---------------------------------------------------------------------------
 
-class MnemosyneEngine(BaseModule):
+class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
     """
     Unified entry point for memory, goals, and summarisation.
 
@@ -116,7 +117,7 @@ class MnemosyneEngine(BaseModule):
             "forget_fact",
             "get_user_info",
         }
-    )
+    ) | EXTENSION_INTENTS
 
     # ------------------------------------------------------------------
     # Construction
@@ -140,6 +141,11 @@ class MnemosyneEngine(BaseModule):
 
         if _SUMMARISER_AVAILABLE:
             self.summariser = Summariser(self, hestia_llm)
+
+        # Knowledge graph, study cards, episodes, quizzes, and the opt-in
+        # Obsidian / paper-monitor features (backlog #31-#47). See
+        # extensions.py; each component degrades independently.
+        self._init_extensions()
 
         logger.info(
             "MnemosyneEngine ready (vector_store=%s, summariser=%s)",
@@ -189,6 +195,11 @@ class MnemosyneEngine(BaseModule):
 
         if intent == "forget_fact":
             return self._handle_forget_fact(entities)
+
+        if intent in EXTENSION_INTENTS:
+            result = self._dispatch_extension(intent, entities, context)
+            if result is not None:
+                return result
 
         return _miss()
 
@@ -374,7 +385,7 @@ class MnemosyneEngine(BaseModule):
             logger.exception("Vector search failed for query=%r", query)
             return ""
 
-        results = summaries + facts
+        results = summaries + facts + self._recall_notes(query, n)
         if not results:
             return ""
 
@@ -478,6 +489,8 @@ class MnemosyneEngine(BaseModule):
             except Exception:
                 logger.exception("Vector store add failed for key=%s", key)
 
+        self._graph_learn_fact(key, value)      # backlog #31: keep the graph current
+
         return {"deduplicated": False, "matched_key": None}
 
     def forget(self, key: str) -> None:
@@ -486,6 +499,7 @@ class MnemosyneEngine(BaseModule):
             raise ValueError("forget() requires a non-empty key.")
 
         self.db.delete_fact(key)
+        self._graph_forget_fact(key)            # graph edges + study card go with it
 
         if self.vector_store:
             try:
@@ -1131,6 +1145,11 @@ class MnemosyneEngine(BaseModule):
             period_start=now, period_end=now, content=digest,
             topic=f"{period}_digest", interaction_count=len(recent),
         )
+        # Opt-in write-back (backlog #39): a new note in the vault's Hestia folder.
+        self.write_obsidian_note(
+            f"{period.title()} digest {datetime.now():%Y-%m-%d}", digest,
+            tags=[f"{period}-digest"],
+        )
         return digest
 
     # ------------------------------------------------------------------
@@ -1155,6 +1174,10 @@ class MnemosyneEngine(BaseModule):
             key = meta.get("key", "")
             label = _readable(key) if key else "detail"
             return f"Your {label} is {text}.{provenance}"
+
+        if kind == "note":
+            title = meta.get("title") or "an Obsidian note"
+            return f"From your note {title}: {text}"
 
         if kind == "summary":
             topic = meta.get("topic", "")

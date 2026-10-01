@@ -39,6 +39,8 @@ dionysus_recommend_recipe, suggest_activity,
 take_note, get_notes, delete_notes, get_history,
 save_name, get_user_info, set_preference, get_system_info,
 learn_fact, forget_fact,
+start_quiz, answer_quiz, quiz_performance, add_study_fact, review_study,
+graph_connections, recall_episode, obsidian_sync, watch_papers,
 chat,
 iris_search, iris_ingest, iris_status, iris_analyse, iris_query,
 iris_find_duplicates, iris_correct_caption, iris_organize_albums,
@@ -211,6 +213,62 @@ User: forget that I'm allergic to peanuts
 
 User: what do you know about me
 {"intent": "get_user_info", "entities": {}, "response": "Let me think about what I know.", "confidence": 0.9}
+
+# ---- MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS ----
+#
+# start_quiz           -> "quiz me on X" (entities: subject, optional count)
+# answer_quiz          -> only when the user gives a quiz answer with no quiz
+#                         question pending; normally the answer is consumed
+#                         by the quiz itself, not classified.
+# quiz_performance     -> "how am I doing" / "my weak subjects" for QUIZZES
+#                         (NOT get_goals, NOT apollo health summaries).
+# add_study_fact       -> put a fact into spaced-repetition study material
+#                         (entities: key + value, or topic for an existing fact).
+# review_study         -> "what's due" / "review my study cards" (flashcards).
+# graph_connections    -> "what connects to X" / "how is X related to Y"
+#                         (entities: entity, optional "to").
+# recall_episode       -> "what were we doing about X" / "what did we work on"
+#                         (past conversations grouped by topic, NOT a dated
+#                         lookup and NOT athena_search).
+# obsidian_sync        -> sync the Obsidian vault.
+# watch_papers         -> arXiv topic watching (entities: action = add / remove /
+#                         list / check, and topic).
+
+User: quiz me on thermodynamics
+{"intent": "start_quiz", "entities": {"subject": "thermodynamics"}, "response": "Starting a quiz.", "confidence": 0.95}
+
+User: give me 3 questions on organic chemistry
+{"intent": "start_quiz", "entities": {"subject": "organic chemistry", "count": "3"}, "response": "Starting a quiz.", "confidence": 0.93}
+
+User: which subjects am I weakest in
+{"intent": "quiz_performance", "entities": {}, "response": "Checking your quiz results.", "confidence": 0.92}
+
+User: add to my study material: entropy is a measure of disorder
+{"intent": "add_study_fact", "entities": {"key": "entropy", "value": "a measure of disorder"}, "response": "Added to study material.", "confidence": 0.93}
+
+User: make my notes on carnot cycle flashcards
+{"intent": "add_study_fact", "entities": {"topic": "carnot cycle"}, "response": "Adding to study material.", "confidence": 0.88}
+
+User: what's due for review today
+{"intent": "review_study", "entities": {}, "response": "Let's review.", "confidence": 0.93}
+
+User: what connects to entropy
+{"intent": "graph_connections", "entities": {"entity": "entropy"}, "response": "Looking at the graph.", "confidence": 0.93}
+
+User: how is Priya connected to IIT Bombay
+{"intent": "graph_connections", "entities": {"entity": "Priya", "to": "IIT Bombay"}, "response": "Checking the connection.", "confidence": 0.9}
+
+User: what were we working on about the flight to Delhi
+{"intent": "recall_episode", "entities": {"topic": "flight to Delhi"}, "response": "Looking back.", "confidence": 0.9}
+
+User: sync my obsidian vault
+{"intent": "obsidian_sync", "entities": {}, "response": "Syncing your vault.", "confidence": 0.95}
+
+User: watch arxiv for transformers in time series forecasting
+{"intent": "watch_papers", "entities": {"action": "add", "topic": "transformers in time series forecasting"}, "response": "Now watching.", "confidence": 0.93}
+
+User: any new papers on my topics
+{"intent": "watch_papers", "entities": {"action": "check"}, "response": "Checking for papers.", "confidence": 0.9}
 
 User: tell me about myself
 {"intent": "get_user_info", "entities": {}, "response": "Let me think about what I know.", "confidence": 0.9}
