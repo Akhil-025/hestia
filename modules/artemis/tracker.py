@@ -37,6 +37,11 @@ _MAX_GOAL_NAME_LEN = 256
 _PROGRESS_MIN = 0.0
 _PROGRESS_MAX = 1.0
 
+# Per-day completion history (backlog #126/#161/#183). Capped so the JSON
+# state file can't grow without bound; ~13 months is plenty for heatmaps and
+# correlations. Oldest dates are dropped first.
+HISTORY_CAP_DAYS = 400
+
 _VALID_PRIORITIES: frozenset[str] = frozenset({"low", "medium", "high"})
 
 
@@ -70,6 +75,7 @@ class Habit:
     __slots__ = (
         "name", "streak", "last_done",
         "best_streak", "total_completions", "created_at",
+        "history", "history_since",
     )
 
     def __init__(
@@ -80,6 +86,8 @@ class Habit:
         best_streak: int = 0,
         total_completions: int = 0,
         created_at: str = "",
+        history: Optional[list[str]] = None,
+        history_since: str = "",
     ) -> None:
         self.name = name
         self.streak = streak
@@ -89,19 +97,30 @@ class Habit:
         self.best_streak = max(best_streak, streak)
         self.total_completions = total_completions
         self.created_at = created_at or _utc_now()
+        # ISO dates of completion, oldest first. Empty for habits that
+        # pre-date history recording; ``history_since`` is the first day we
+        # can vouch for (days before it are unknown, not "missed").
+        self.history: list[str] = _clean_history(history or [])
+        self.history_since = history_since
 
     # ------------------------------------------------------------------
     # Serialisation
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "streak": self.streak,
             "last_done": self.last_done,
             "best_streak": self.best_streak,
             "total_completions": self.total_completions,
             "created_at": self.created_at,
         }
+        # Only written once history exists, so untouched state files keep
+        # their exact old shape.
+        if self.history:
+            out["history"] = list(self.history)
+            out["history_since"] = self.history_since
+        return out
 
     @classmethod
     def from_dict(cls, name: str, raw: dict[str, Any]) -> "Habit":
@@ -112,11 +131,20 @@ class Habit:
             best_streak=int(raw.get("best_streak", 0)),
             total_completions=int(raw.get("total_completions", 0)),
             created_at=str(raw.get("created_at", "")),
+            history=raw.get("history") if isinstance(raw.get("history"), list) else None,
+            history_since=str(raw.get("history_since", "") or ""),
         )
 
     # ------------------------------------------------------------------
     # Business logic
     # ------------------------------------------------------------------
+
+    def _record_history(self, day_iso: str) -> None:
+        if not self.history_since:
+            self.history_since = day_iso
+        if day_iso not in self.history:
+            self.history.append(day_iso)
+            self.history = _clean_history(self.history)
 
     def complete(self, today: date) -> dict[str, Any]:
         """
@@ -140,6 +168,9 @@ class Habit:
 
         if self.last_done == today_iso:
             logger.debug("Habit %r already completed today; no-op.", self.name)
+            # Completed before history existed: backfill today so the
+            # heatmap doesn't show a done habit as blank.
+            self._record_history(today_iso)
             return {
                 "already_done": True,
                 "streak": self.streak,
@@ -154,6 +185,7 @@ class Habit:
             self.streak = 1
 
         self.last_done = today_iso
+        self._record_history(today_iso)
         self.total_completions += 1
         is_new_best = self.streak > self.best_streak
         if is_new_best:
@@ -286,6 +318,17 @@ class Goal:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _clean_history(dates: list[Any]) -> list[str]:
+    """Valid, unique ISO dates, oldest first, capped to HISTORY_CAP_DAYS."""
+    valid: set[str] = set()
+    for item in dates:
+        try:
+            valid.add(date.fromisoformat(str(item)[:10]).isoformat())
+        except ValueError:
+            continue
+    return sorted(valid)[-HISTORY_CAP_DAYS:]
 
 
 def _today_utc() -> date:
@@ -507,6 +550,25 @@ class ArtemisTracker:
             name: Habit.from_dict(name, raw)
             for name, raw in data["habits"].items()
         }
+
+    def habit_history(self) -> dict[str, dict[str, Any]]:
+        """Read-only per-habit completion history for correlations/heatmaps.
+
+        ``{name: {"dates": [iso, ...], "since": iso-or-"", "streak": int,
+        "last_done": iso-or-""}}``. Habits with no recorded history are
+        still listed (empty ``dates``) so callers can say "not enough data
+        yet" rather than silently omitting them.
+        """
+        with self._lock:
+            raw = self._read_raw()
+        out: dict[str, dict[str, Any]] = {}
+        for name, blob in raw.get("habits", {}).items():
+            h = Habit.from_dict(name, blob)
+            out[name] = {
+                "dates": list(h.history), "since": h.history_since,
+                "streak": h.streak, "last_done": h.last_done,
+            }
+        return out
 
     def get_habit(self, name: str) -> Habit:
         """

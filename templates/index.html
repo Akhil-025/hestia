@@ -1617,6 +1617,20 @@
       .notes-grid, .skills-grid { grid-template-columns: 1fr; }
       .hero-figure { display: none; }
     }
+
+  /* ── Health + Heatmap tabs (backlog #183) ── */
+  .hm-wrap { overflow-x: auto; }
+  .hm-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; min-width: max-content; }
+  .hm-name { width: 140px; flex: 0 0 140px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hm-cells { display: flex; gap: 2px; }
+  .hm-cell { width: 11px; height: 11px; border-radius: 2px; background: rgba(127,127,127,0.18); }
+  .hm-cell.hm-done { background: #c1502e; }
+  .hm-cell.hm-miss { background: rgba(127,127,127,0.35); }
+  .hm-cell.hm-unk { background: repeating-linear-gradient(45deg, rgba(127,127,127,0.10), rgba(127,127,127,0.10) 2px, transparent 2px, transparent 4px); }
+  .hm-legend { display: flex; gap: 14px; font-size: 12px; opacity: 0.8; margin: 10px 0; flex-wrap: wrap; }
+  .hm-legend .hm-cell { display: inline-block; vertical-align: -1px; margin-right: 4px; }
+  .streak-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(127,127,127,0.18); font-size: 14px; }
+  .health-note { font-size: 12px; opacity: 0.75; margin: 8px 0 18px; }
   </style>
 </head>
 <body>
@@ -1654,6 +1668,12 @@
     </a>
     <a href="#" role="tab" aria-selected="false" data-section="moods">
       <span class="nav-icon"><img src="/static/img/motifs/apple.png" alt=""></span> Moods
+    </a>
+    <a href="#" role="tab" aria-selected="false" data-section="health">
+      <span class="nav-icon"><img src="/static/img/motifs/apple.png" alt=""></span> Health
+    </a>
+    <a href="#" role="tab" aria-selected="false" data-section="heatmap">
+      <span class="nav-icon"><img src="/static/img/motifs/sun.png" alt=""></span> Heatmap
     </a>
     <a href="#" role="tab" aria-selected="false" data-section="skills">
       <span class="nav-icon"><img src="/static/img/motifs/crown.png" alt=""></span> Skills
@@ -1900,6 +1920,53 @@
     </section>
 
     <!-- Portfolio (Pluto) -->
+    <!-- Health (Apollo) -->
+    <section id="health" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Apollo</div>
+          <h1 class="page-title">Health <em>Trends</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/dionysus.png" alt="">
+        </div>
+      </div>
+      <div class="metric-grid" id="health-metrics">
+        <div class="empty" style="grid-column:1/-1"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
+      </div>
+      <div class="section-subtitle">Sleep <span class="rule"></span></div>
+      <div class="chart-card"><canvas id="healthSleepChart" height="90"></canvas></div>
+      <div class="section-subtitle">Weight <span class="rule"></span></div>
+      <div class="chart-card"><canvas id="healthWeightChart" height="90"></canvas></div>
+      <div class="section-subtitle">Water <span class="rule"></span></div>
+      <div class="chart-card"><canvas id="healthWaterChart" height="90"></canvas></div>
+      <div class="section-subtitle">Mood <span class="rule"></span></div>
+      <div class="chart-card"><canvas id="healthMoodChart" height="90"></canvas></div>
+      <div class="section-subtitle">Workout streaks <span class="rule"></span></div>
+      <div id="health-streaks"><div class="empty"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div></div>
+      <div class="health-note">Charts show only what you've logged; gaps are days with no entry, not zero. Sleep score blends duration, bed/wake consistency and your rating when available.</div>
+    </section>
+
+    <!-- Habit heatmap (Artemis) -->
+    <section id="heatmap" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Artemis</div>
+          <h1 class="page-title">Habit <em>Heatmap</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/underworld.png" alt="">
+        </div>
+      </div>
+      <div class="hm-legend">
+        <span><span class="hm-cell hm-done"></span>Done</span>
+        <span><span class="hm-cell hm-miss"></span>Not done</span>
+        <span><span class="hm-cell hm-unk"></span>Before tracking began</span>
+      </div>
+      <div class="hm-wrap" id="heatmap-grid"><div class="empty"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div></div>
+      <div class="health-note" id="heatmap-note"></div>
+    </section>
+
     <section id="portfolio" class="section">
       <div class="page-header">
         <div class="page-header-text">
@@ -1913,6 +1980,8 @@
       <div class="metric-grid" id="pluto-totals">
         <div class="empty" style="grid-column:1/-1"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
       </div>
+      <div class="chart-card"><canvas id="plutoCatChart" height="90"></canvas></div>
+      <div class="chart-card"><canvas id="plutoInvChart" height="90" style="display:none"></canvas></div>
       <div class="section-subtitle">Recent Expenses <span class="rule"></span></div>
       <div class="activity-list" id="pluto-expenses">
         <div class="empty"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
@@ -2318,6 +2387,127 @@
     if (el) { e.preventDefault(); el.click(); }
   });
 
+  // ── Health / Heatmap / Portfolio charts (backlog #183) ──
+  function chartOn(id, cfg) {
+    if (typeof Chart === 'undefined') return;
+    const c = document.getElementById(id);
+    if (!c) return;
+    window._hCharts = window._hCharts || {};
+    if (window._hCharts[id]) window._hCharts[id].destroy();
+    window._hCharts[id] = new Chart(c, cfg);
+  }
+
+  function metricCard(label, value, icon) {
+    return `<div class="metric-card"><div class="metric-icon"><img src="/static/img/motifs/${icon || 'apple.png'}" alt=""></div><div><div class="metric-label">${esc(label)}</div><div class="metric-value">${esc(value)}</div></div></div>`;
+  }
+
+  function loadHealth() {
+    fetchJSON('/api/apollo/dashboard?days=30').then(d => {
+      const u = d.units || {};
+      const sleep = d.sleep || [], weight = d.weight || [], water = d.water || [], mood = d.mood || [];
+      const last = a => a.length ? a[a.length - 1] : null;
+      const avg = (a, f) => a.length ? a.reduce((s, x) => s + f(x), 0) / a.length : null;
+
+      const cards = [];
+      const ls = last(sleep);
+      if (ls) cards.push(metricCard('Last sleep', `${ls.hours} h` + (ls.score != null ? ` · score ${ls.score}` : '')));
+      const lw = last(weight);
+      if (lw) cards.push(metricCard('Weight', `${lw.value} ${u.weight || 'kg'}`));
+      const lwt = last(water);
+      if (lwt) cards.push(metricCard('Water (latest day)', `${lwt.ml} ml`));
+      const am = avg(mood, x => x.score);
+      if (am != null) cards.push(metricCard('Mood (30d avg)', `${am >= 0 ? '+' : ''}${am.toFixed(1)}`));
+      document.getElementById('health-metrics').innerHTML = cards.length ? cards.join('')
+        : emptyState('apple.png', 'Nothing logged yet.', false, true);
+
+      chartOn('healthSleepChart', {
+        type: 'bar',
+        data: {
+          labels: sleep.map(x => x.date),
+          datasets: [
+            { type: 'bar', label: 'Hours', data: sleep.map(x => x.hours), backgroundColor: 'rgba(193,80,46,0.55)', yAxisID: 'y' },
+            { type: 'line', label: 'Score', data: sleep.map(x => x.score), borderColor: '#4a7c8c', tension: 0.3, pointRadius: 2, yAxisID: 'y1', spanGaps: true }
+          ]
+        },
+        options: { scales: { y: { beginAtZero: true, title: { display: true, text: 'hours' } }, y1: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false } } } }
+      });
+      chartOn('healthWeightChart', {
+        type: 'line',
+        data: { labels: weight.map(x => x.date), datasets: [{ label: `Weight (${u.weight || 'kg'})`, data: weight.map(x => x.value), borderColor: '#c1502e', tension: 0.3, pointRadius: 2 }] },
+        options: { plugins: { legend: { display: false } } }
+      });
+      chartOn('healthWaterChart', {
+        type: 'bar',
+        data: {
+          labels: water.map(x => x.date),
+          datasets: [
+            { type: 'bar', label: 'ml', data: water.map(x => x.ml), backgroundColor: 'rgba(74,124,140,0.6)' },
+            { type: 'line', label: 'Goal', data: water.map(x => x.goal_ml), borderColor: '#c1502e', borderDash: [5, 4], pointRadius: 0 }
+          ]
+        },
+        options: { scales: { y: { beginAtZero: true } } }
+      });
+      chartOn('healthMoodChart', {
+        type: 'line',
+        data: { labels: mood.map(x => x.date), datasets: [{ label: 'Mood', data: mood.map(x => x.score), borderColor: '#c1502e', backgroundColor: 'rgba(193,80,46,0.12)', fill: true, tension: 0.35, pointRadius: 2 }] },
+        options: { plugins: { legend: { display: false } }, scales: { y: { min: -2, max: 2, ticks: { stepSize: 1, callback: v => v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu' } } } }
+      });
+
+      const streaks = Object.entries(d.streaks || {}).sort((a, b) => (b[1].weeks - a[1].weeks) || (b[1].days - a[1].days));
+      document.getElementById('health-streaks').innerHTML = streaks.length
+        ? streaks.slice(0, 8).map(([k, v]) => `<div class="streak-row"><span>${esc(k)}</span><span>${esc(v.days)} day(s) · ${esc(v.weeks)} week(s) · ${esc(v.sessions)} sessions</span></div>`).join('')
+        : emptyState('apple.png', 'No workouts logged yet.', false, true);
+    }).catch(() => {
+      document.getElementById('health-metrics').innerHTML = emptyState('apple.png', 'Apollo unavailable.', false, true);
+    });
+  }
+
+  function loadHeatmap() {
+    fetchJSON('/api/artemis/heatmap?days=84').then(d => {
+      const el = document.getElementById('heatmap-grid');
+      const note = document.getElementById('heatmap-note');
+      const habits = d.habits || [];
+      if (!habits.length) { el.innerHTML = emptyState('apple.png', 'No habits tracked yet.'); note.textContent = ''; return; }
+      el.innerHTML = habits.map(h => {
+        const done = new Set(h.done || []);
+        const cells = (d.days || []).map(day => {
+          const cls = done.has(day) ? 'hm-done' : (h.since && day >= h.since ? 'hm-miss' : 'hm-unk');
+          return `<span class="hm-cell ${cls}" title="${esc(h.name)} · ${esc(day)}"></span>`;
+        }).join('');
+        return `<div class="hm-row"><div class="hm-name" title="${esc(h.name)}">${esc(h.name)}</div><div class="hm-cells">${cells}</div></div>`;
+      }).join('');
+      const anyHistory = habits.some(h => (h.done || []).length);
+      note.textContent = anyHistory
+        ? 'Hatched squares are days before completion dates were being recorded, so they are unknown rather than missed.'
+        : 'Completion dates only started being recorded recently, so this fills in as you complete habits.';
+    }).catch(() => {
+      document.getElementById('heatmap-grid').innerHTML = emptyState('apple.png', 'Artemis unavailable.');
+    });
+  }
+
+  function drawPlutoCharts(cats) {
+    const rows = (cats || []).map(c => ({ name: c.category || c.name || '?', v: Number(c.total ?? c.amount ?? 0) })).filter(r => r.v > 0);
+    const canvas = document.getElementById('plutoCatChart');
+    if (!rows.length) { if (canvas) canvas.parentElement.style.display = 'none'; return; }
+    canvas.parentElement.style.display = '';
+    chartOn('plutoCatChart', {
+      type: 'doughnut',
+      data: { labels: rows.map(r => r.name), datasets: [{ data: rows.map(r => r.v), backgroundColor: ['#c1502e', '#4a7c8c', '#d9a441', '#7d5a8c', '#5b8c5a', '#a0522d', '#6a7f96', '#b0788f'] }] },
+      options: { plugins: { legend: { position: 'right' }, title: { display: true, text: 'Spending by category' } } }
+    });
+    fetchJSON('/api/pluto/investments').then(inv => {
+      const items = (inv || []).map(i => ({ name: i.name || i.symbol || '?', v: Number(i.value ?? i.amount ?? (i.quantity && i.buy_price ? i.quantity * i.buy_price : 0)) })).filter(r => r.v > 0);
+      const c2 = document.getElementById('plutoInvChart');
+      if (!c2 || !items.length) return;
+      c2.style.display = '';
+      chartOn('plutoInvChart', {
+        type: 'doughnut',
+        data: { labels: items.map(r => r.name), datasets: [{ data: items.map(r => r.v), backgroundColor: ['#4a7c8c', '#c1502e', '#d9a441', '#7d5a8c', '#5b8c5a', '#a0522d'] }] },
+        options: { plugins: { legend: { position: 'right' }, title: { display: true, text: 'Investment allocation (by amount)' } } }
+      });
+    }).catch(() => {});
+  }
+
   // ── Section loaders ──────────────────────────────────
   function loadSection(section) {
     if (section === 'overview') {
@@ -2436,6 +2626,9 @@
       });
     }
 
+    if (section === 'health') { loadHealth(); }
+    if (section === 'heatmap') { loadHeatmap(); }
+
     if (section === 'moods') {
       fetchJSON('/api/moods').then(data => {
         const el = document.getElementById('mood-list');
@@ -2448,7 +2641,7 @@
           return `<div class="mood-row">
             <span class="mood-pip ${pip}"></span>
             <span class="mood-time">${fmt(m.timestamp)}</span>
-            <span class="mood-label">${esc(m.valence || '')}</span>
+            <span class="mood-label">${esc(m.mood || m.valence || '')}</span>
           </div>`;
         }).join('');
 
@@ -2461,12 +2654,12 @@
             window._moodChartInstance = new Chart(canvas, {
               type: 'line',
               data: {
-                labels: data.map(m => fmt(m.timestamp)),
-                datasets: [{ label: 'Mood', data: data.map(m => scoreOf(m.valence)), borderColor: '#c1502e', backgroundColor: 'rgba(193,80,46,0.12)', fill: true, tension: 0.35, pointRadius: 2 }]
+                labels: data.slice().reverse().map(m => fmt(m.timestamp)),
+                datasets: [{ label: 'Mood', data: data.slice().reverse().map(m => m.score != null ? m.score : scoreOf(m.valence)), borderColor: '#c1502e', backgroundColor: 'rgba(193,80,46,0.12)', fill: true, tension: 0.35, pointRadius: 2 }]
               },
               options: {
                 plugins: { legend: { display: false } },
-                scales: { y: { min: -1, max: 1, ticks: { stepSize: 1, callback: v => v === 1 ? 'pos' : v === -1 ? 'neg' : 'neu' } } }
+                scales: { y: { min: -2, max: 2, ticks: { stepSize: 1, callback: v => v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu' } } }
               }
             });
           }
@@ -2509,6 +2702,7 @@
       fetchJSON('/api/pluto/totals').then(t => {
         const el = document.getElementById('pluto-totals');
         const cats = t.by_category || [];
+        drawPlutoCharts(cats);
         let html = `<div class="metric-card"><div class="metric-icon"><img src="/static/img/motifs/warrior_diamond.png" alt=""></div><div><div class="metric-label">Grand Total</div><div class="metric-value">${esc(t.grand_total ?? '—')}</div></div></div>`;
         html += cats.slice(0, 3).map(c => `<div class="metric-card"><div class="metric-icon"><img src="/static/img/motifs/warrior_diamond.png" alt=""></div><div><div class="metric-label">${esc(c.category || c.name || '')}</div><div class="metric-value">${esc(c.total ?? c.amount ?? '')}</div></div></div>`).join('');
         el.innerHTML = html;
@@ -2954,6 +3148,8 @@
     { section: 'notes',     label: 'Notes',      desc: 'Mnemosyne',    icon: 'book_man.png' },
     { section: 'facts',     label: 'Facts',      desc: 'Mnemosyne',    icon: 'warrior_diamond.png' },
     { section: 'moods',     label: 'Moods',      desc: 'Wellbeing',    icon: 'apple.png' },
+    { section: 'health',    label: 'Health',     desc: 'Apollo',       icon: 'apple.png' },
+    { section: 'heatmap',   label: 'Heatmap',    desc: 'Artemis',      icon: 'sun.png' },
     { section: 'skills',    label: 'Skills',     desc: 'Capabilities', icon: 'crown.png' },
     { section: 'portfolio', label: 'Portfolio',  desc: 'Pluto',        icon: 'warrior_diamond.png' },
     { section: 'habits',    label: 'Habits',     desc: 'Artemis',      icon: 'apple.png' },

@@ -12,7 +12,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 class HestiaHeartbeat:
-    def __init__(self, interval: int = 1800, mnemosyne=None, diagnostics=None):
+    def __init__(self, interval: int = 1800, mnemosyne=None, diagnostics=None,
+                 apollo=None, maintenance=None):
         self.interval = interval
         self.mnemosyne = mnemosyne
         # Backlog #6. Optional: a heartbeat built without one (as in the
@@ -20,6 +21,13 @@ class HestiaHeartbeat:
         # other feature gated on an injected collaborator elsewhere in
         # this codebase (see CoreModule's diagnostics param).
         self.diagnostics = diagnostics
+        # Backlog #115/#118/#120/#161: ApolloEngine supplies hydration,
+        # weekly-summary, goal-pace and burnout check-ins. Optional, like
+        # diagnostics: a heartbeat built without it simply skips them.
+        self.apollo = apollo
+        # Backlog #233: core.db_maintenance.DBMaintenance (optional).
+        self.maintenance = maintenance
+        self._last_maintenance_date = None
         self._running = False
         self._thread = threading.Thread(target=self._tick, daemon=True)
         self._last_brief_date = None          # tracks date of last morning brief
@@ -59,6 +67,8 @@ class HestiaHeartbeat:
         # shouldn't depend on remembering to add a line for it.
         self._maybe_run_low_confidence_review()
         self._maybe_run_weekly_accuracy_review()
+        self._maybe_run_apollo_checkins()
+        self._maybe_run_db_maintenance()
 
         try:
             root = os.path.dirname(os.path.abspath(__file__))
@@ -85,6 +95,55 @@ class HestiaHeartbeat:
 
         except Exception:
             pass
+
+    # Apollo hooks, in the order they're checked. Each returns text to speak
+    # or None; the cadence, quiet hours, caps and sent-markers all live in
+    # ApolloEngine (persisted in its DB), so this loop stays trivial.
+    _APOLLO_HOOKS = (
+        "check_hydration_nudge",
+        "check_weekly_summary",
+        "check_burnout",
+        "check_goal_pace_reminder",
+    )
+
+    def _maybe_run_apollo_checkins(self) -> None:
+        if self.apollo is None:
+            return
+        log = logging.getLogger(__name__)
+        for name in self._APOLLO_HOOKS:
+            hook = getattr(self.apollo, name, None)
+            if not callable(hook):
+                continue
+            try:
+                text = hook()
+            except Exception:
+                log.exception("Apollo check-in %s failed.", name)
+                continue
+            if isinstance(text, str) and text.strip():
+                bus.emit("speak", {"text": text})
+
+    def _maybe_run_db_maintenance(self) -> None:
+        """Backlog #233: SQLite housekeeping in the 0-5am off-peak window.
+
+        Runs at most once per day here (DBMaintenance additionally limits
+        each database to once a week). If a database was busy the day is not
+        marked done, so the next tick inside the window retries.
+        """
+        if self.maintenance is None:
+            return
+        now = datetime.now()
+        if not (0 <= now.hour < 5):
+            return
+        if self._last_maintenance_date == now.date():
+            return
+        log = logging.getLogger(__name__)
+        try:
+            results = self.maintenance.run()
+        except Exception:
+            log.exception("DB maintenance failed.")
+            return
+        if not self.maintenance.needs_retry(results):
+            self._last_maintenance_date = now.date()
 
     def _evaluate_task(self, task: str) -> None:
         task_lower = task.lower()

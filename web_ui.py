@@ -70,6 +70,7 @@ class HestiaWebUI:
         self._register_admin_routes()
         self._register_pluto_routes()
         self._register_artemis_routes()
+        self._register_apollo_routes()
         self._register_chronos_routes()
         self._register_athena_routes()
 
@@ -267,6 +268,10 @@ class HestiaWebUI:
                 return jsonify([])
             try:
                 days = max(1, min(int(request.args.get("days", 7)), 90))
+                # mood_entries() adds the score/valence/timestamp fields the
+                # Moods tab reads; it used to read fields the table never had.
+                if hasattr(self.apollo, "mood_entries"):
+                    return jsonify(self.apollo.mood_entries(days))
                 return jsonify(self.apollo.db.get_mood(days))
             except Exception:
                 logger.exception("[WebUI] moods error")
@@ -593,6 +598,71 @@ class HestiaWebUI:
             except Exception:
                 logger.exception("[WebUI] artemis complete_habit error")
                 return jsonify({"error": "Failed"}), 500
+
+        @app.route("/api/artemis/heatmap")
+        def api_artemis_heatmap():
+            """Per-habit completion grid for the Heatmap tab (#183).
+
+            ``since`` is the first day completion dates were recorded for
+            that habit: earlier days are *unknown*, not missed, so the UI
+            greys them out rather than painting them as failures.
+            """
+            if not self.artemis:
+                return jsonify({"days": [], "habits": []})
+            try:
+                from datetime import date, timedelta, timezone, datetime
+
+                days = max(7, min(int(request.args.get("days", 84)), 180))
+                today = datetime.now(timezone.utc).date()
+                span = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+                first = span[0]
+                habits = []
+                for name, info in sorted(self.artemis.tracker.habit_history().items()):
+                    habits.append({
+                        "name": name,
+                        "since": info["since"],
+                        "streak": info["streak"],
+                        "done": [d for d in info["dates"] if d >= first],
+                    })
+                return jsonify({"days": span, "habits": habits})
+            except Exception:
+                logger.exception("[WebUI] artemis heatmap error")
+                return jsonify({"days": [], "habits": []})
+
+    # ── APOLLO (health dashboards) ───────────────────────
+
+    def _register_apollo_routes(self) -> None:
+        app = self.app
+
+        def _dashboard():
+            days = max(7, min(int(request.args.get("days", 30)), 180))
+            return self.apollo.dashboard_data(days)
+
+        @app.route("/api/apollo/dashboard")
+        def api_apollo_dashboard():
+            if not self.apollo or not hasattr(self.apollo, "dashboard_data"):
+                return jsonify({})
+            try:
+                return jsonify(_dashboard())
+            except Exception:
+                logger.exception("[WebUI] apollo dashboard error")
+                return jsonify({})
+
+        def _section(key):
+            def view():
+                if not self.apollo or not hasattr(self.apollo, "dashboard_data"):
+                    return jsonify([])
+                try:
+                    return jsonify(_dashboard().get(key, []))
+                except Exception:
+                    logger.exception("[WebUI] apollo %s error", key)
+                    return jsonify([])
+            return view
+
+        for key in ("sleep", "weight", "water", "mood", "streaks", "steps"):
+            app.add_url_rule(
+                f"/api/apollo/{key}", endpoint=f"api_apollo_{key}", view_func=_section(key)
+            )
 
     # ── CHRONOS (time/calendar) ──────────────────────────
 

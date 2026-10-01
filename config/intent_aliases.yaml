@@ -75,6 +75,88 @@ apollo_get_health_summary:
   - "how's my health"
   - "hows my health"
 
+# --- Apollo: units, insights, meals, pain, pace (backlog #111-#120, #126, #161) ----
+apollo_set_units:
+  - "use pounds"
+  - "use kg"
+  - "use kilograms"
+  - "switch to pounds"
+  - "switch to kg"
+  - "switch to metric"
+  - "switch to imperial"
+  - "change my units"
+  - "set my units"
+
+apollo_get_sleep_quality:
+  - "sleep quality"
+  - "sleep score"
+
+apollo_get_correlations:
+  - "what affects my mood"
+  - "mood patterns"
+  - "does sleep affect my mood"
+  - "does exercise affect my mood"
+
+apollo_log_meal:
+  - "log a meal"
+  - "log my meal"
+  - "log my breakfast"
+  - "log my lunch"
+  - "log my dinner"
+  - "i ate"
+
+apollo_get_meal_summary:
+  - "meal summary"
+  - "calories today"
+  - "how many calories today"
+  - "what did i eat today"
+
+apollo_hydration_status:
+  - "am i drinking enough"
+  - "hydration status"
+  - "am i behind on water"
+  - "am i hydrated"
+
+apollo_get_workout_streaks:
+  - "workout streak"
+  - "workout streaks"
+  - "exercise streaks"
+
+apollo_log_pain:
+  - "log pain"
+  - "log my pain"
+  - "i have pain"
+  - "my pain is"
+
+apollo_get_pain_trend:
+  - "pain trend"
+  - "how is my pain"
+  - "pain history"
+
+apollo_get_weekly_summary:
+  - "weekly health summary"
+  - "my week in health"
+
+apollo_import_steps:
+  - "import steps"
+  - "import my steps"
+
+apollo_get_goal_pace:
+  - "goal pace"
+  - "am i on pace"
+  - "am i on track for my weight"
+
+apollo_habit_mood_correlation:
+  - "habits and mood"
+  - "which habits help my mood"
+  - "do my habits affect my mood"
+
+apollo_burnout_check:
+  - "burnout check"
+  - "am i burning out"
+  - "check my burnout"
+  - "burnout signals"
+
 # --- Pluto: expenses -------------------------------------------------------
 pluto_log_expense:
   - "log an expense"

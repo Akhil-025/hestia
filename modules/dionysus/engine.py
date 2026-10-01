@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import base64
 from pathlib import Path
 from typing import Optional
@@ -90,13 +91,59 @@ class DionysusEngine(BaseModule):
         "recommend_recipe",
     }
 
-    def __init__(self, ollama_cfg: dict = None, browser_agent=None, memory=None, llm=None):
+    def __init__(self, ollama_cfg: dict = None, browser_agent=None, memory=None, llm=None,
+                 mood_aware: bool = True):
         self._ollama  = ollama_cfg or {}
+        # Backlog #149. Opt-out via ``dionysus.mood_aware: false``.
+        self._mood_aware = bool(mood_aware)
+        self._apollo = None
         self._browser = browser_agent
         self._memory  = memory
         self._llm_instance = llm  # HestiaLLM | None — preferred path
         os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
         self.db = DionysusDB(_DB_PATH)
+
+    def attach_apollo(self, apollo) -> None:
+        """Read-only link to Apollo so recommendations can reflect a mood the
+        user has *logged* (backlog #149). Never used when they gave a mood."""
+        self._apollo = apollo
+
+    def _mood_hint(self, entities: dict, kind: str):
+        """Recent logged mood to use when the request itself gave none.
+
+        Returns None (use the request as-is) if mood-awareness is off,
+        Apollo isn't attached, the user said a mood/genre, the query names
+        something specific, or no mood was logged in the last 48 hours.
+        Otherwise ``{"mood", "prompt", "header", "low_trend"}``.
+        """
+        if not self._mood_aware or self._apollo is None:
+            return None
+        if entities.get("mood") or entities.get("genre"):
+            return None
+        if not _is_generic_request(entities.get("raw_query")):
+            return None
+        try:
+            ctx = self._apollo.recent_mood_context()
+        except Exception:
+            log.warning("Apollo mood lookup failed; ignoring.", exc_info=True)
+            return None
+        if not ctx or not ctx.get("mood"):
+            return None
+        mood = ctx["mood"]
+        if ctx.get("low_trend"):
+            prompt = (
+                f"gentle, comforting and warm, for someone who has felt low "
+                f"lately (most recently: {mood}); avoid forced cheerfulness "
+                f"and avoid anything bleak"
+            )
+            note = " Your recent moods have been low, so I've leaned toward comforting picks."
+        else:
+            prompt = f"suited to someone who is feeling {mood}"
+            note = ""
+        return {
+            "mood": mood, "prompt": prompt, "low_trend": bool(ctx.get("low_trend")),
+            "header": f"{kind} based on your logged mood: {mood}.{note}",
+        }
 
     def can_handle(self, intent: str) -> bool:
         return intent in self._INTENTS
@@ -203,6 +250,9 @@ class DionysusEngine(BaseModule):
             or entities.get("genre")
             or entities.get("raw_query", "something good")
         )
+        hint = self._mood_hint(entities, "Movies")
+        if hint:
+            mood_genre = hint["prompt"]
         # Exclude both explicitly dismissed titles and ones the user has
         # already marked as watched — previously only `dismissed_titles`
         # was consulted here, so a movie logged via mark_seen() could still
@@ -223,7 +273,7 @@ class DionysusEngine(BaseModule):
             return {"response": "I had trouble finding movies.", "data": {}, "confidence": 0.3}
 
         recs   = result.get("recommendations", [])
-        lines  = [f"Movies for '{mood_genre}'\n"]
+        lines  = [hint["header"] + "\n"] if hint else [f"Movies for '{mood_genre}'\n"]
         enriched = []
 
         for rec in recs:
@@ -323,6 +373,9 @@ class DionysusEngine(BaseModule):
 
     def _recommend_music(self, entities: dict) -> dict:
         mood      = entities.get("mood") or entities.get("raw_query", "good vibes")
+        hint      = self._mood_hint(entities, "Music")
+        if hint:
+            mood = hint["prompt"]
         dismissed = self.db.dismissed_titles("music")
 
         # Ollama recommendations
@@ -338,7 +391,7 @@ class DionysusEngine(BaseModule):
             return {"response": "I had trouble finding music.", "data": {}, "confidence": 0.3}
 
         recs  = result.get("recommendations", [])
-        lines = [f"Music for '{mood}'\n"]
+        lines = [hint["header"] + "\n"] if hint else [f"Music for '{mood}'\n"]
         enriched = []
 
         for rec in recs:
@@ -556,3 +609,19 @@ class DionysusEngine(BaseModule):
                 lines.append(f"  • {tip}")
 
         return "\n".join(lines).strip()
+
+
+_GENERIC_WORDS = frozenset(
+    """recommend suggest me a an some the movie movies film films song songs
+    music tune tunes track tracks watch watching listen listening play
+    something anything good nice great new tonight today now please what
+    should i can you could give find want need like to for of on any
+    something's whats what's""".split()
+)
+
+
+def _is_generic_request(raw_query) -> bool:
+    """True when the query names nothing specific (no genre, title, artist or
+    mood word), so a logged mood is a fair thing to go on."""
+    tokens = [t for t in re.findall(r"[a-z']+", str(raw_query or "").lower())]
+    return all(t in _GENERIC_WORDS for t in tokens)

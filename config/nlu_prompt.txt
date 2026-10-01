@@ -53,6 +53,10 @@ ares_analyse_risk, ares_swot_analysis, ares_strategic_plan, ares_decision_suppor
 ares_premortem_analysis, ares_competitive_analysis, ares_contingency_plan, ares_war_room_briefing,
 apollo_log_workout, apollo_track_sleep, apollo_log_mood, apollo_log_health, apollo_get_health_summary,
 apollo_log_weight, apollo_log_water, apollo_set_health_goal, apollo_get_goal_progress,
+apollo_set_units, apollo_get_sleep_quality, apollo_get_correlations, apollo_log_meal,
+apollo_get_meal_summary, apollo_hydration_status, apollo_get_workout_streaks, apollo_log_pain,
+apollo_get_pain_trend, apollo_get_weekly_summary, apollo_import_steps, apollo_get_goal_pace,
+apollo_habit_mood_correlation, apollo_burnout_check,
 orpheus_write_poem, orpheus_brainstorm, orpheus_creative_prompt, orpheus_generate_lyrics,
 orpheus_write_story, orpheus_continue_writing, orpheus_critique_writing, orpheus_rewrite_style,
 orpheus_generate_names, orpheus_get_creations,
@@ -500,6 +504,63 @@ User: how am I doing on my health goals
 
 User: am I hitting my workout target
 {"intent": "apollo_get_goal_progress", "entities": {}, "response": "Checking your goal progress.", "confidence": 0.88}
+
+User: switch me to pounds
+{"intent": "apollo_set_units", "entities": {"weight_unit": "lb"}, "response": "Switching your weight to pounds.", "confidence": 0.9}
+
+User: use ounces for water
+{"intent": "apollo_set_units", "entities": {"water_unit": "oz"}, "response": "Switching water to ounces.", "confidence": 0.9}
+
+User: what's my sleep score
+{"intent": "apollo_get_sleep_quality", "entities": {}, "response": "Checking your sleep quality score.", "confidence": 0.9}
+
+User: slept 11pm to 6:30am
+{"intent": "apollo_track_sleep", "entities": {"bed_time": "11pm", "wake_time": "6:30am"}, "response": "Logging your sleep.", "confidence": 0.9}
+
+User: does sleep affect my mood
+{"intent": "apollo_get_correlations", "entities": {}, "response": "Looking for patterns in your logs.", "confidence": 0.9}
+
+User: do I feel better on workout days
+{"intent": "apollo_get_correlations", "entities": {}, "response": "Comparing mood on workout days.", "confidence": 0.9}
+
+User: log a meal: dal and rice 450 kcal
+{"intent": "apollo_log_meal", "entities": {"food": "dal and rice", "kcal": 450}, "response": "Logging that meal.", "confidence": 0.9}
+
+User: I ate 150 grams of paneer
+{"intent": "apollo_log_meal", "entities": {"food": "paneer", "grams": 150}, "response": "Logging that meal.", "confidence": 0.9}
+
+User: how many calories have I had today
+{"intent": "apollo_get_meal_summary", "entities": {}, "response": "Checking today's meals.", "confidence": 0.9}
+
+User: am I drinking enough water
+{"intent": "apollo_hydration_status", "entities": {}, "response": "Checking your hydration pace.", "confidence": 0.9}
+
+User: what are my workout streaks
+{"intent": "apollo_get_workout_streaks", "entities": {}, "response": "Checking your workout streaks.", "confidence": 0.9}
+
+User: my left knee hurts, 4 out of 10
+{"intent": "apollo_log_pain", "entities": {"area": "left knee", "severity": 4}, "response": "Logging that pain.", "confidence": 0.9}
+
+User: how is my knee pain trending
+{"intent": "apollo_get_pain_trend", "entities": {"area": "knee"}, "response": "Checking your pain log.", "confidence": 0.9}
+
+User: give me my weekly health summary
+{"intent": "apollo_get_weekly_summary", "entities": {}, "response": "Putting together your week.", "confidence": 0.9}
+
+User: import my steps
+{"intent": "apollo_import_steps", "entities": {}, "response": "Importing your step data.", "confidence": 0.9}
+
+User: am I on pace for my weight goal
+{"intent": "apollo_get_goal_pace", "entities": {}, "response": "Checking your goal pace.", "confidence": 0.9}
+
+User: set a weight goal of 68 kg by 2026-12-31
+{"intent": "apollo_set_health_goal", "entities": {"goal_type": "weight", "target": 68, "deadline": "2026-12-31"}, "response": "Setting that goal.", "confidence": 0.9}
+
+User: which habits help my mood
+{"intent": "apollo_habit_mood_correlation", "entities": {}, "response": "Comparing habits with mood.", "confidence": 0.9}
+
+User: am I burning out
+{"intent": "apollo_burnout_check", "entities": {}, "response": "Checking a few signals.", "confidence": 0.9}
 
 ---
 

@@ -11,5 +11,4 @@ often it actually fires. Checking a box here would not do anything and is not
 supported; leave every task as `- [ ]`.
 
 - [ ] morning brief
-- [ ] reminder: drink some water
 - [ ] nightly summary

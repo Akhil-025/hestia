@@ -12,6 +12,113 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Apollo (health) and its cross-module items
+
+Completes section 9 (#111–#120) and the six items that depend on Apollo's
+data (#126, #149, #159, #161, #183, #233). Registry version 2.10.0 (minor: 14
+intents added). New tests: `tests/test_apollo_insights.py`,
+`tests/test_apollo_features.py`, `tests/test_apollo_crossmodule.py`.
+
+### Added
+
+- **Schema migrations.** `apollo.db` now upgrades itself via
+  `PRAGMA user_version`. Each migration runs once, in a transaction, and is
+  idempotent, so old databases keep their rows and a half-applied run is
+  harmless.
+- **Sleep quality score (#111).** 0-100 from duration, bed/wake consistency
+  over the last 7 nights (correct across midnight) and your 1-5 rating or
+  quality word. Say "slept 11pm to 6:30am" to add times. Missing pieces are
+  named in the reply rather than scored around silently. New intent
+  `get_sleep_quality`.
+- **Correlations (#112).** `get_correlations`: mood after short (<6h) vs long
+  (7h+) sleep, and mood on workout vs non-workout days. Pure statistics, no
+  LLM. It reports n, refuses below `apollo.min_sample` (default 4) per
+  group, and says "in your logs", not "causes".
+- **Units (#113).** `set_units` (kg/lb, ml/oz, or "metric"/"imperial").
+  A unit typed in a message wins. Storage stays kg/ml. Weight and water goals
+  are read in your unit.
+- **Meals (#114).** `log_meal` and `get_meal_summary`. Calories come from
+  your number ("as you entered it") or an Open Food Facts lookup labelled as
+  a rough estimate (an assumed 100 g is disclosed). Daily kcal and protein
+  only. No target is shown unless you set a `calories` goal, and Apollo
+  refuses to set one below 1,200 kcal.
+- **Hydration pacing (#115).** `hydration_status` on demand, plus heartbeat
+  nudges only when you are behind pace by `threshold_ml` inside
+  `wake_start`..`wake_end`, with a daily cap and cooldown. Only for people who
+  use water tracking. Nudge state lives in the DB.
+- **Workout streaks (#116).** `get_workout_streaks`: consecutive days and
+  consecutive weeks with at least N sessions, per exercise type.
+- **Pain / injury (#117).** `log_pain` and `get_pain_trend`: severity 0-10 by
+  body area, a 7-day vs previous-7-day trend once there is enough data, and
+  template-only wording. Red-flag phrases, pain at 9+/10, pain logged for
+  three weeks or more, or a worsening trend at 6+/10 produce a "see a
+  clinician" message. It never diagnoses.
+- **Weekly summary (#118).** `get_weekly_summary`, and sent once per ISO week
+  through the heartbeat (on/after Sunday 18:00 by default, so a machine that
+  was off on Sunday still sends). Deterministic text, and the sent marker is
+  stored in the DB.
+- **Step import (#119, partial).** `import_steps` reads CSV/JSON from
+  `apollo.import_dir` only (basename resolved inside that folder, symlinks out
+  of it ignored). Layout: one record per row with a date column (`date`,
+  `day`, `start_date`, `timestamp`, ...) and a steps column (`steps`,
+  `step_count`, `count`, `value`, ...), matched case- and punctuation-
+  insensitively. Several records on one day are summed, and re-importing is
+  idempotent (`upserted` by date). Untested against real exports.
+- **Goal pace (#120).** `get_goal_pace` for a weight goal: distance, trend
+  (least-squares over 28 days, needs a week of spread), ETA, and on/behind pace
+  for an optional deadline (`by 2026-12-31`, `in 8 weeks`). A change faster than
+  about 1 kg/week is flagged, not cheered, and so is a deadline that would
+  require it. Check-in reminders are off unless `apollo.goal_reminders` is
+  enabled.
+- **Habit vs mood (#126).** Artemis habits now record a capped (400 days)
+  list of completion dates, and `habit_mood_correlation` compares habits
+  kept on high- vs low-mood days. Old state files load unchanged; days before
+  recording began are unknown, not missed, so correlations only cover days
+  logged after this ships.
+- **Mood-aware Dionysus (#149).** Movie and music picks use your logged mood
+  (last 48h) only when you gave none and the request is generic, and say so.
+  Persistently low moods lean comforting. `dionysus.mood_aware: false`
+  turns it off.
+- **Burnout signals (#161).** `burnout_check` combines sleep and mood
+  (Apollo), habit consistency (Artemis) and a weekly-spend spike (Pluto, a weak
+  signal that can't raise a flag alone). It needs two sources with data and
+  reports low / watch / elevated with each signal listed, framed as things worth
+  a look. Sent weekly via the heartbeat only when watch/elevated. Three
+  elevated weeks in a row suggests talking to someone.
+- **Tension surfacing (#159).** `core/consensus.py`: when Apollo says rest
+  (short sleep, low mood) and Artemis says push (an at-risk streak), a note is
+  appended to the reply on `complete_habit`, `get_motivation`,
+  `suggest_exercise` and `suggest_activity` explaining both sides. It never
+  rewrites the module's answer. Kill switch: `consensus.enabled: false`.
+- **Dashboards (#183, partial).** `/api/apollo/{dashboard,sleep,weight,water,
+  mood,streaks,steps}` and `/api/artemis/heatmap`. New Health and Heatmap
+  tabs, plus spending and investment charts on the Portfolio tab. The heatmap
+  hatches days before history began.
+- **DB maintenance (#233).** `core/db_maintenance.py`: in the heartbeat's
+  0-5am window, at most weekly per file, checkpoints and `VACUUM`s a SQLite
+  database only when at least 20% of it is free pages. Skips (and retries next
+  tick) a locked database, checks free disk first, never deletes data, and only
+  touches real SQLite files under `data/`. Artemis is JSON, so its part is the
+  history cap above.
+
+### Changed
+
+- **Moods tab fixed.** It read `valence`/`timestamp`, which the table never
+  had. `/api/moods` now returns those fields plus a score, and the tab shows the
+  mood text.
+- New optional config blocks `apollo:`, `consensus:`, `maintenance:` and
+  `dionysus.mood_aware`, validated in `core/config_validation.py` and shown in
+  `config/laptop_config.example.yaml`.
+
+### Notes
+
+- `HEARTBEAT.md` may still contain a fixed "drink some water" reminder;
+  delete it if you want only the adaptive nudge.
+- Apollo's day boundaries use `apollo.timezone` (default `chronos.timezone`).
+  The habit/mood pairing uses UTC days on both sides to match Artemis.
+
+---
+
 ## [Unreleased] — Metis & Orpheus (Writing)
 
 Completes all six items in section 15 (#164–#169) plus #270. New tests:

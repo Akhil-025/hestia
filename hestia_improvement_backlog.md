@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 74 ✅ + 3 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90), 15 (Metis & Orpheus, #164–#169) and 26, plus #259, #270 and #275.
+**Tally: 88 ✅ + 5 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #126, #149, #159, #161, #183, #233, #259, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -20,7 +20,9 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 4. Athena | 11 of 20 |
 | 5. Iris | 6 of 10 |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
+| 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
 | 15. Metis & Orpheus | 6 of 6 |
+| Apollo cross-module | 5 done (`#126`, `#149`, `#159`, `#161`, `#233`), 1 partial (`#183`) |
 | 26. Docs | 2 of 6 (`#245`, `#249`) |
 | 29. Judgment testing | 1 of 3 (`#259`) |
 | 30. Outside ideas | 2 of 20 (`#270`, `#275`) |
@@ -165,16 +167,16 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 9. Apollo — Health & Wellness
 
-111. `[M]` Add sleep-quality scoring beyond duration (consistency of bed/wake time, using a rolling window).
-112. `[M]` Add correlation surfacing ("your mood tends to dip on days you sleep under 6h") from your own logged data — genuinely useful and low-risk since it's reflecting the user's own patterns back, not diagnosing.
-113. `[Q]` Add configurable units at the profile level (kg/lb, ml/oz) instead of per-log-entry parsing only.
-114. `[M]` Add meal logging beyond `_lookup_food`, with a running daily macro/calorie summary.
-115. `[M]` Add a hydration reminder that adapts to logged water intake pace across the day, not a fixed schedule.
-116. `[Q]` Add workout streak tracking parallel to Artemis's habit streaks, specific to exercise types.
-117. `[M]` Add injury/pain logging distinct from general mood, with simple trend surfacing over weeks.
-118. `[Q]` Add a weekly health summary auto-sent via the heartbeat (sleep avg, workouts, weight trend, water compliance).
-119. `[M]` Add integration with phone step-count/health data if you ever add a mobile companion (Health Connect / Google Fit export import).
-120. `[Q]` Add configurable goal reminders ("you're 2kg from your target — still 3 weeks out, on pace").
+111. ✅ `[M]` Add sleep-quality scoring beyond duration (consistency of bed/wake time, using a rolling window).
+112. ✅ `[M]` Add correlation surfacing ("your mood tends to dip on days you sleep under 6h") from your own logged data — genuinely useful and low-risk since it's reflecting the user's own patterns back, not diagnosing.
+113. ✅ `[Q]` Add configurable units at the profile level (kg/lb, ml/oz) instead of per-log-entry parsing only.
+114. ✅ `[M]` Add meal logging beyond `_lookup_food`, with a running daily macro/calorie summary.
+115. ✅ `[M]` Add a hydration reminder that adapts to logged water intake pace across the day, not a fixed schedule.
+116. ✅ `[Q]` Add workout streak tracking parallel to Artemis's habit streaks, specific to exercise types.
+117. ✅ `[M]` Add injury/pain logging distinct from general mood, with simple trend surfacing over weeks.
+118. ✅ `[Q]` Add a weekly health summary auto-sent via the heartbeat (sleep avg, workouts, weight trend, water compliance).
+119. 🟡 `[M]` Add integration with phone step-count/health data if you ever add a mobile companion (Health Connect / Google Fit export import). *(partial: CSV/JSON importer with column-name detection, import-folder-only reads, dedupe by date and tests on synthetic files. Not tested against real Health Connect / Google Fit exports.)*
+120. ✅ `[Q]` Add configurable goal reminders ("you're 2kg from your target — still 3 weeks out, on pace").
 
 ## 10. Artemis — Habits & Goals
 
@@ -183,7 +185,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 123. `[Q]` Add habit "grace periods" (missing one day doesn't reset a streak if within an allowed buffer) as a configurable option.
 124. `[M]` Add goal decomposition — break a large goal into sub-tasks/milestones automatically via LLM, then track each.
 125. `[Q]` Add a weekly habit review prompt (already listed under Mnemosyne's academic memory in HEARTH.txt, but fits naturally here) summarizing consistency %.
-126. `[M]` Add habit correlation with Apollo's mood/sleep logs ("habits you kept on high-mood days").
+126. ✅ `[M]` Add habit correlation with Apollo's mood/sleep logs ("habits you kept on high-mood days").
 127. `[L]` Add an achievement/badge system (distinct from full XP/leveling) tied to milestones like 30-day streaks.
 128. `[Q]` Add "pause a habit" (vacation mode) so streaks don't break during planned breaks.
 129. `[M]` Add smart nudges — if a habit is usually done by a certain time and hasn't been logged, send a gentle reminder instead of waiting for end-of-day.
@@ -212,7 +214,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 146. `[M]` Add an event finder for your city using a free events API or scraped local listings (HEARTH.txt spec'd, currently absent).
 147. `[Q]` Add "seen it, don't recommend again" persistence across restarts (confirm `dismiss`/`mark_seen` already does this — extend to auto-expire dismissals after a long enough time).
 148. `[M]` Add group/friends outing coordination (shared availability + preferences) if you ever add multi-user support.
-149. `[Q]` Add mood-based recommendations — feed Apollo's current mood log into movie/music suggestions.
+149. ✅ `[Q]` Add mood-based recommendations — feed Apollo's current mood log into movie/music suggestions.
 150. `[M]` Add a "surprise me" mode that deliberately picks outside your recent taste cluster to counter recommendation staleness.
 151. `[Q]` Add cost estimation alongside restaurant/outing suggestions so recommendations respect a budget.
 152. `[M]` Add recurring "recharge routine" scheduling (weekend downtime blocks) integrated with Chronos.
@@ -228,9 +230,9 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 ## 14. Hecate — Decision Engine
 
 158. `[L]` Build the multi-agent "conference" feature: route one query through 2–3 relevant modules' perspectives (e.g. Pluto + Ares on a financial risk) and synthesize a combined answer.
-159. `[M]` Add weighted-voting consensus when modules disagree (e.g. Apollo says rest, Artemis says push through a habit streak) — surface the tension explicitly rather than silently picking one.
+159. ✅ `[M]` Add weighted-voting consensus when modules disagree (e.g. Apollo says rest, Artemis says push through a habit streak) — surface the tension explicitly rather than silently picking one.
 160. `[L]` Add a lightweight what-if simulator: given a proposed change (quit a habit, cut a subscription), project its downstream effect using existing module data instead of a bespoke Monte Carlo engine.
-161. `[M]` Add burnout-signal fusion from Apollo (sleep/mood) + Artemis (habit consistency) + Pluto (spending stress proxies) into one weekly risk flag.
+161. ✅ `[M]` Add burnout-signal fusion from Apollo (sleep/mood) + Artemis (habit consistency) + Pluto (spending stress proxies) into one weekly risk flag.
 162. `[Q]` Add a routing-decision audit log surfaced to the user on request ("what did you check before answering that?").
 163. `[M]` Add critical-path extraction across active goals/deadlines (Artemis + Hermes + Chronos) into one "what actually needs attention this week" list.
 
@@ -261,7 +263,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 180. `[M]` Build the "Total Launcher"-style single-screen dashboard from `Project_Hestia.txt` as a web UI view instead of an Android launcher — today's stats, top priority, deadlines, in one glance.
 181. `[Q]` Add dark/light theme toggle if not already present.
 182. `[M]` Add a live activity feed (last N interactions across all modules) for at-a-glance oversight.
-183. `[M]` Add per-module dashboards (Pluto portfolio chart, Artemis habit heatmap, Apollo sleep trend) as separate tabs.
+183. 🟡 `[M]` Add per-module dashboards (Pluto portfolio chart, Artemis habit heatmap, Apollo sleep trend) as separate tabs. *(partial: Apollo endpoints and tab, Artemis heatmap tab and Pluto portfolio charts are built and the JSON endpoints and JS syntax are tested. The tabs have not been checked visually in a browser.)*
 184. `[Q]` Add a search bar that queries across Mnemosyne + Athena + Iris at once ("find everything related to X").
 185. `[M]` Add mobile-responsive layout if the web UI is currently desktop-only (likely, given Flask + basic templates).
 186. `[Q]` Add a simple password/session-based login (HEARTH.txt spec'd this explicitly, and it's cheap given Flask already exists).
@@ -329,7 +331,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 231. `[M]` Add a schema-migration tool (Alembic or hand-rolled) instead of ad-hoc `_init_schema` calls per module, so DB changes are versioned and reversible.
 232. `[Q]` Add a data-integrity check command (foreign keys, orphaned rows) runnable on demand.
-233. `[M]` Add compaction/vacuum scheduling for SQLite DBs that grow with heavy logging (Apollo, Artemis, Pluto).
+233. ✅ `[M]` Add compaction/vacuum scheduling for SQLite DBs that grow with heavy logging (Apollo, Artemis, Pluto).
 234. `[M]` Add a unified "export everything" command (all module DBs → one portable archive) for real backup/migration, not per-module ad hoc export.
 235. `[Q]` Add checksums on backup archives so a silently-corrupted backup is caught before you need it.
 236. `[M]` Consider moving from SQLite to SQLite-with-WAL-mode (if not already) to reduce lock contention across the many modules writing concurrently.

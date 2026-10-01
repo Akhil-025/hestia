@@ -1,0 +1,1 @@
+{"ts": "2026-09-30T18:36:54+00:00", "request_id": "cadf18fc", "query": "hii", "intent": "chat", "confidence": 0.5, "module": "core", "script": "latin", "reason": "default core", "latency_ms": 35885.3, "source": "nlu"}

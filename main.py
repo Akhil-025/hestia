@@ -116,6 +116,8 @@ from core.hot_reload import FileWatcher
 from core.browser_agent import HestiaBrowserAgent
 from core.event_bus import bus
 from core.heartbeat import HestiaHeartbeat
+from core.consensus import ConsensusEngine
+from core.db_maintenance import DBMaintenance
 from core.llm import HestiaLLM
 from core.nlu import HestiaNLU
 from core.ollama_manager import OllamaManager
@@ -392,7 +394,15 @@ class HestiaBuilder:
         )
 
         # Specialist modules
-        apollo = ApolloEngine(ollama_cfg=self.ollama_cfg)
+        # Apollo's `apollo:` block (units, hydration, weekly summary, step
+        # import folder, ...). Its timezone defaults to Chronos's so "today"
+        # means the same day everywhere.
+        apollo_cfg = dict(self.config.get("apollo") or {})
+        apollo_cfg.setdefault(
+            "timezone",
+            (self.config.get("chronos") or {}).get("timezone", "Asia/Kolkata"),
+        )
+        apollo = ApolloEngine(ollama_cfg=self.ollama_cfg, config=apollo_cfg)
         orchestrator.register(apollo)
         orchestrator.register(
             AresEngine(memory=mnemosyne, ollama_cfg=self.ollama_cfg)
@@ -427,11 +437,19 @@ class HestiaBuilder:
             )
         orchestrator.register(orpheus)
         orchestrator.register(metis)
+        # Backlog #149: mood-aware picks, only when the user gave no mood.
+        dionysus_mood_aware = bool(
+            (self.config.get("dionysus") or {}).get("mood_aware", True)
+        )
         dionysus = DionysusEngine(
             ollama_cfg=self.ollama_cfg,
             browser_agent=browser_agent,
             memory=mnemosyne,
+            mood_aware=dionysus_mood_aware,
         )
+        _attach_apollo = getattr(dionysus, "attach_apollo", None)
+        if dionysus_mood_aware and callable(_attach_apollo):
+            _attach_apollo(apollo)
         orchestrator.register(dionysus)
         # Chronos is registered before these exist, so hand them over now:
         # the "what's on my plate" timeline (#86) reads Hermes + Artemis, and
@@ -439,6 +457,23 @@ class HestiaBuilder:
         chronos.attach_sources(hermes=hermes, artemis=artemis, dionysus=dionysus)
         pluto = PlutoEngine(ollama_cfg=self.ollama_cfg)
         orchestrator.register(pluto)
+        # Cross-module reads for Apollo (#126 habit/mood, #161 burnout
+        # signals). Read-only: Apollo never writes to Artemis or Pluto.
+        for _hook, _target in (("attach_artemis", artemis), ("attach_pluto", pluto)):
+            _fn = getattr(apollo, _hook, None)
+            if callable(_fn):
+                _fn(_target)
+        # Backlog #159: surface disagreements between Apollo ("rest") and
+        # Artemis ("push"). Append-only; `consensus.enabled: false` kills it.
+        consensus_cfg = self.config.get("consensus") or {}
+        if consensus_cfg.get("enabled", True) and hasattr(orchestrator, "attach_consensus"):
+            orchestrator.attach_consensus(
+                ConsensusEngine(
+                    apollo=apollo,
+                    artemis=artemis,
+                    intents=consensus_cfg.get("intents") or None,
+                )
+            )
 
         # Drop-in skills (backlog #9): single-file BaseModule subclasses
         # under `skills.path`, auto-discovered and registered here rather
@@ -518,13 +553,23 @@ class HestiaBuilder:
     # -- Heartbeat / web UI / sync API ------------------------------------
 
     def build_heartbeat(
-        self, mnemosyne: MnemosyneEngine, diagnostics: Any = None
+        self, mnemosyne: MnemosyneEngine, diagnostics: Any = None,
+        apollo: Any = None,
     ) -> HestiaHeartbeat:
         # diagnostics powers the nightly low-confidence review (backlog
         # #6); optional, so a heartbeat built without one just never runs
         # that job, same as every other diagnostics-gated feature.
+        maintenance = None
+        maint_cfg = self.config.get("maintenance") or {}
+        if maint_cfg.get("enabled", True):
+            maintenance = DBMaintenance(
+                paths=maint_cfg.get("extra_paths") or None,
+                free_ratio_threshold=float(maint_cfg.get("free_ratio_threshold", 0.2)),
+                min_interval_days=int(maint_cfg.get("min_interval_days", 7)),
+            )
         return HestiaHeartbeat(
-            interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics
+            interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics,
+            apollo=apollo, maintenance=maintenance,
         )
 
     def build_web_ui(
@@ -744,7 +789,9 @@ class Hestia:
         # -- Wiring: connect already-built subsystems together -------------
         self._init_event_bus()
 
-        self.heartbeat = builder.build_heartbeat(self.mnemosyne, diagnostics=self.diagnostics)
+        self.heartbeat = builder.build_heartbeat(
+            self.mnemosyne, diagnostics=self.diagnostics, apollo=self.apollo
+        )
         # Chronos owns reminder delivery (recurring, snooze, location and the
         # missed-reminder catch-up on startup - backlog #81-#89). When its
         # scheduler is running the heartbeat must not also fire one-shot

@@ -101,6 +101,42 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("writing.polish_pass", (bool,), False),
     ("writing.export_dir", (str,), False),
     ("writing.plagiarism_web_check", (bool,), False),
+
+    # Apollo / Dionysus / consensus / maintenance (backlog #111-#120, #149, #159, #233). All optional.
+    ("apollo", (dict,), False),
+    ("apollo.timezone", (str,), False),
+    ("apollo.import_dir", (str,), False),
+    ("apollo.min_sample", (int, float), False),
+    ("apollo.streak_min_sessions", (int, float), False),
+    ("apollo.units", (dict,), False),
+    ("apollo.units.weight", (str,), False),
+    ("apollo.units.water", (str,), False),
+    ("apollo.hydration", (dict,), False),
+    ("apollo.hydration.enabled", (bool,), False),
+    ("apollo.hydration.wake_start", (str,), False),
+    ("apollo.hydration.wake_end", (str,), False),
+    ("apollo.hydration.threshold_ml", (int, float), False),
+    ("apollo.hydration.cooldown_minutes", (int, float), False),
+    ("apollo.hydration.daily_cap", (int, float), False),
+    ("apollo.weekly_summary", (dict,), False),
+    ("apollo.weekly_summary.enabled", (bool,), False),
+    ("apollo.weekly_summary.weekday", (int, float), False),
+    ("apollo.weekly_summary.hour", (int, float), False),
+    ("apollo.goal_reminders", (dict,), False),
+    ("apollo.goal_reminders.enabled", (bool,), False),
+    ("apollo.goal_reminders.every_days", (int, float), False),
+    ("apollo.burnout", (dict,), False),
+    ("apollo.burnout.enabled", (bool,), False),
+    ("dionysus", (dict,), False),
+    ("dionysus.mood_aware", (bool,), False),
+    ("consensus", (dict,), False),
+    ("consensus.enabled", (bool,), False),
+    ("consensus.intents", (list,), False),
+    ("maintenance", (dict,), False),
+    ("maintenance.enabled", (bool,), False),
+    ("maintenance.free_ratio_threshold", (int, float), False),
+    ("maintenance.min_interval_days", (int, float), False),
+    ("maintenance.extra_paths", (list,), False),
 )
 
 # Top-level keys the app knows about. Anything else is reported as a
@@ -110,7 +146,7 @@ _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
     "google", "telegram", "sync", "athena", "iris", "mnemosyne", "hecate", "stt",
     "tts", "wake_word", "barge_in", "scheduler", "heartbeat", "skills",
     "hephaestus", "pluto", "dionysus", "apollo", "artemis", "logging",
-    "observability", "writing",
+    "observability", "writing", "consensus", "maintenance",
 })
 
 

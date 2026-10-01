@@ -288,6 +288,9 @@ class HestiaOrchestrator:
     ) -> None:
         self._modules: dict[str, BaseModule] = {}
         self._hecate: Optional[HecateEngine] = None
+        # Backlog #159. Optional tension-surfacing layer (core/consensus.py);
+        # None means off. It only ever appends a note to a reply.
+        self._consensus: Optional[Any] = None
         self._ctx = OrchestratorContext()
         # Backlog #12. Default 30 minutes: long enough that a normal back-
         # and-forth conversation is never interrupted, short enough that
@@ -374,6 +377,10 @@ class HestiaOrchestrator:
     # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------
+
+    def attach_consensus(self, consensus: Optional[Any]) -> None:
+        """Install (or clear, with None) the tension-surfacing layer."""
+        self._consensus = consensus
 
     def dispatch(self, raw_query: str, nlu_result: dict[str, Any]) -> str:
         """
@@ -528,6 +535,16 @@ class HestiaOrchestrator:
                         response.response,
                         secondary_ctx,
                     )
+
+            # Tension surfacing (#159): append-only, whitelisted intents
+            # only, and never allowed to break the reply it decorates.
+            if self._consensus is not None:
+                try:
+                    response.response = self._consensus.annotate(
+                        intent, response.response
+                    )
+                except Exception:
+                    logger.exception("consensus annotate failed; reply unchanged.")
 
             # Roll context forward (thread-safe)
             with self._lock:

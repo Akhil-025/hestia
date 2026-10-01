@@ -107,6 +107,45 @@ writing:
   export_dir: "data/exports"         # where "export my last poem" / "export that session" write .md/.txt files
   plagiarism_web_check: true         # let Metis spot-check passages with a web search (needs the browser)
 
+# Apollo (health) — all optional; defaults shown.
+apollo:
+  # timezone: "Asia/Kolkata"         # day boundaries for streaks/summaries; defaults to chronos.timezone
+  units:
+    weight: "kg"                     # kg | lb   (or say "switch to pounds"); storage is always kg/ml
+    water: "ml"                      # ml | oz
+  min_sample: 4                      # days needed in each group before a correlation is reported
+  streak_min_sessions: 2             # sessions/week for a workout "week streak"
+  hydration:
+    enabled: true                    # nudge only when you're behind pace
+    wake_start: "07:00"              # pacing runs between these; no nudges outside them
+    wake_end: "22:00"
+    threshold_ml: 400                # how far behind pace before nudging
+    cooldown_minutes: 90
+    daily_cap: 4
+  weekly_summary:
+    enabled: true
+    weekday: 6                       # 0=Mon .. 6=Sun; sent once per week on/after this day
+    hour: 18
+  goal_reminders:
+    enabled: false                   # weight-goal check-ins are off unless you opt in
+    every_days: 7
+  burnout:
+    enabled: true                    # weekly; only speaks up when signals are worth a look
+  # import_dir: "data/apollo/imports"  # folder for `import my steps` (CSV/JSON: a date column + a steps column)
+
+dionysus:
+  mood_aware: true                   # use your logged mood for movie/music picks when you give none
+
+# Surface disagreements between modules (e.g. Apollo says rest, Artemis says push).
+consensus:
+  enabled: true                      # kill switch; only appends a note on a few intents
+
+# Off-peak SQLite housekeeping (0-5am, at most weekly per file; never deletes data).
+maintenance:
+  enabled: true
+  free_ratio_threshold: 0.2          # vacuum only when >=20% of a file is free pages
+  min_interval_days: 7
+
 # LLM providers (priority order)
 llm:
   providers:

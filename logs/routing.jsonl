@@ -1,0 +1,2 @@
+{"ts": "2026-09-30T18:36:54+00:00", "request_id": "cadf18fc", "query": "hii", "intent": "chat", "confidence": 0.5, "module": "core", "script": "latin", "reason": "default core", "latency_ms": 35885.3, "source": "nlu"}
+{"ts": "2026-09-30T18:52:09+00:00", "request_id": "40e71ba5", "query": "hii", "intent": "chat", "confidence": 0.5, "module": "core", "script": "latin", "reason": "default core", "latency_ms": 22055.8, "source": "nlu"}
