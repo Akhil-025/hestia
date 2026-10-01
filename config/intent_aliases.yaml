@@ -662,6 +662,30 @@ athena_citation_graph:
   - phrase: "what cites"
     match: prefix
 
+# --- Dionysus: feedback, surprises, recharge (#150, #152, #269)
+# Short, unambiguous prefixes only. Titles and types are left to the module,
+# which falls back to the most recent recommendation when none is given.
+dionysus_more_like_this:
+  - "more like this"
+  - "more like that"
+  - "more of this"
+  - "more of that"
+
+dionysus_less_like_this:
+  - "less like this"
+  - "less like that"
+  - "less of this"
+  - "less of that"
+
+dionysus_surprise_me:
+  - "surprise me"
+
+dionysus_schedule_recharge:
+  - "schedule a recharge"
+  - "schedule recharge"
+  - "set up a recharge"
+  - "set up recharge"
+
 # --- Ares: career ranking, reviews, outcomes, simulation, playbooks (#153-#157)
 # Prefix phrases only. "remind me to revisit" is longer than set_reminder's
 # "remind me to", and longer prefixes win, so it routes here instead.

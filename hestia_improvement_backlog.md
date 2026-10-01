@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 117 ✅ + 5 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #270 and #275.
+**Tally: 121 ✅ + 7 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -21,13 +21,14 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 5. Iris | 6 of 10 |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
+| 12. Dionysus | 4 done (`#146`, `#147`, `#150`, `#152`), 1 partial (`#151`), of 7 (`#149` is counted under Apollo cross-module; `#148` needs multi-user and is not done) |
 | 13. Ares | 5 of 5 |
 | 15. Metis & Orpheus | 6 of 6 |
 | 10. Artemis | 8 done (`#122`–`#125`, `#127`–`#130`), 1 partial (`#121`), of 10 (`#126` is counted under Apollo cross-module) |
 | Apollo cross-module | 5 done (`#126`, `#149`, `#159`, `#161`, `#233`), 1 partial (`#183`) |
 | 26. Docs | 2 of 6 (`#245`, `#249`) |
 | 29. Judgment testing | 1 of 3 (`#259`) |
-| 30. Outside ideas | 2 of 20 (`#270`, `#275`) |
+| 30. Outside ideas | 2 done (`#270`, `#275`), 1 partial (`#269`), of 20 |
 
 Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs `reportlab`), #58 / #59 / #68 (need `fitz`, which was unavailable to test), #70 (not reached), #72 (needs a face-detection library), #32 (needs the knowledge graph from #31). Items it called **out of scope** as multi-week `[L]` projects: #4, #10, #16, #20, #25, #31, #33, #39, #43, #47, #51, #52, #66, #71, #77.
 
@@ -213,13 +214,13 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 12. Dionysus — Social & Leisure
 
-146. `[M]` Add an event finder for your city using a free events API or scraped local listings (HEARTH.txt spec'd, currently absent).
-147. `[Q]` Add "seen it, don't recommend again" persistence across restarts (confirm `dismiss`/`mark_seen` already does this — extend to auto-expire dismissals after a long enough time).
+146. ✅ `[M]` Add an event finder for your city using a free events API or scraped local listings (HEARTH.txt spec'd, currently absent).
+147. ✅ `[Q]` Add "seen it, don't recommend again" persistence across restarts (confirm `dismiss`/`mark_seen` already does this — extend to auto-expire dismissals after a long enough time).
 148. `[M]` Add group/friends outing coordination (shared availability + preferences) if you ever add multi-user support.
 149. ✅ `[Q]` Add mood-based recommendations — feed Apollo's current mood log into movie/music suggestions.
-150. `[M]` Add a "surprise me" mode that deliberately picks outside your recent taste cluster to counter recommendation staleness.
-151. `[Q]` Add cost estimation alongside restaurant/outing suggestions so recommendations respect a budget.
-152. `[M]` Add recurring "recharge routine" scheduling (weekend downtime blocks) integrated with Chronos.
+150. ✅ `[M]` Add a "surprise me" mode that deliberately picks outside your recent taste cluster to counter recommendation staleness.
+151. 🟡 `[Q]` Add cost estimation alongside restaurant/outing suggestions so recommendations respect a budget. *(partial: outings get per-slot estimates, a code-computed total and an over-budget note. Restaurants get a budget note and flags on results that state an over-budget price; search results are titles only, so there is no per-restaurant estimate.)*
+152. ✅ `[M]` Add recurring "recharge routine" scheduling (weekend downtime blocks) integrated with Chronos.
 
 ## 13. Ares — Strategy
 
@@ -390,7 +391,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 266. `[M]` Borrow from personal-finance apps: add "safe to spend today" style derived numbers in Pluto instead of raw totals only.
 267. `[M]` Borrow from note-taking tools (Roam/Logseq): add backlinks between Mnemosyne facts and Athena documents that reference the same concept.
 268. `[Q]` Borrow from CLI tool design: add `--help` text and examples to every module's exposed commands, not just the top-level CLI.
-269. `[M]` Borrow from recommender systems: add explicit "more like this / less like this" feedback buttons to Dionysus recommendations instead of only binary dismiss.
+269. 🟡 `[M]` Borrow from recommender systems: add explicit "more like this / less like this" feedback buttons to Dionysus recommendations instead of only binary dismiss. *(partial: done as chat commands that steer later movie/music picks; there are no buttons in the web UI.)*
 270. ✅ `[L]` Borrow from multi-agent research (AutoGPT-style critique loops): let Metis automatically critique Orpheus's output once before showing it to you, as an optional "polish pass" toggle.
 271. `[Q]` Borrow from habit-tracker apps (Streaks, Loop): add a "why did I break this streak" optional note field so the habit log captures context, not just pass/fail.
 272. `[M]` Borrow from RSS readers: add a unified "inbox" view merging new papers (Athena), new reminders (Chronos), new recommendations (Dionysus) into one triage list instead of five separate places to check.

@@ -78,6 +78,8 @@ metis_polish_text, metis_writing_session, metis_learn_style, metis_show_style_pr
 metis_clear_style_profile, metis_export_session,
 dionysus_recommend_movie, dionysus_find_restaurant, dionysus_recommend_music, dionysus_plan_outing,
 dionysus_dismiss_recommendation, dionysus_mark_seen,
+dionysus_find_events, dionysus_surprise_me, dionysus_schedule_recharge,
+dionysus_more_like_this, dionysus_less_like_this,
 pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report,
 pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, pluto_financial_advisor_chat,
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
@@ -1003,6 +1005,39 @@ User: give me an Indian meal idea
 User: suggest a cocktail
 {"intent": "dionysus_recommend_recipe", "entities": {"type": "cocktail"}, "response": "Finding a cocktail for you.", "confidence": 0.9}
 
+User: any live music events this weekend
+{"intent": "dionysus_find_events", "entities": {"category": "live music", "date": "this weekend"}, "response": "Looking for live music events this weekend.", "confidence": 0.92}
+
+User: what's happening in Bandra on Saturday
+{"intent": "dionysus_find_events", "entities": {"area": "Bandra", "date": "Saturday"}, "response": "Looking for events in Bandra on Saturday.", "confidence": 0.9}
+
+User: surprise me with a movie
+{"intent": "dionysus_surprise_me", "entities": {"type": "movie"}, "response": "Picking something outside your usual taste.", "confidence": 0.92}
+
+User: surprise me with some music I wouldn't normally listen to
+{"intent": "dionysus_surprise_me", "entities": {"type": "music"}, "response": "Finding something different for you.", "confidence": 0.9}
+
+User: plan a cheap outing for Sunday, under 1500 rupees
+{"intent": "dionysus_plan_outing", "entities": {"time": "Sunday", "budget": "under 1500"}, "response": "Planning a budget outing for Sunday.", "confidence": 0.9}
+
+User: find a mid-range Italian place in Powai
+{"intent": "dionysus_find_restaurant", "entities": {"cuisine": "Italian", "area": "Powai", "budget": "mid-range"}, "response": "Looking for mid-range Italian places in Powai.", "confidence": 0.91}
+
+User: schedule a weekend recharge, every Saturday at 5pm for 2 hours
+{"intent": "dionysus_schedule_recharge", "entities": {"schedule": "every Saturday at 5pm", "duration": "2 hours"}, "response": "Setting up your recharge routine.", "confidence": 0.9}
+
+User: more like that
+{"intent": "dionysus_more_like_this", "entities": {}, "response": "Finding more like that.", "confidence": 0.9}
+
+User: I loved Interstellar, give me more like it
+{"intent": "dionysus_more_like_this", "entities": {"title": "Interstellar", "type": "movie"}, "response": "Finding more like Interstellar.", "confidence": 0.92}
+
+User: less like this
+{"intent": "dionysus_less_like_this", "entities": {}, "response": "Noted, I'll steer away from that.", "confidence": 0.9}
+
+User: not a fan of the last song, less like that
+{"intent": "dionysus_less_like_this", "entities": {"type": "music"}, "response": "Noted, I'll steer away from that.", "confidence": 0.9}
+
 ---
 
 # ---- PLUTO (FINANCE) ----
@@ -1365,3 +1400,19 @@ STRICT RULES:
   use set_reminder for "remind me to revisit my decision/plan".
 - A request that mentions a saved "playbook" by name is ares_run_playbook;
   creating one is ares_save_playbook, never take_note or learn_fact.
+- dionysus_more_like_this / dionysus_less_like_this -> the user reacts to
+  something already recommended ("more like that", "less like this", "I loved
+  X, more like it"). dionysus_dismiss_recommendation -> "don't suggest X
+  again" with no taste statement. dionysus_mark_seen -> "I already watched X".
+  Do not swap them.
+- dionysus_surprise_me -> the user WANTS something outside their usual taste
+  ("surprise me", "something different"). A plain "recommend a movie" is
+  dionysus_recommend_movie.
+- dionysus_find_events -> things happening at a time and place (concerts,
+  shows, festivals). A single day plan is dionysus_plan_outing; a meal or a
+  restaurant is dionysus_find_restaurant.
+- dionysus_schedule_recharge -> a REPEATING downtime block ("every weekend").
+  A one-off "remind me to relax at 6pm" is set_reminder, not this.
+- A budget ("under 1500", "cheap", "mid-range") goes in the "budget" entity
+  of dionysus_plan_outing or dionysus_find_restaurant. Do not turn it into a
+  pluto_ intent unless the user is logging or asking about their own spending.

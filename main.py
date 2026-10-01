@@ -467,11 +467,17 @@ class HestiaBuilder:
         dionysus_mood_aware = bool(
             (self.config.get("dionysus") or {}).get("mood_aware", True)
         )
+        # Backlog #147: dismissals stop counting after this many days
+        # (0 = never expire).
+        dionysus_expire_days = (self.config.get("dionysus") or {}).get(
+            "dismiss_expire_days", 180
+        )
         dionysus = DionysusEngine(
             ollama_cfg=self.ollama_cfg,
             browser_agent=browser_agent,
             memory=mnemosyne,
             mood_aware=dionysus_mood_aware,
+            dismiss_expire_days=dionysus_expire_days,
         )
         _attach_apollo = getattr(dionysus, "attach_apollo", None)
         if dionysus_mood_aware and callable(_attach_apollo):
@@ -481,6 +487,10 @@ class HestiaBuilder:
         # the "what's on my plate" timeline (#86) reads Hermes + Artemis, and
         # weather-triggered suggestions (#88) can offer Dionysus's indoor plans.
         chronos.attach_sources(hermes=hermes, artemis=artemis, dionysus=dionysus)
+        # Backlog #152: recharge routines are repeating Chronos reminders.
+        _attach_chronos = getattr(dionysus, "attach_chronos", None)
+        if callable(_attach_chronos):
+            _attach_chronos(chronos)
         pluto = PlutoEngine(ollama_cfg=self.ollama_cfg)
         orchestrator.register(pluto)
         # Cross-module reads for Apollo (#126 habit/mood, #161 burnout

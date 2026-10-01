@@ -12,6 +12,85 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Dionysus: events, surprise me, budgets, recharge routines, more/less like this, expiring dismissals (#146, #147, #150, #151, #152, #269)
+
+Registry version 2.18.0 (minor: 5 intents added). New tests:
+`tests/test_dionysus_backlog.py`. Dionysus's SQLite file gains two columns on
+`recommendations` (`dismissed_at`, `feedback`) and a `recharge_routines` table;
+existing databases are upgraded in place on first start and keep their rows.
+
+### Added
+
+- **Event finder (#146).** "Any live music events this weekend?" / "what's
+  happening in Bandra on Saturday" (`dionysus_find_events`). Runs two web
+  searches (plain and BookMyShow/Insider-flavoured), drops duplicates and
+  anything you dismissed or marked seen, and shows up to 5. "Near me" uses
+  your saved location. The results are search hits, not verified listings, and
+  the reply says so. Each one is logged as type `event`, so dismiss, "seen" and
+  more/less-like-this work on events too.
+- **Dismissals expire (#147).** A dismissed title can come back after
+  `dionysus.dismiss_expire_days` (default 180; 0 turns expiry off). Dismissals
+  already in the database are dated the day of the upgrade, so none expire at
+  once. Titles you marked as watched and titles you gave "less like this" never
+  expire. Dismissals already survived restarts; that part needed no change.
+- **Surprise me (#150).** "Surprise me with a movie" / "...with some music"
+  (`dionysus_surprise_me`; movies unless you say music). The prompt lists your
+  recent picks and asks for a different genre, era or country. It does not use
+  your logged mood or your "liked" titles, and still excludes dismissed, seen
+  and disliked ones.
+- **Budgets and cost (#151).** Give a `budget` ("under 1500", "2k for two",
+  "cheap", "mid-range", "fine dining") to `plan_outing` or `find_restaurant`.
+  Outings: the model adds a rough `cost_per_person` to each slot, and the total
+  is added up in code (ranges use the upper end). The reply shows the estimate
+  and, if it is over budget, by how much. Restaurants: results that state a
+  price over your budget are flagged, and a line explains what the budget word
+  usually means. The word-to-range table (`_BUDGET_TIERS`: cheap up to 500,
+  mid 500 to 1500, premium 1500 and up, per person in rupees) is a rough
+  assumption, not live data.
+- **Recharge routine (#152).** "Schedule a weekend recharge, every Saturday at
+  5pm for 2 hours" (`dionysus_schedule_recharge`). Creates a repeating Chronos
+  reminder ("take your recharge break (2 hours): switch off work and do
+  something just for you"). With no day given it uses "every weekend at 4pm"
+  if you said weekend, otherwise `every Sunday at 4pm`; default length 2 hours.
+  Asking for the same schedule twice does not create a second reminder. Cancel
+  it with "cancel reminder recharge". Needs Chronos with its database; without
+  it the reply says so.
+- **More / less like this (#269).** "More like that" / "I loved Interstellar,
+  more like it" (`dionysus_more_like_this`) records a +1 and, for movies and
+  music, immediately fetches similar picks. "Less like this"
+  (`dionysus_less_like_this`) records a -1 and dismisses the title. With no
+  title, or "that"/"this one", it refers to the most recent recommendation.
+  Your liked and disliked titles are added to every later movie and music
+  prompt (lean toward / avoid similar), and neither kind is recommended back.
+  A title Dionysus never suggested is accepted and remembered as a taste signal.
+- Phrase aliases (no LLM call) for "more/less like this|that", "surprise me" and
+  "schedule a recharge". NLU prompt examples and routing notes for all five
+  intents.
+- Config: `dionysus.dismiss_expire_days` (validated, in
+  `laptop_config.example.yaml`). `main.py` hands Chronos to Dionysus
+  (`attach_chronos`) next to the existing Chronos/Dionysus wiring.
+
+### Changed
+
+- `plan_outing` and `find_restaurant` replies are unchanged unless a budget or
+  cost estimate applies. `DionysusDB.dismissed_titles()` takes an optional
+  `expire_days`.
+
+### Not done
+
+- #148 (group outing coordination) is conditional on multi-user support, which
+  doesn't exist.
+- #269 is chat commands only. There are no buttons in the web UI, which has no
+  Dionysus view to put them in.
+- #151 restaurants: search results are titles only, so there is no
+  per-restaurant price estimate. Outing costs are the model's estimates.
+- #152 is a repeating reminder, not a blocked-out calendar slot; Chronos has no
+  event-with-duration concept, so the length lives in the reminder text.
+- #243 (focus mode) and #272 (unified inbox) are cross-module and were left
+  alone.
+
+---
+
 ## [Unreleased] — Ares: career ranking, review reminders, outcome tracking, Monte Carlo, playbooks (#153-#157)
 
 Registry version 2.17.0 (minor: 9 intents added). New tests:

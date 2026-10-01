@@ -142,6 +142,7 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("apollo.burnout.enabled", (bool,), False),
     ("dionysus", (dict,), False),
     ("dionysus.mood_aware", (bool,), False),
+    ("dionysus.dismiss_expire_days", (int, float), False),
     ("consensus", (dict,), False),
     ("consensus.enabled", (bool,), False),
     ("consensus.intents", (list,), False),

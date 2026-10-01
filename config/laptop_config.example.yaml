@@ -135,6 +135,7 @@ apollo:
 
 dionysus:
   mood_aware: true                   # use your logged mood for movie/music picks when you give none
+  dismiss_expire_days: 180           # a dismissed title can come back after this many days (0 = never)
 
 artemis:
   # timezone: "Asia/Kolkata"         # clock for focus sessions and "usually done by" times; defaults to chronos.timezone

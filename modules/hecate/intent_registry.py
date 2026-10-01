@@ -323,6 +323,12 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "dionysus_dismiss_recommendation": "dionysus",
     "dionysus_mark_seen": "dionysus",
     "dionysus_recommend_recipe": "dionysus",
+    # Backlog #146, #150, #152, #269
+    "dionysus_find_events": "dionysus",
+    "dionysus_surprise_me": "dionysus",
+    "dionysus_schedule_recharge": "dionysus",
+    "dionysus_more_like_this": "dionysus",
+    "dionysus_less_like_this": "dionysus",
 
     # --- Pluto (personal finance) ---
     "pluto_log_expense": "pluto",
@@ -381,7 +387,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.17.0"
+REGISTRY_VERSION: str = "2.18.0"
 
 
 def registry_fingerprint() -> str:
