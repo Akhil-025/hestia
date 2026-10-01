@@ -331,7 +331,7 @@ class TestImageVectorIndexUpsertQueryDelete:
 class TestImageVectorIndexFailureHandling:
     def test_init_failure_disables_index_permanently(self, chroma_dir):
         index = ImageVectorIndex(chroma_dir)
-        with patch("modules.iris.embeddings.chromadb.PersistentClient",
+        with patch("chromadb.PersistentClient",
                    side_effect=RuntimeError("disk full")):
             assert index.available is False
         assert index._init_failed is True
@@ -407,6 +407,7 @@ class TestAnalyserEmbedIntegration:
         index = ImageVectorIndex(chroma_dir)
         analyser = IrisAnalyser(iris_db, "127.0.0.1", 11434, embedder=empty_embedder, vector_index=index)
         analyser._embed_and_index(1, sample_image)
+        assert index.available  # force lazy init so _collection exists
         assert index._collection.count() == 0
 
     def test_analyse_file_runs_embedding_step_independent_of_ollama_result(
@@ -465,7 +466,7 @@ class TestIrisEngineSemanticSearch:
 
         file_id = engine.db.insert_file("/photos/dog.jpg", "h1", "p1", 100, "image", "image/jpeg")
         engine.db.update_file_analysis(file_id, "A dog running", '["dog"]', None, "happy", False, None)
-        vector = embedder.embed_image(Path(__file__))  # any deterministic vector
+        vector = embedder.embed_text("a dog running on a beach")  # any deterministic vector
         index.upsert(file_id, vector)
 
         matches = engine._semantic_matches("some query text", 10)

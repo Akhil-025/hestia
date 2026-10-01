@@ -30,6 +30,7 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 
 from modules.athena.config import get_config
+from modules.athena.progress import IngestionProgress
 from modules.athena.pdf_processor import (
     PDFProcessor,
     get_organization_structure,
@@ -258,6 +259,10 @@ class MergedLocalRAG:
         )
 
         self._chroma_write_lock = threading.Lock()
+        # backlog #70: live progress of the current/last ingestion run, and a
+        # lock so two ingests can't interleave and corrupt each other's counts.
+        self.progress = IngestionProgress()
+        self._ingest_lock = threading.Lock()
         self._bm25_lock = threading.RLock()
         self._bm25 = _BM25State()
 
@@ -465,19 +470,34 @@ class MergedLocalRAG:
             unchanged/failed breakdown (backlog #57, #61).
         """
         resolved = data_dir or str(get_config().data_dir)
+        with self._ingest_lock:
+            return self._ingest_directory_locked(resolved, rebuild_bm25)
+
+    def _ingest_directory_locked(self, resolved: str, rebuild_bm25: bool) -> dict[str, Any]:
         files = get_supported_files(resolved)
         stats = IngestionStats()
 
         if not files:
             logger.warning("No supported files found in %s.", resolved)
+            self.progress.start(0)
+            self.progress.finish(stats.to_dict())
             return stats.to_dict()
 
-        for fi in files:
-            n, status = self.ingest_file(fi, rebuild_bm25=False)
-            stats.record(fi, n, status)
+        self.progress.start(len(files))
+        try:
+            for fi in files:
+                name = fi.get("file_name") or fi.get("full_path", "")
+                self.progress.begin_file(name)
+                n, status = self.ingest_file(fi, rebuild_bm25=False)
+                stats.record(fi, n, status)
+                self.progress.file_done(name, status)
 
-        if self.enable_bm25 and rebuild_bm25:
-            self._rebuild_bm25()
+            if self.enable_bm25 and rebuild_bm25:
+                self._rebuild_bm25()
+        except Exception as exc:
+            self.progress.finish(stats.to_dict(), error=type(exc).__name__)
+            raise
+        self.progress.finish(stats.to_dict())
 
         logger.info(
             "Directory ingestion complete: %d chunk(s) from %d file(s) "
@@ -515,6 +535,66 @@ class MergedLocalRAG:
             })
             entry["chunk_count"] += 1
         return sorted(by_file.values(), key=lambda f: f["file_name"])
+
+    def list_document_sources(self, subject: Optional[str] = None) -> list[dict[str, Any]]:
+        """
+        Distinct ingested documents WITH their path on disk (file_name,
+        file_path, subject, module), optionally scoped to one subject.
+
+        ``list_files`` keys on (file_name, subject) and does not say where the
+        file lives. The citation graph (#60) has to re-read each source file,
+        because the indexed chunks have lost line breaks and URLs, so it needs
+        the path. Keyed by path, so two files that share a name in different
+        folders stay two documents.
+        """
+        try:
+            where = {"subject": {"$eq": subject}} if subject else None
+            raw = self._collection.get(include=["metadatas"], where=where)
+            md_list = _unwrap(raw.get("metadatas", []))
+        except Exception:
+            logger.exception("list_document_sources failed.")
+            return []
+
+        by_key: dict[str, dict[str, Any]] = {}
+        for md in md_list:
+            if not md or not md.get("file_name"):
+                continue
+            path = md.get("file_path") or ""
+            key = path or f"{md.get('subject', 'unknown')}::{md.get('file_name')}"
+            by_key.setdefault(key, {
+                "file_name": md.get("file_name"),
+                "file_path": path,
+                "subject": md.get("subject", "unknown"),
+                "module": md.get("module", "unknown"),
+            })
+        return sorted(by_key.values(), key=lambda f: (f["file_name"], f["file_path"]))
+
+    def list_document_sources(self, subject: Optional[str] = None) -> list[dict[str, Any]]:
+        """
+        Distinct ingested files with the path they were read from (file_name,
+        subject, module, file_path). The citation graph (#60) needs the path
+        because reference lists are read from the ORIGINAL file: ingestion
+        strips URLs/DOIs and flattens line breaks, so the index cannot be used.
+        """
+        try:
+            where = {"subject": {"$eq": subject}} if subject else None
+            raw = self._collection.get(include=["metadatas"], where=where)
+            md_list = _unwrap(raw.get("metadatas", []))
+        except Exception:
+            logger.exception("list_document_sources failed.")
+            return []
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for md in md_list:
+            if not md or not md.get("file_name"):
+                continue
+            key = (md.get("file_name"), md.get("subject", "unknown"))
+            entry = out.setdefault(key, {
+                "file_name": md.get("file_name"), "subject": md.get("subject", "unknown"),
+                "module": md.get("module", "unknown"), "file_path": md.get("file_path") or "",
+            })
+            if not entry["file_path"] and md.get("file_path"):
+                entry["file_path"] = md["file_path"]
+        return sorted(out.values(), key=lambda f: (f["subject"], f["file_name"]))
 
     def get_chunks_for_file(
         self, file_name: str, subject: Optional[str] = None, limit: int = 30,
@@ -623,6 +703,55 @@ class MergedLocalRAG:
             response = self._semantic_search(query, n, subject_filter, module_filter)
 
         return self._apply_feedback_weighting(response)
+
+    def search_by_content_type(
+        self, query: str, content_type: str, n_results: int = 5,
+    ) -> SearchResponse:
+        """
+        Search only table or figure chunks (backlog #58/#59), for requests
+        like "find the graph that shows X". Semantic match inside the
+        filtered set, blended with how many of the query's content words the
+        chunk literally contains (captions are short, so exact words are a
+        strong signal the embedding alone can blur).
+        """
+        from modules.athena.pdf_structures import lexical_overlap
+
+        if not query or not query.strip():
+            return _empty_response(query)
+        n = _clamp(n_results, 1, _MAX_SEARCH_RESULTS)
+        try:
+            total = self._collection.count()
+            if total == 0:
+                return _empty_response(query)
+            raw = self._collection.query(
+                query_embeddings=self._embed([query]),
+                n_results=min(n * 4, total),
+                where={"content_type": content_type},
+                include=["documents", "metadatas", "distances"],
+            )
+            docs = _unwrap(raw.get("documents", []))
+            metas = _unwrap(raw.get("metadatas", []))
+            distances = _unwrap(raw.get("distances", []))
+            sem = _distances_to_scores(distances or [0.0] * len(docs))
+            results = []
+            for doc, meta, s in zip(docs, metas, sem):
+                blended = 0.6 * s + 0.4 * lexical_overlap(query, doc)
+                results.append(SearchResult(
+                    document=doc, metadata=meta, score=blended, semantic_score=s,
+                ))
+            results.sort(key=lambda r: r.score, reverse=True)
+            return SearchResponse(results=results[:n], query=query)
+        except Exception:
+            logger.exception("Content-type search failed.")
+            return _empty_response(query)
+
+    def has_content_type(self, content_type: str) -> bool:
+        """True if at least one chunk of that type is indexed."""
+        try:
+            got = self._collection.get(where={"content_type": content_type}, limit=1)
+            return bool(got.get("ids"))
+        except Exception:
+            return False
 
     def mark_feedback(self, chunk_metadata: dict[str, Any], relevant: bool) -> None:
         """
@@ -1135,7 +1264,15 @@ def _file_signature(file_path: str) -> str:
     """
     import os
     st = os.stat(file_path)
-    return f"{int(st.st_mtime)}:{st.st_size}"
+    sig = f"{int(st.st_mtime)}:{st.st_size}"
+    # backlog #58/#59: PDFs ingested before table/figure extraction existed
+    # have no such chunks. Tagging the signature makes each such PDF look
+    # "changed" exactly once, so it is re-processed and gains them.
+    if file_path.lower().endswith(".pdf"):
+        cfg = get_config()
+        if getattr(cfg, "extract_tables", True) or getattr(cfg, "index_figure_captions", True):
+            sig += ":s1"
+    return sig
 
 
 def _prepare_batch(
@@ -1163,6 +1300,8 @@ def _prepare_batch(
                 "page_number": chunk.get("page_number") or 0,
                 "chunk_number": chunk.get("chunk_number") or 0,
                 "total_pages": chunk.get("total_pages") or 0,
+                # backlog #58/#59: "text" (default), "table" or "figure".
+                "content_type": chunk.get("content_type") or "text",
                 # backlog #61 — read back by _get_ingested_signature on the
                 # next ingestion run to detect whether this file changed.
                 "file_signature": file_signature,

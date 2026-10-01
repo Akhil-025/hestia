@@ -10,6 +10,11 @@ engine.py (already ~1200 lines) as a mixin that ``MnemosyneEngine`` inherits:
   #39      Obsidian vault sync      obsidian_sync
   #43      episodic clustering      recall_episode
   #47      arXiv monitoring         watch_papers
+  #36      stale-fact review        review_stale_facts
+  #44      memory export            export_memory      (+ /api/mnemosyne/export)
+  #45      fact importance          set_fact_importance
+  #48      dated recall             recall_on_date
+  #49      memory dashboard         get_memory_stats   (+ /api/mnemosyne/dashboard)
 
 Every component is constructed defensively: if one fails to open, Mnemosyne
 still starts and that feature answers with a plain "unavailable" message,
@@ -35,6 +40,10 @@ EXTENSION_INTENTS: frozenset[str] = frozenset({
     "add_study_fact", "review_study",
     "graph_connections", "recall_episode",
     "obsidian_sync", "watch_papers",
+    # Memory management (#36, #44, #45, #48, #49): engine methods that had
+    # tests but no user path.
+    "export_memory", "recall_on_date", "get_memory_stats",
+    "set_fact_importance", "review_stale_facts",
 })
 
 _END_WORDS = frozenset({"quit", "exit", "end", "end quiz", "stop quiz", "finish", "done", "end review"})
@@ -65,6 +74,37 @@ def _ask(question: str, slot_entities: dict) -> dict:
 
 def _readable(key: str) -> str:
     return (key or "").replace("_", " ").strip()
+
+
+def _n(count: int, singular: str, plural: Optional[str] = None) -> str:
+    """'1 fact' / '3 facts' (or an explicit plural, e.g. 'summaries')."""
+    count = int(count or 0)
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def _human_bytes(n: float) -> str:
+    n = float(n or 0)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{int(n)} bytes" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def _ago(ts) -> str:
+    """'3 days ago' / '5 weeks ago' / '8 months ago' for a stored timestamp."""
+    try:
+        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return "a while ago"
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    days = max((datetime.now(timezone.utc) - d).days, 0)
+    if days >= 60:
+        return f"{days // 30} months ago"
+    if days >= 14:
+        return f"{days // 7} weeks ago"
+    return f"{days} days ago"
 
 
 def _text(entities: dict, *names: str) -> str:
@@ -210,6 +250,16 @@ class MnemosyneExtensionsMixin:
             return self._obsidian_sync_intent()
         if intent == "watch_papers":
             return self._papers_intent(entities, raw)
+        if intent == "export_memory":
+            return self._export_intent(entities, raw)
+        if intent == "recall_on_date":
+            return self._dated_recall_intent(entities, raw)
+        if intent == "get_memory_stats":
+            return self._memory_stats_intent()
+        if intent == "set_fact_importance":
+            return self._importance_intent(entities, raw)
+        if intent == "review_stale_facts":
+            return self._stale_intent(entities, raw)
         return None
 
     # ==================================================================
@@ -783,6 +833,210 @@ class MnemosyneExtensionsMixin:
         return result
 
     # ==================================================================
+    # Memory management intents (#36, #44, #45, #48, #49)
+    # ==================================================================
+
+    def _export_intent(self, entities: dict, raw: str) -> dict:
+        """#44 - write a timestamped backup file and say where it is."""
+        low = (raw or "").lower()
+        fmt = _text(entities, "format").lower()
+        if fmt not in ("json", "markdown", "md"):
+            fmt = "markdown" if re.search(r"\b(markdown|md|readable|text)\b", low) else "json"
+        try:
+            info = self.export_memory_to_file(fmt)
+        except Exception:
+            logger.exception("Memory export failed.")
+            return _miss("I couldn't write the memory export.")
+        return _ok(
+            f"Exported {_n(info['facts'], 'fact')}, {_n(info['summaries'], 'summary', 'summaries')} "
+            f"and {_n(info['goals'], 'goal')} to {info['path']}.", data=info)
+
+    def _dated_recall_intent(self, entities: dict, raw: str) -> dict:
+        """#48 - "what did I say last Tuesday": a calendar lookup, not semantic search."""
+        from .dates import resolve_range
+
+        rng = None
+        for candidate in (_text(entities, "date", "when", "day", "answer"), raw):
+            if candidate:
+                rng = resolve_range(candidate)
+                if rng:
+                    break
+        if rng is None:
+            return _ask("Which day do you mean? For example: yesterday, last Tuesday, or 12 March.",
+                        {k: v for k, v in entities.items() if k != "answer"})
+        data = {"start": rng.start.isoformat(), "end": rng.end.isoformat()}
+        text = self.recall_between(rng.start, rng.end)
+        if not text:
+            return _ok(f"I don't have anything recorded for {rng.label}.", confidence=0.5, data=data)
+        return _ok(f"{rng.label[:1].upper() + rng.label[1:]}: {text}", data=data)
+
+    def _memory_stats_intent(self) -> dict:
+        """#49 - the size/cost dashboard in one sentence."""
+        d = self.get_memory_dashboard()
+        parts = (
+            f"I'm holding {_n(d.get('facts', 0), 'fact')}, "
+            f"{_n(d.get('summaries', 0), 'summary', 'summaries')}, "
+            f"{_n(d.get('goals', 0), 'active goal')} and "
+            f"{_n(d.get('interactions', 0), 'logged interaction')}"
+        )
+        if d.get("stale_facts"):
+            parts += f", {d['stale_facts']} of the facts flagged for review"
+        parts += f". The database takes up {_human_bytes(d.get('db_size_bytes', 0))}"
+        if d.get("embedding_count") is not None:
+            parts += f" and there are {_n(d['embedding_count'], 'embedding')}"
+        return _ok(parts + ".", data=d)
+
+    # -- importance (#45) ----------------------------------------------
+
+    _IMPORTANCE_LEVELS: list = [(re.compile(p, re.I), v) for p, v in [
+        (r"\b(?:critical|crucial|essential|vital|top priority|extremely important|most important|never forget)\b", 1.0),
+        (r"\b(?:very important|really important|highly important|super important|high priority)\b", 0.9),
+        (r"\b(?:not important|unimportant|low priority|least important|doesn'?t matter|does not matter|minor)\b", 0.2),
+        (r"\b(?:somewhat important|moderately important|medium priority)\b", 0.65),
+        (r"\b(?:important|a priority|priority|matters)\b", 0.85),
+        (r"\b(?:normal|default|average|reset)\b", 0.5),
+    ]]
+    _IMPORTANCE_FILLER = frozenset(
+        "mark set flag make treat that this my the fact facts as is are to be a an very really highly "
+        "extremely super somewhat please importance important priority it its it's what i told you about "
+        "remember keep in mind for".split())
+
+    def _importance_value(self, entities: dict, raw: str) -> Optional[float]:
+        v = entities.get("importance")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return max(0.0, min(1.0, float(v) / 10.0 if v > 1 else float(v)))
+        if isinstance(v, str) and v.strip():
+            word = {"critical": 1.0, "high": 0.9, "medium": 0.6, "low": 0.2, "normal": 0.5}.get(v.strip().lower())
+            if word is not None:
+                return word
+            try:
+                f = float(v)
+                return max(0.0, min(1.0, f / 10.0 if f > 1 else f))
+            except ValueError:
+                pass
+        for pat, level in self._IMPORTANCE_LEVELS:
+            if pat.search(f"{v or ''} {raw or ''}"):
+                return level
+        return None
+
+    def _importance_key_text(self, entities: dict, raw: str) -> str:
+        explicit = _text(entities, "key", "fact", "topic", "answer")
+        if explicit:
+            return explicit
+        low = (raw or "").lower()
+        for pat, _ in self._IMPORTANCE_LEVELS:
+            low = pat.sub(" ", low)
+        return " ".join(w for w in re.findall(r"[a-z0-9']+", low) if w not in self._IMPORTANCE_FILLER)
+
+    def _resolve_fact_key(self, text: str) -> tuple:
+        """(key, []) for one clear match, (None, candidates) if ambiguous, (None, []) if none."""
+        import difflib
+
+        norm = "_".join((text or "").lower().replace("_", " ").split())
+        if not norm:
+            return None, []
+        if self.db.get_fact(norm) is not None:
+            return norm, []
+        hits = self.db.search_fact_keys(norm)
+        if len(hits) == 1:
+            return hits[0], []
+        if len(hits) > 1:
+            return None, hits[:5]
+        keys = [f["key"] for f in self.db.get_all_facts(limit=1000)]
+        close = difflib.get_close_matches(norm, keys, n=3, cutoff=0.6)
+        return (close[0], []) if len(close) == 1 else (None, close)
+
+    def _importance_intent(self, entities: dict, raw: str) -> dict:
+        """#45 - explicit emphasis: "mark my allergy as very important"."""
+        base = {k: v for k, v in entities.items() if k != "answer"}
+        level = self._importance_value(entities, raw)
+        if level is None:
+            return _ask("How important is it - critical, high, or low?", base)
+        key_text = self._importance_key_text(entities, raw)
+        if not key_text:
+            return _ask("Which fact should I mark?", {**base, "importance": level})
+        key, candidates = self._resolve_fact_key(key_text)
+        if key is None:
+            if candidates:
+                return _ask("Which one: " + ", ".join(_readable(c) for c in candidates) + "?",
+                            {**{k: v for k, v in base.items() if k != "key"}, "importance": level})
+            return _miss(f"I couldn't find a fact called {key_text}.")
+        if not self.set_fact_importance(key, level):
+            return _miss(f"I couldn't find a fact called {key_text}.")
+        label = ("critical" if level >= 0.95 else "high importance" if level >= 0.8
+                 else "low importance" if level <= 0.3 else "normal importance" if level == 0.5
+                 else "medium importance")
+        tail = " It will rank higher when I decide what to keep in mind." if level > 0.5 else ""
+        return _ok(f"Marked your {_readable(key)} as {label}.{tail}",
+                   data={"key": key, "importance": level})
+
+    # -- stale facts (#36) ---------------------------------------------
+
+    def _stale_intent(self, entities: dict, raw: str) -> dict:
+        """#36 - list facts the decay job flagged, or keep them."""
+        import difflib
+
+        low = (raw or "").lower()
+        try:
+            self.run_decay_check()      # refresh so the list isn't a day behind
+        except Exception:
+            logger.exception("On-demand decay check failed; listing what is already flagged.")
+        flagged = self.get_stale_facts_for_review(limit=50)
+        action = _text(entities, "action").lower() or ("keep" if re.search(r"\bkeep\b", low) else "list")
+
+        if not flagged:
+            return _ok("Nothing is flagged - everything you've told me has come up recently.",
+                       confidence=0.8, data={"stale": []})
+
+        if action == "keep":
+            if re.search(r"\b(?:all|everything|them|these)\b", low) or _text(entities, "scope") == "all":
+                n = self.db.clear_stale(None)
+                return _ok(f"Okay, keeping all {n}. I won't flag them again for a while.", data={"kept": n})
+            target = _text(entities, "key", "fact", "topic")
+            if not target:
+                target = re.sub(r"\b(?:keep|my|the|fact|facts|memory|memories|stale|old|flagged|"
+                                r"outdated|that|this|one|please)\b", " ", low)
+                target = " ".join(re.findall(r"[a-z0-9']+", target))
+            keys = [f["key"] for f in flagged]
+            match = None
+            if not target and len(keys) == 1:
+                match = keys[0]
+            elif target:
+                norm = "_".join(target.split())
+                match = next((k for k in keys if k == norm), None) or next(
+                    (k for k in keys if norm in k or k in norm), None)
+                if match is None:
+                    close = difflib.get_close_matches(norm, keys, n=1, cutoff=0.7)
+                    match = close[0] if close else None
+            if match is None:
+                return _ok("Which one should I keep? Flagged: "
+                           + ", ".join(_readable(k) for k in keys[:10]) + ".", confidence=0.6,
+                           data={"stale": keys})
+            self.db.clear_stale([match])
+            return _ok(f"Keeping your {_readable(match)}.", data={"kept": match})
+
+        items = "; ".join(
+            f"your {_readable(f['key'])} ({str(f['value'])[:40]}, last used {_ago(f.get('last_accessed'))})"
+            for f in flagged[:10])
+        more = f" and {len(flagged) - 10} more" if len(flagged) > 10 else ""
+        return _ok(
+            f"{_n(len(flagged), 'remembered fact')} haven't come up in a long while: {items}{more}. "
+            "Say 'keep all stale facts' to keep them, 'keep' and a name for one, or 'forget' and a "
+            "name to remove it.", data={"stale": [f["key"] for f in flagged]})
+
+    def get_stale_brief(self) -> str:
+        """One spoken line for the morning brief, or "" when nothing is flagged."""
+        try:
+            n = self.db.count_stale_facts()
+        except Exception:
+            logger.exception("get_stale_brief failed.")
+            return ""
+        if n <= 0:
+            return ""
+        return (f"{_n(n, 'remembered fact')} {'hasn' if n == 1 else 'haven'}'t come up in a long while. "
+                f"Say 'review stale facts' to go through {'them' if n != 1 else 'it'}.")
+
+    # ==================================================================
     # Background jobs (called from the heartbeat tick)
     # ==================================================================
 
@@ -819,7 +1073,44 @@ class MnemosyneExtensionsMixin:
                 ran["papers"] = len(self.check_papers().get("new", []))
             except Exception:
                 logger.exception("Background paper check failed.")
+        # #36: flag facts nobody has referenced for months. Flags only - never
+        # deletes; the morning brief and review_stale_facts tell the person.
+        if due("decay", 24 * 3600):
+            try:
+                ran["decay"] = len(self.run_decay_check())
+            except Exception:
+                logger.exception("Background decay check failed.")
+        # #40: the weekly / monthly digest.
+        for period in ("weekly", "monthly"):
+            if self._digest_job_ready(period, now):
+                try:
+                    ran[f"digest_{period}"] = self.generate_periodic_digest(period) is not None
+                except Exception:
+                    logger.exception("Background %s digest failed.", period)
         return ran
+
+    def _digest_job_ready(self, period: str, now_ts: float) -> bool:
+        """
+        Try the *period* digest this tick? Yes when one is owed (persisted -
+        see digest_due) AND it is off-peak (local 0-6am) or already a day
+        overdue, so a laptop never on at 3am still gets its digest. Attempts
+        are six hours apart so a failing LLM isn't retried every tick.
+        """
+        key = f"digest_{period}"
+        if now_ts - self._job_last.get(key, 0.0) < 6 * 3600:
+            return False
+        when = datetime.fromtimestamp(now_ts, timezone.utc)
+        try:
+            if not self.digest_due(period, when):
+                return False
+            off_peak = datetime.fromtimestamp(now_ts).hour < 6
+            if not off_peak and not self.digest_due(period, when - timedelta(days=1)):
+                return False
+        except Exception:
+            logger.exception("Digest readiness check failed for %s.", period)
+            return False
+        self._job_last[key] = now_ts
+        return True
 
     def _papers_due(self, now_ts: float) -> bool:
         interests = self.paper_monitor.list_interests()

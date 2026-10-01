@@ -132,6 +132,12 @@ INTENT_MODULE_MAP: dict[str, str] = {
     # backlog #39 / #47 — opt-in Obsidian sync and arXiv monitoring.
     "obsidian_sync": "mnemosyne",
     "watch_papers": "mnemosyne",
+    # backlog #36 / #44 / #45 / #48 / #49 - memory management.
+    "review_stale_facts": "mnemosyne",
+    "export_memory": "mnemosyne",
+    "set_fact_importance": "mnemosyne",
+    "recall_on_date": "mnemosyne",
+    "get_memory_stats": "mnemosyne",
 
     # --- Chronos (time / date / weather / reminders) ---
     "get_time": "chronos",
@@ -175,6 +181,10 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "athena_get_citations": "athena",
     # backlog #69 — translate an already-ingested document.
     "athena_translate_document": "athena",
+    # backlog #53, #51, #52, #66 — report export (pdf/latex/pptx) and methodology.
+    "athena_generate_report": "athena",
+    "athena_methodology": "athena",
+    "athena_citation_graph": "athena",
 
     # --- Iris (media search & ingestion) ---
     "iris_search": "iris",
@@ -348,7 +358,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.11.0"
+REGISTRY_VERSION: str = "2.14.0"
 
 
 def registry_fingerprint() -> str:

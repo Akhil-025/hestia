@@ -459,3 +459,17 @@ recoverable instead of silent.
    its circuit breaker is open — check `orch.circuit_breaker_status` or
    ask "module status"; it'll self-heal after the cooldown, or check the
    module's own logs for what's actually failing.
+- **The citation graph reads the ORIGINAL files, not the chunk index.**
+  Ingestion runs `clean_text`, which deletes URLs (so every DOI link) and
+  flattens line breaks, so a reference list cannot be recovered from chunks.
+  `CitationGraphService` takes paths from `list_document_sources()` and parses
+  with `modules/athena/bibliography.py`. Don't "simplify" it to read chunks.
+- **A citation link needs evidence (DOI, arXiv id, or the document's own title
+  in the entry).** Never link on author + year, and never turn an ambiguous
+  match into a coin-flip. If you loosen `match_references`, bump
+  `bibliography.PARSER_VERSION` so cached parses are redone.
+- **A document's identity comes from text ABOVE its reference list.** A short
+  paper's own references used to supply its arXiv id; `text_before_references`
+  exists to stop that.
+- **The graph service imports `pymupdf`, not `fitz`,** because
+  `tests/test_athena.py` can put a stub `fitz` first on `sys.path`.

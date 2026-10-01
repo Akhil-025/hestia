@@ -10,14 +10,14 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 95 ✅ + 4 🟡 out of 280.** Every mark falls in sections 1–5, 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #126, #149, #159, #161, #183, #233, #259, #270 and #275.
+**Tally: 104 ✅ + 4 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #126, #149, #159, #161, #183, #233, #259, #270 and #275.
 
 | Section | Done |
 |---|---|
 | 1. Core Architecture | 16 of 20 (the 4 `[L]` items are out of scope) |
 | 2. NLU | 9 of 10 (`#25` `[L]` out of scope) |
 | 3. Mnemosyne | 19 done, 1 partial (`#47`), of 20 |
-| 4. Athena | 11 of 20 |
+| 4. Athena | 20 of 20 |
 | 5. Iris | 6 of 10 |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
@@ -27,7 +27,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 29. Judgment testing | 1 of 3 (`#259`) |
 | 30. Outside ideas | 2 of 20 (`#270`, `#275`) |
 
-Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs `reportlab`), #58 / #59 / #68 (need `fitz`, which was unavailable to test), #70 (not reached), #72 (needs a face-detection library), #32 (needs the knowledge graph from #31). Items it called **out of scope** as multi-week `[L]` projects: #4, #10, #16, #20, #25, #31, #33, #39, #43, #47, #51, #52, #60, #66, #71, #77.
+Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs `reportlab`), #58 / #59 / #68 (need `fitz`, which was unavailable to test), #70 (not reached), #72 (needs a face-detection library), #32 (needs the knowledge graph from #31). Items it called **out of scope** as multi-week `[L]` projects: #4, #10, #16, #20, #25, #31, #33, #39, #43, #47, #51, #52, #66, #71, #77.
 
 ---
 
@@ -74,51 +74,51 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 33. ✅ `[L]` Add spaced-repetition scheduling (SM-2 algorithm) for facts tagged as "study material," with due-today surfacing in the morning brief. — *`modules/mnemosyne/spaced_repetition.py`; intents `add_study_fact` and `review_study`; the morning brief speaks the due count.*
 34. ✅ `[M]` Add quiz generation from ingested notes/documents (pull N facts, generate multiple-choice via Ollama, track score history). — *Engine in `core/quiz_engine.py`; wired via the `start_quiz` / `answer_quiz` intents as a multi-turn slot-fill conversation, sourcing questions from Athena, Obsidian notes and facts. Choices are now shuffled (small models favour "A").*
 35. ✅ `[M]` Add "strength/weakness map" per subject by tracking quiz performance over time. — *`quiz_performance` intent ranks subjects weakest-first with an improving/declining trend once there are enough attempts.*
-36. ✅ `[Q]` Add fact expiry/decay — facts not reinforced or referenced in N months get flagged for review instead of living forever.
+36. ✅ `[Q]` Add fact expiry/decay — facts not reinforced or referenced in N months get flagged for review instead of living forever. — *Wired: daily decay job in `run_background_jobs`; `review_stale_facts` intent lists/keeps flagged facts; the morning brief and recall now mention them.*
 37. ✅ `[M]` Add contradiction detection: when learning a new fact, check semantic similarity against existing facts and flag conflicts ("you said X before, now Y — update?").
-38. ✅ `[M]` Add per-fact confidence/source tracking (user-stated vs. inferred vs. imported) so recall can express uncertainty appropriately.
+38. ✅ `[M]` Add per-fact confidence/source tracking (user-stated vs. inferred vs. imported) so recall can express uncertainty appropriately. — *Wired: confidence is stored (by source, or lowered when you hedge, "I think...") and recall says when it is unsure.*
 39. ✅ `[L]` Add Obsidian vault sync: watch a configured vault folder, ingest markdown notes with wikilink-aware chunking, and write back structured notes Hestia generates. — *`modules/mnemosyne/obsidian.py`; OFF by default. Write-back is a separate opt-in, only creates new files in a `Hestia/` subfolder and never edits existing notes.*
-40. ✅ `[M]` Add weekly/monthly auto-summarization of interactions (you have `add_summary`/`get_recent_summaries` — wire this into an actual heartbeat-triggered digest).
+40. ✅ `[M]` Add weekly/monthly auto-summarization of interactions (you have `add_summary`/`get_recent_summaries` — wire this into an actual heartbeat-triggered digest). — *Wired: `run_background_jobs` builds the weekly/monthly digest; due-state is persisted in the DB, runs off-peak or when a day overdue.*
 41. ✅ `[Q]` Add a "forget everything about X" bulk-delete flow beyond single-fact `forget_fact`.
 42. ✅ `[M]` Add semantic deduplication on ingest — don't store near-identical facts twice, merge them with a reference count.
 43. ✅ `[L]` Add episodic memory clustering: group related interactions into "episodes" (e.g. all messages about a specific project) for better long-range recall. — *`modules/mnemosyne/episodes.py`; online clustering (bag-of-words by default, embeddings optional); `recall_episode` intent.*
-44. ✅ `[M]` Expose a "memory export" (JSON/Markdown dump of all facts+summaries) for backup and portability, independent of the sync API.
-45. ✅ `[M]` Add importance scoring so `get_top_facts_for_context` weighs recency, frequency of reference, and explicit user emphasis, not just recency.
+44. ✅ `[M]` Expose a "memory export" (JSON/Markdown dump of all facts+summaries) for backup and portability, independent of the sync API. — *Wired: `export_memory` intent, `GET /api/mnemosyne/export`, `scripts/export_memory.py`; no 1,000-row cap.*
+45. ✅ `[M]` Add importance scoring so `get_top_facts_for_context` weighs recency, frequency of reference, and explicit user emphasis, not just recency. — *Wired: `set_fact_importance` intent ("mark my allergy as very important").*
 46. ✅ `[Q]` Add unit tests around embedding drift — if you ever change embedding models, verify old vectors are re-embedded, not silently stale.
 47. 🟡 `[L]` Add arXiv/IEEE monitoring: scheduled fetch of new papers matching saved interest queries, auto-summarized and queued in Athena. — *arXiv is done (`paper_monitor.py`, `watch_papers` intent, daily check, files land in Athena's documents folder for ingest). IEEE is NOT: it needs an API key and an unverifiable response format; the parser is per-source so an adapter can be added. Live fetching has not been run (no network in the build environment); parsing is tested on a sample Atom feed.*
-48. ✅ `[M]` Add "recall what I said on X date" as a first-class dated query, not just semantic search (you may already partially have this — confirm date-range filtering works on ChromaDB metadata).
-49. ✅ `[Q]` Add a memory size/cost dashboard (# facts, DB size, embedding count) surfaced via `get_memory_stats`.
+48. ✅ `[M]` Add "recall what I said on X date" as a first-class dated query, not just semantic search (you may already partially have this — confirm date-range filtering works on ChromaDB metadata). — *Wired: `recall_on_date` intent over the local calendar day/range (`modules/mnemosyne/dates.py`).*
+49. ✅ `[Q]` Add a memory size/cost dashboard (# facts, DB size, embedding count) surfaced via `get_memory_stats`. — *Wired: `get_memory_stats` intent and `GET /api/mnemosyne/dashboard`.*
 50. ✅ `[M]` Add memory provenance in responses — when Hestia recalls something, cite roughly when/how it learned it ("you mentioned this on Tuesday").
 
 ## 4. Athena — Research & Documents
 
-51. `[L]` Add document *generation*, not just ingestion: LaTeX report scaffolding from a set of notes/citations.
-52. `[L]` Add PowerPoint generation via python-pptx from a document/summary (you already parse pptx — mirror it for output).
-53. `[M]` Add PDF export of any generated report/summary.
+51. ✅ `[L]` Add document *generation*, not just ingestion: LaTeX report scaffolding from a set of notes/citations. — *`generation.py` `render_latex`: a `.tex` plus a `.bib`; compiles with pdflatex in the tests. Scaffold, not a finished paper.*
+52. ✅ `[L]` Add PowerPoint generation via python-pptx from a document/summary (you already parse pptx — mirror it for output). — *`generation.py` `render_pptx`: title, one slide per section, sources; model-written outline with a deterministic fallback.*
+53. ✅ `[M]` Add PDF export of any generated report/summary. — *`generation.py` `render_pdf` (reportlab), via the `athena_generate_report` intent.*
 54. ✅ `[M]` Add a literature-review generator that synthesizes across multiple ingested papers into one structured draft.
 55. ✅ `[M]` Add citation management — track sources per fact/claim and auto-generate a bibliography (BibTeX or APA) on request.
 56. ✅ `[M]` Add research-gap detection: compare a set of papers' stated future-work sections and surface recurring unaddressed gaps.
 57. ✅ `[Q]` Add a "what's new since I last checked" digest per ingested folder (diff against last ingestion timestamp).
-58. `[M]` Add table extraction from PDFs (not just text/OCR) so quantitative data in papers is queryable.
-59. `[M]` Add figure/chart extraction with captions indexed separately for "find the graph that shows X" queries.
-60. `[L]` Add cross-document citation graphs — which papers cite which, visualized.
+58. ✅ `[M]` Add table extraction from PDFs (not just text/OCR) so quantitative data in papers is queryable. — *`pdf_structures.py`: pdfplumber tables indexed as labelled-row chunks (`content_type=table`).*
+59. ✅ `[M]` Add figure/chart extraction with captions indexed separately for "find the graph that shows X" queries. — *Captions and page numbers only, indexed as `content_type=figure`; image pixels are not extracted. "Find the graph that shows X" is answered from them.*
+60. ✅ `[L]` Add cross-document citation graphs — which papers cite which, visualized. — *`athena_citation_graph` intent (+ `GET /api/athena/citation-graph` and a panel on the Athena page). Reference lists are re-read from the original files (the chunk index has had its DOIs/URLs and line breaks removed) and matched to your other documents by DOI, arXiv id, or the document's own title; output is a self-contained interactive HTML page plus JSON/DOT in `data/athena/exports/`. Only citations between your own indexed documents are drawn; a paper with no readable reference list can be cited but cannot cite, and its node says so.*
 61. ✅ `[Q]` Add a re-ingestion command that only processes changed/new files instead of a full rebuild every time.
 62. ✅ `[M]` Add configurable chunk size/overlap per document type (a textbook chapter vs. a two-page abstract shouldn't chunk the same way).
-63. ✅ `[M]` Add a feedback loop: let the user mark a retrieved chunk as irrelevant, and down-weight that chunk/source in future hybrid search.
-64. ✅ `[Q]` Surface retrieval scores (semantic + BM25 breakdown) in responses when debug mode is on, to help tune the hybrid weighting.
+63. ✅ `[M]` Add a feedback loop: let the user mark a retrieved chunk as irrelevant, and down-weight that chunk/source in future hybrid search. — *Wired: the last search's sources are remembered, so "the second source wasn't relevant" works; `POST /api/athena/feedback`.*
+64. ✅ `[Q]` Surface retrieval scores (semantic + BM25 breakdown) in responses when debug mode is on, to help tune the hybrid weighting. — *Wired: "show scores for X" / "turn on retrieval scores" put the breakdown in the reply text; web API takes `debug`.*
 65. ✅ `[M]` Add multi-document comparative queries ("compare how these three papers define X").
-66. `[L]` Add methodology-generator: given a research question, draft a study design skeleton (variables, controls, expected analysis).
+66. ✅ `[L]` Add methodology-generator: given a research question, draft a study design skeleton (variables, controls, expected analysis). — *`generate_methodology`: validated JSON skeleton rendered through the same exporters; `athena_methodology` intent.*
 67. ✅ `[Q]` Add file-type coverage checks in CI — a test per supported format (pdf/docx/pptx/epub/txt) that ingests a fixture file and asserts non-empty extraction.
-68. `[M]` Add OCR language auto-detection instead of assuming English-only documents.
+68. ✅ `[M]` Add OCR language auto-detection instead of assuming English-only documents. — *`ocr_language.py`: per-document detection with `langdetect`; uses a Tesseract pack only if installed, else English.*
 69. ✅ `[M]` Add a "translate this document" pipeline (useful for non-English papers).
-70. `[Q]` Add ingestion progress reporting (X of Y files processed) to the web UI instead of a silent batch job.
+70. ✅ `[Q]` Add ingestion progress reporting (X of Y files processed) to the web UI instead of a silent batch job. — *`progress.py`, `POST /api/athena/ingest` + `GET /api/athena/ingest-status`, progress bar on the Athena page.*
 
 ## 5. Iris — Vision & Media
 
 71. `[L]` Add CLIP-based semantic image search (already on your own roadmap in README) to replace caption-only matching.
 72. `[M]` Add face clustering (privacy-respecting, local-only) so "photos of person X" works without external APIs.
 73. ✅ `[M]` Add duplicate/near-duplicate detection across the whole library, not just the perceptual-hash function that already exists — surface it as a cleanup tool.
-74. ✅ `[Q]` Add EXIF-based search (date taken, location, camera) alongside caption search.
+74. ✅ `[Q]` Add EXIF-based search (date taken, location, camera) alongside caption search. — *Wired: `IrisEngine.search` applies date / camera / "with location" filters (`modules/iris/query_filters.py`). Place names need reverse geocoding and are not resolved.*
 75. `[M]` Add video support (frame sampling + captioning), not just static images, if your library has video.
 76. ✅ `[M]` Add a "describe what changed" mode comparing two photos of the same subject over time (useful for progress photos, plant growth, etc.).
 77. `[L]` Add real-time object detection over a webcam/phone-camera feed for the "hardware debugging via image" and "gesture recognition" use cases HEARTH.txt describes, scoped down to something achievable (e.g. YOLO for common objects, not full PCB fault detection).

@@ -52,6 +52,19 @@ class AthenaConfig:
         ".pptx": (500, 60),    # short bullet-point text per slide
     })
 
+    # ── OCR ──────────────────────────────────────────────────────────────────
+    # backlog #68: detect each scanned document's language and OCR with the
+    # matching installed Tesseract pack (falls back to English). Set False to
+    # always use English, the pre-#68 behaviour.
+    ocr_auto_language: bool = True
+
+    # ── PDF structure (backlog #58, #59) ─────────────────────────────────────
+    # Index tables as labelled-row chunks and figure captions as their own
+    # chunks. Turning either off skips that extraction on the next ingest.
+    extract_tables: bool = True
+    index_figure_captions: bool = True
+    max_structure_pages: int = 300      # bounds ingest time on huge PDFs
+
     # ── Retrieval ────────────────────────────────────────────────────────────
     default_search_results: int = 10
     max_chunks_local: int       = 5
@@ -72,7 +85,7 @@ class _Paths:
 
     @property
     def CACHE_DIR(self) -> Path:
-        return Path(self._cfg.cache_dir)
+        return Path(get_config().cache_dir)
 
 
 # ── Module-level singletons ───────────────────────────────────────────────────

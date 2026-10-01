@@ -214,6 +214,16 @@ class HestiaHeartbeat:
                 line = ""
             if isinstance(line, str) and line.strip():
                 bus.emit("speak", {"text": line})
+        # Backlog #36: facts the decay job flagged as stale.
+        stale = getattr(self.mnemosyne, "get_stale_brief", None) if self.mnemosyne else None
+        if callable(stale):
+            try:
+                line = stale()
+            except Exception:
+                logger.exception("Stale-facts brief failed.")
+                line = ""
+            if isinstance(line, str) and line.strip():
+                bus.emit("speak", {"text": line})
         bus.emit("morning_brief_requested", {})
 
     def _maybe_run_low_confidence_review(self) -> None:

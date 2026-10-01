@@ -2057,11 +2057,25 @@
       <div class="metric-grid" id="athena-status">
         <div class="empty" style="grid-column:1/-1"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
       </div>
+      <div id="athena-ingest" style="display:flex;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap;">
+        <button class="send-btn" id="athena-ingest-btn" type="button">Index documents</button>
+        <div id="athena-ingest-bar" style="display:none;flex:1;min-width:200px;">
+          <div style="height:8px;border-radius:4px;background:var(--surface2);overflow:hidden;">
+            <div id="athena-ingest-fill" style="height:100%;width:0;background:var(--accent);transition:width .3s;"></div>
+          </div>
+        </div>
+        <span id="athena-ingest-text" class="empty-text" role="status" aria-live="polite"></span>
+      </div>
       <div class="athena-ask">
         <input type="text" id="athena-input" placeholder="Ask something about your documents…">
         <button class="send-btn" id="athena-send" type="button">Ask ↑</button>
       </div>
       <div class="athena-result" id="athena-result" style="display:none;"></div>
+      <div style="margin-top:20px;">
+        <button class="send-btn" id="athena-cites-btn" type="button">Show citation graph</button>
+        <span class="empty-text" id="athena-cites-text" role="status" style="margin-left:10px;"></span>
+        <iframe id="athena-cites-frame" title="Citation graph" sandbox="allow-scripts" style="display:none;width:100%;height:70vh;margin-top:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);"></iframe>
+      </div>
     </section>
 
     <!-- Calendar (Chronos) -->
@@ -2634,6 +2648,68 @@
     };
   }
 
+  // ── Athena ingestion progress (backlog #70) ──────────
+  let athenaIngestTimer = null;
+
+  function renderAthenaIngest(p) {
+    const bar = document.getElementById('athena-ingest-bar');
+    const fill = document.getElementById('athena-ingest-fill');
+    const text = document.getElementById('athena-ingest-text');
+    const btn = document.getElementById('athena-ingest-btn');
+    if (!bar) return;
+    btn.disabled = !!p.running;
+    if (p.running) {
+      bar.style.display = 'block';
+      fill.style.width = (p.percent || 0) + '%';
+      const eta = p.eta_seconds != null ? `, about ${p.eta_seconds}s left` : '';
+      text.textContent = `${p.done} of ${p.total} files${p.current ? ' — ' + p.current : ''}${eta}`;
+      return;
+    }
+    bar.style.display = 'none';
+    if (p.error) {
+      text.textContent = 'Indexing stopped early because of an error.';
+    } else if (p.result) {
+      const r = p.result;
+      const failed = (p.failed || []).length;
+      text.textContent = `Last run: ${r.new_files || 0} new, ${r.updated_files || 0} updated, ${r.unchanged_files || 0} unchanged` +
+        (failed ? `, ${failed} failed` : '') + '.';
+    }
+  }
+
+  function pollAthenaIngest() {
+    clearTimeout(athenaIngestTimer);
+    fetchJSON('/api/athena/ingest-status').then(p => {
+      renderAthenaIngest(p);
+      if (p.running) {
+        athenaIngestTimer = setTimeout(pollAthenaIngest, 1000);
+      } else if (p.result) {
+        fetchJSON('/api/athena/status').then(s => {
+          const el = document.getElementById('athena-status');
+          const entries = Object.entries(s || {}).slice(0, 4);
+          if (entries.length) el.innerHTML = entries.map(([k, v]) => `<div class="metric-card"><div class="metric-icon"><img src="/static/img/motifs/book_man.png" alt=""></div><div><div class="metric-label">${esc(k)}</div><div class="metric-value">${esc(v)}</div></div></div>`).join('');
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }
+
+  document.getElementById('athena-ingest-btn')?.addEventListener('click', () => {
+    fetchJSON('/api/athena/ingest', { method: 'POST' })
+      .then(() => pollAthenaIngest())
+      .catch(() => { document.getElementById('athena-ingest-text').textContent = 'Indexing is already running or unavailable.'; pollAthenaIngest(); });
+  });
+
+  // ── Athena citation graph (backlog #60) ──────────────
+  document.getElementById('athena-cites-btn')?.addEventListener('click', () => {
+    const frame = document.getElementById('athena-cites-frame');
+    const text = document.getElementById('athena-cites-text');
+    text.textContent = 'Reading your papers\u2019 reference lists (the first time can take a while)\u2026';
+    fetchJSON('/api/athena/citation-graph').then(g => {
+      const s = g.stats || {};
+      text.textContent = s.documents ? `${s.documents} documents, ${s.links} citations between them.` : 'No documents are indexed yet.';
+      if (s.documents) { frame.src = '/api/athena/citation-graph/view'; frame.style.display = 'block'; }
+    }).catch(() => { text.textContent = 'Could not build the citation graph.'; });
+  });
+
   function loadSection(section) {
     if (section === 'graph') {
       loadGraph();
@@ -2880,6 +2956,7 @@
     }
 
     if (section === 'documents') {
+      pollAthenaIngest();
       fetchJSON('/api/athena/status').then(s => {
         const el = document.getElementById('athena-status');
         const entries = Object.entries(s || {}).slice(0, 4);

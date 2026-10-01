@@ -301,9 +301,28 @@ class IrisEngine(BaseModule):
 
     def search(self, query: str, limit: int = 10) -> "str | None":
         try:
-            results_semantic = self._semantic_matches(query, limit)
-            results_caption = self.db.search_files_by_caption(query, limit)
-            results_tags = self.db.search_files_by_tags(query, limit)
+            # #74: date taken / camera / "with location" filters, alongside the
+            # caption, tag and semantic search. With no such words in the query
+            # this is a no-op and behaves exactly as before.
+            from modules.iris.query_filters import parse_photo_query
+            pq = parse_photo_query(query)
+            exif_rows: list = []
+            if pq.active:
+                exif_rows = self.db.search_files_by_exif(
+                    date_from=pq.date_from, date_to=pq.date_to, camera=pq.camera,
+                    has_location=pq.has_location, limit=500,
+                )
+                if not pq.text:
+                    results_semantic, results_caption, results_tags = exif_rows[:limit], [], []
+                else:
+                    query = pq.text
+                    results_semantic = self._semantic_matches(query, limit * 5)
+                    results_caption = self.db.search_files_by_caption(query, limit * 5)
+                    results_tags = self.db.search_files_by_tags(query, limit * 5)
+            else:
+                results_semantic = self._semantic_matches(query, limit)
+                results_caption = self.db.search_files_by_caption(query, limit)
+                results_tags = self.db.search_files_by_tags(query, limit)
             # Deduplicate by file_path. Semantic hits are listed first so
             # `dict`-insertion order (preserved by unique_map.values() below)
             # keeps them ranked ahead of plain substring caption/tag matches,
@@ -323,6 +342,9 @@ class IrisEngine(BaseModule):
                         unique_map[fp] = r
 
             combined = list(unique_map.values())
+            if pq.active and pq.text:
+                allowed = {r.get("file_path") for r in exif_rows}
+                combined = [r for r in combined if r.get("file_path") in allowed][:limit]
             if not combined:
                 # Falsy on purpose: handle()'s `result or "No matching
                 # media found."` / `0.85 if result else 0.3` logic relies
@@ -333,7 +355,10 @@ class IrisEngine(BaseModule):
                 # to the orchestrator at 0.85 confidence — indistinguishable
                 # from a real match.
                 return None
-            lines = [f"Found {len(combined)} photos:"]
+            header = f"Found {len(combined)} photos"
+            if pq.active and pq.summary:
+                header += f" ({pq.summary})"
+            lines = [header + ":"]
             for i, r in enumerate(combined, 1):
                 path = r.get("file_path", "?")
                 caption = r.get("caption") or "(no caption)"

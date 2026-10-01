@@ -45,12 +45,18 @@ class MnemosyneVectorStore:
             return emb.tolist()
         return [list(e) for e in emb]
 
-    def add(self, text: str, metadata: dict, doc_id: str) -> None:
+    def add(self, text: str, metadata: dict, doc_id: str, embed_text: Optional[str] = None) -> None:
+        """
+        Store *text* as the document. *embed_text*, when given, is what gets
+        embedded instead (the stored/returned document stays *text*). Facts
+        use this so a question about the KEY ("my favourite color") can match
+        a fact whose stored value is just "teal".
+        """
         # Ensure required metadata
         if "type" not in metadata or "created_at" not in metadata:
             raise ValueError("metadata must include 'type' and 'created_at'")
         with self._lock:
-            embedding = self._embed([text])[0]
+            embedding = self._embed([embed_text if embed_text else text])[0]
             self.collection.upsert(
                 ids=[doc_id],
                 documents=[text],
@@ -86,6 +92,35 @@ class MnemosyneVectorStore:
     def delete(self, doc_id: str) -> None:
         with self._lock:
             self.collection.delete(ids=[doc_id])
+
+    def similarity(self, a: str, b: str) -> float:
+        """
+        Absolute similarity between two texts on the same 1/(1+d) scale
+        search() reports (d = Chroma's squared-L2), so thresholds written
+        against search scores (e.g. the #42 dedupe cut-off) stay valid.
+        """
+        va, vb = self._embed([a, b])
+        d = sum((x - y) ** 2 for x, y in zip(va, vb))
+        return self._distances_to_scores([d])[0]
+
+    def reembed_facts(self) -> int:
+        """
+        Re-embed every stored fact as "<key words>: <value>" (documents and
+        metadata untouched). Facts written before key-aware embedding were
+        embedded from the bare value; run this once to upgrade them.
+        """
+        with self._lock:
+            raw = self.collection.get(where={"type": {"$eq": "fact"}}, include=["documents", "metadatas"])
+            ids = raw.get("ids") or []
+            docs = raw.get("documents") or []
+            metas = raw.get("metadatas") or []
+            n = 0
+            for doc_id, doc, meta in zip(ids, docs, metas):
+                key = (meta or {}).get("key") or doc_id
+                emb = self._embed([f"{str(key).replace('_', ' ')}: {doc}"])[0]
+                self.collection.upsert(ids=[doc_id], documents=[doc], metadatas=[meta], embeddings=[emb])
+                n += 1
+            return n
 
     @staticmethod
     def _distances_to_scores(distances: List[float]) -> List[float]:

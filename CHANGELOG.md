@@ -12,6 +12,133 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Athena: citation graph (#60)
+
+Closes Athena's last open item: #60. Registry version 2.14.0 (minor: 1 intent
+added). New tests: `tests/test_athena_citation_graph.py` (33).
+
+### Added
+
+- **Citation graph (#60).** "Show the citation graph", "who cites <paper>",
+  "what does <paper> cite" (`athena_citation_graph`) draws which of your
+  indexed papers cite which of your other indexed papers. Arrows run from the
+  citing paper to the cited one; bigger nodes are cited more often; dashed
+  arrows are less certain matches; click an arrow to see the reference entry
+  that produced it. Force layout or by-year timeline. Writes a self-contained
+  `.html` (no CDN, works offline) and `.json` (add "as dot" for Graphviz) to
+  `data/athena/exports/`.
+- `modules/athena/bibliography.py` (reference-list parsing, document identity,
+  matching), `modules/athena/services/citation_graph_service.py` (builds the
+  graph, caches each file's parse in `data/athena/cache/citation_parse.json`),
+  `modules/athena/citation_graph_view.py` (HTML / DOT / JSON).
+- **Web.** `GET /api/athena/citation-graph[?subject=]` (JSON) and
+  `/api/athena/citation-graph/view` (the page, served with a locked-down CSP);
+  "Show citation graph" on the Athena page.
+- `MergedLocalRAG.list_document_sources()`: indexed files with their paths.
+
+### How links are decided
+
+- A link needs evidence: an exact DOI, an exact arXiv id, or the other
+  document's own title inside the reference entry. Author + year alone never
+  makes a link.
+- A reference that two of your documents match equally well makes no link and
+  is counted in the notes. A document with a title under three words can only be
+  matched by DOI or arXiv id.
+- A link whose cited paper is dated after the citing paper is kept but flagged.
+
+### Known limits
+
+- Reference lists are read from the original files, so a moved or deleted file
+  shows as "missing". Scanned PDFs and files without a "References" heading
+  can be cited but cannot cite anything.
+- Only PDF, Word, Markdown, text and ePub text are read; slides are not.
+- Tables of references drawn without a recognisable heading, and heavily
+  two-column PDFs whose lines interleave, may parse poorly. The first build over
+  a large library reads every PDF once; later builds only re-read changed files.
+- Citations to other subjects are missing from a subject-limited graph.
+- Not verified against a real chromadb or against real-world PDF collections:
+  tests use generated PDFs. Try it on your own library and report parse failures.
+
+---
+
+## [Unreleased] — Wiring the "done but unreachable" gaps
+
+An audit of the ✅ marks found ten items whose engine method existed and had
+tests, but that no person could reach. All ten are now wired: #36, #38, #40,
+#44, #45, #48, #49, #63, #64, #74. Registry version 2.13.0 (minor: 5 intents
+added). New tests: `tests/test_backlog_gaps.py` (52).
+
+### Added
+
+- **Intents** `recall_on_date`, `get_memory_stats`, `export_memory`,
+  `set_fact_importance`, `review_stale_facts` (registry, NLU prompt examples,
+  pre-LLM aliases). `modules/mnemosyne/dates.py` resolves "last Tuesday",
+  "3 March", "last week" to a local calendar range; `export.py` is the shared
+  export builder; `scripts/export_memory.py` backs up without starting Hestia.
+- **Heartbeat jobs.** `run_background_jobs` now runs the daily decay check and
+  the weekly/monthly digest; the morning brief speaks the stale-fact count.
+- **Web.** `GET /api/mnemosyne/export`, `GET /api/mnemosyne/dashboard`,
+  `POST /api/athena/feedback`, and a `debug` flag on `/api/athena/query`.
+- **Iris search** understands "from March 2024", "shot on my iPhone",
+  "geotagged".
+
+### Fixed
+
+- `export_memory` was capped at 1,000 facts.
+- A kept stale fact was re-flagged on the next decay run.
+- `get_user_info` cleared a fact's stale flag before reading it, so the
+  "may be out of date" warning could never appear.
+- Athena `mark_feedback` required `page_number` while search results say
+  `page`, so a source dict could not be passed straight back.
+- Athena `get_citations` said it used the latest search but never stored one.
+- The periodic digest took the last N summaries (which could include earlier
+  digests) instead of a time window.
+
+### Not changed
+
+- Searching photos by place name ("taken in Paris") still needs reverse
+  geocoding.
+- The 13 tests that need a real chromadb/sentence-transformers still fail in a
+  stubbed environment; run them on your machine.
+
+---
+
+## [Unreleased] — Athena: ingestion, PDF structure, generated files
+
+Eight of Athena's nine open items: #51, #52, #53, #58, #59, #66, #68, #70.
+#60 (citation graph) is not built. Registry version 2.12.0 (minor: 2 intents
+added). New tests: `tests/test_athena_progress_ocr.py`,
+`tests/test_athena_pdf_structures.py`, `tests/test_athena_generation.py`.
+
+### Added
+
+- **Ingestion progress (#70).** `progress.py`; `POST /api/athena/ingest`
+  starts indexing on a worker thread, `GET /api/athena/ingest-status` reports
+  files done, current file, ETA and failures. The Athena page has an
+  "Index documents" button and a progress bar.
+- **OCR language detection (#68).** `ocr_language.py` detects each scanned
+  document's language once and uses the matching Tesseract pack only if it is
+  installed; otherwise English. Switch: `ocr_auto_language`.
+- **Tables and figure captions (#58, #59).** PDF tables become labelled-row
+  chunks and "Figure N:" captions become their own chunks, both with page
+  numbers. "Find the graph that shows X" and "which table lists Y" are
+  answered from them. Image pixels are not extracted. PDFs indexed earlier
+  are re-processed once to gain these chunks.
+- **Generated files (#53, #51, #52, #66).** `generation.py` builds one report
+  model and renders it as PDF (reportlab), LaTeX (`.tex` + `.bib`) or
+  PowerPoint (python-pptx). New intents `athena_generate_report` and
+  `athena_methodology` (registry entry, NLU prompt entry and examples,
+  alias phrases, tests). Files go to `data/athena/exports/`. When the model is
+  down or returns junk, no file is written and the reply says why.
+
+### Known limits
+
+- References are file-based, as with the existing citation manager: no author
+  or year is invented.
+- The LaTeX output is a scaffold to edit.
+
+---
+
 ## [Unreleased] — Mnemosyne: study, graph, episodes, vault, papers
 
 Finishes section 3 apart from the IEEE half of #47: #31-#35, #39, #43 and

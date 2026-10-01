@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from modules.base import BaseModule
@@ -61,6 +62,23 @@ def _months_delta(months: float):
 def _normalise_key(key: str) -> str:
     """Lowercase, underscore-stripped form of a fact key, for fuzzy-matching similar keys."""
     return (key or "").lower().replace("_", " ").strip()
+
+
+# Backlog #38. How sure Hestia is of a fact depends on where it came from; a
+# user's own hedge ("I think my locker is 42") also lowers it. Recall words
+# anything below _LOW_CONFIDENCE as uncertain.
+_SOURCE_CONFIDENCE: dict[str, float] = {
+    "user": 1.0, "study": 1.0, "device": 0.9,
+    "imported": 0.8, "obsidian": 0.8, "inferred": 0.6, "generated": 0.6,
+}
+_HEDGED_CONFIDENCE = 0.6
+_LOW_CONFIDENCE = 0.75
+_VERY_LOW_CONFIDENCE = 0.5
+_HEDGE_RE = re.compile(
+    r"\b(?:i think|i guess|i believe|i suppose|i'm not (?:totally |entirely )?sure|"
+    r"not (?:totally |entirely )?sure|maybe|probably|perhaps|possibly|might be|could be|"
+    r"if i recall|if i remember|i vaguely)\b", re.I,
+)
 
 
 def _relative_day(ts: datetime) -> str:
@@ -224,11 +242,16 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
         if key:
             value = self.db.get_fact(key)
             if value:
+                # Read the row BEFORE touching it: touch_fact clears the stale
+                # flag, and the reply should still say the fact may be out of date.
+                row = self.db.get_fact_row(key)
                 self.db.touch_fact(key)
                 label = "name" if key == "user_name" else _readable(key)
-                row = self.db.get_fact_row(key)
                 provenance = (
-                    self._provenance_phrase(row.get("created_at"), row.get("source"))
+                    self._provenance_phrase(
+                        row.get("created_at"), row.get("source"),
+                        row.get("confidence"), bool(row.get("stale")),
+                    )
                     if row else ""
                 )
                 return _ok(f"Your {label} is {value}.{provenance}", confidence=0.95)
@@ -251,7 +274,20 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
         # match something) being compared against, which is meaningless.
         conflict = self.check_for_contradiction(key, value)
 
-        result = self.learn(key, value)
+        # (#38) "I think my locker is 42" is stored as a fact the user was
+        # unsure of; an explicit numeric `confidence` entity beats the hedge.
+        raw = str(entities.get("raw_query") or "")
+        confidence: Optional[float] = None
+        try:
+            if entities.get("confidence") is not None:
+                confidence = float(entities["confidence"])
+        except (TypeError, ValueError):
+            confidence = None
+        hedged = confidence is None and bool(_HEDGE_RE.search(raw))
+        if hedged:
+            confidence = _HEDGED_CONFIDENCE
+
+        result = self.learn(key, value, confidence=confidence)
 
         if result["deduplicated"]:
             other = _readable(result["matched_key"])
@@ -261,6 +297,8 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
             )
 
         response = f"Got it — I'll remember your {_readable(key)}."
+        if hedged or (confidence is not None and confidence < _LOW_CONFIDENCE):
+            response += " I'll note that you weren't sure."
         if conflict:
             response += (
                 f" Note: this seems to differ from what you told me about "
@@ -443,7 +481,10 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
 
         return " ".join(lines)
 
-    def learn(self, key: str, value: str, source: str = "user") -> dict:
+    def learn(
+        self, key: str, value: str, source: str = "user",
+        confidence: Optional[float] = None,
+    ) -> dict:
         """
         Persist a key/value fact to SQLite and the vector store.
 
@@ -475,7 +516,11 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
                 )
                 return {"deduplicated": True, "matched_key": matched_key}
 
-        self.db.set_fact(key, value, source)
+        # (#38) explicit *confidence* wins; else it follows from the source.
+        if confidence is None:
+            confidence = _SOURCE_CONFIDENCE.get(source, 1.0)
+        confidence = max(0.0, min(1.0, float(confidence)))
+        self.db.set_fact(key, value, source, confidence)
 
         if self.vector_store:
             metadata = {
@@ -483,9 +528,10 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
                 "created_at": _utc_now(),
                 "key": key,
                 "source": source,
+                "confidence": confidence,
             }
             try:
-                self.vector_store.add(value, metadata, doc_id=key)
+                self._add_fact_vector(key, value, metadata)
             except Exception:
                 logger.exception("Vector store add failed for key=%s", key)
 
@@ -927,18 +973,68 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
 
     _DEDUP_VALUE_SIMILARITY = 0.92
 
+    def _add_fact_vector(self, key: str, value: str, metadata: dict) -> None:
+        """
+        Write a fact to the vector store. The embedded text is "<key>: <value>"
+        so recall by KEY works ("what is my favourite color" -> favourite_color
+        = teal); the stored document stays the bare value. Stores whose add()
+        has no `embed_text` parameter (older/fake stores) get the value only.
+        """
+        import inspect
+        add = self.vector_store.add
+        try:
+            takes_embed_text = "embed_text" in inspect.signature(add).parameters
+        except (TypeError, ValueError):
+            takes_embed_text = False
+        if takes_embed_text:
+            add(value, metadata, doc_id=key, embed_text=f"{_readable(key)}: {value}")
+        else:
+            add(value, metadata, doc_id=key)
+
+    def reindex_facts(self) -> int:
+        """
+        One-shot upgrade: re-embed existing facts with their key so recall by
+        key works for facts learned before that change. Returns the number
+        re-embedded (0 when the store doesn't support it).
+        """
+        fn = getattr(self.vector_store, "reembed_facts", None)
+        if not callable(fn):
+            return 0
+        try:
+            return int(fn())
+        except Exception:
+            logger.exception("reindex_facts failed.")
+            return 0
+
+    # How many nearest facts to re-score value-vs-value in the #42 check.
+    _DEDUP_CANDIDATES = 10
+
     def _find_duplicate_value(self, key: str, value: str) -> Optional[str]:
         """Return an existing DIFFERENT key whose stored value closely matches *value*, or None."""
         if not self.vector_store:
             return None
         try:
-            results = self.vector_store.search(value, n_results=3, where={"type": {"$eq": "fact"}})
+            results = self.vector_store.search(
+                value, n_results=self._DEDUP_CANDIDATES, where={"type": {"$eq": "fact"}},
+            )
         except Exception:
             logger.exception("_find_duplicate_value: vector search failed.")
             return None
+        # Facts are embedded as "<key>: <value>", so the search score above mixes
+        # key and value. Re-score each candidate value-vs-value so the 0.92
+        # threshold still means "these two values are near-identical".
+        similarity = getattr(self.vector_store, "similarity", None)
         for r in results:
             other_key = (r.get("metadata") or {}).get("key")
-            if other_key and other_key != key and r.get("score", 0) >= self._DEDUP_VALUE_SIMILARITY:
+            if not other_key or other_key == key:
+                continue
+            score = r.get("score", 0)
+            if callable(similarity) and r.get("text"):
+                try:
+                    score = similarity(value, r["text"])
+                except Exception:
+                    logger.debug("_find_duplicate_value: similarity failed", exc_info=True)
+            if score >= self._DEDUP_VALUE_SIMILARITY:
                 return other_key
         return None
 
@@ -947,8 +1043,16 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _provenance_phrase(created_at: Optional[str], source: Optional[str]) -> str:
+    def _provenance_phrase(
+        created_at: Optional[str], source: Optional[str],
+        confidence: Optional[float] = None, stale: bool = False,
+    ) -> str:
         """
+        (#38) *confidence* below _LOW_CONFIDENCE and a *stale* flag (#36) are
+        voiced too, so recall can say it is unsure. Both default to "say
+        nothing", so older two-argument callers are unchanged.
+
+
         A short "(you told me this on Tuesday)" / "(inferred)" clause,
         or "" when there's nothing useful to say (no timestamp, or a
         malformed one — never raises trying to build this).
@@ -962,6 +1066,16 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
                 pass
         if source and source not in ("user",):
             parts.append(source)
+        try:
+            conf = float(confidence) if confidence is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        if conf is not None and conf < _VERY_LOW_CONFIDENCE:
+            parts.append("I'm not confident this is right")
+        elif conf is not None and conf < _LOW_CONFIDENCE:
+            parts.append("I'm not fully certain of this")
+        if stale:
+            parts.append("it may be out of date")
         return f" ({', '.join(parts)})" if parts else ""
 
     # ------------------------------------------------------------------
@@ -984,19 +1098,39 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
             logger.exception("recall_on_date failed for date=%s", date_str)
             return ""
 
+        return self._format_dated_recall(interactions, facts)
+
+    # Queries ABOUT memory aren't things the user "said" on a day.
+    _META_RECALL_INTENTS = frozenset({
+        "recall_on_date", "get_memory_stats", "export_memory", "review_stale_facts",
+        "set_fact_importance", "recall", "remember", "get_history",
+    })
+
+    def _format_dated_recall(self, interactions: list[dict], facts: list[dict]) -> str:
+        interactions = [i for i in interactions if i.get("intent") not in self._META_RECALL_INTENTS]
         if not interactions and not facts:
             return ""
-
         lines: list[str] = []
         for f in facts:
             lines.append(f"You told me your {_readable(f['key'])} is {f['value']}.")
         if interactions:
-            topics = ", ".join(
-                i["query"][:60] for i in interactions[:5] if i.get("query")
-            )
+            topics = ", ".join(i["query"][:60] for i in interactions[:5] if i.get("query"))
             if topics:
                 lines.append(f"You also talked about: {topics}.")
         return " ".join(lines)
+
+    def recall_between(self, start, end) -> str:
+        """Dated recall over an inclusive LOCAL date range; "" when nothing was recorded."""
+        from .dates import local_day_bounds_utc
+
+        lo, hi = local_day_bounds_utc(start, end)
+        try:
+            interactions = self.db.get_interactions_between(lo, hi)
+            facts = self.db.get_facts_created_between(lo, hi)
+        except Exception:
+            logger.exception("recall_between failed for %s..%s", start, end)
+            return ""
+        return self._format_dated_recall(interactions, facts)
 
     # ------------------------------------------------------------------
     # Bulk forget (backlog #41)
@@ -1032,38 +1166,16 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
     # ------------------------------------------------------------------
 
     def export_memory(self, fmt: str = "json") -> str:
-        """
-        A full dump of facts, goals, and summaries — independent of the
-        sync API (that's for device-to-device delta sync; this is a
-        point-in-time backup/portability snapshot a person can read or
-        archive on its own).
-        """
-        facts = self.db.get_all_facts(limit=1000)
-        summaries = self.db.get_recent_summaries(n=1000)
-        goals = self.db.get_goals(status="active") + self.db.get_goals(status="completed")
-        payload = {
-            "exported_at": _utc_now(),
-            "facts": facts,
-            "summaries": summaries,
-            "goals": goals,
-        }
+        """Full facts/goals/summaries dump (no row cap). Reachable via the export_memory intent, /api/mnemosyne/export and scripts/export_memory.py."""
+        from .export import build_export
+        return build_export(self.db, fmt)
 
-        if fmt == "markdown":
-            lines = [f"# Hestia memory export", f"_Exported {payload['exported_at']}_", ""]
-            lines.append(f"## Facts ({len(facts)})")
-            for f in facts:
-                lines.append(f"- **{f['key']}**: {f['value']}")
-            lines.append("")
-            lines.append(f"## Summaries ({len(summaries)})")
-            for s in summaries:
-                lines.append(f"- _{s.get('period_start', '?')}_ ({s.get('topic', 'General')}): {s.get('content', '')}")
-            lines.append("")
-            lines.append(f"## Goals ({len(goals)})")
-            for g in goals:
-                lines.append(f"- [{g.get('status', '?')}] {g.get('text', '')}")
-            return "\n".join(lines)
-
-        return json.dumps(payload, indent=2, default=str)
+    def export_memory_to_file(self, fmt: str = "json", directory: Optional[str] = None) -> dict:
+        """Write a timestamped export; returns {path, format, facts, summaries, goals}."""
+        from pathlib import Path
+        from .export import write_export
+        target = directory or str(Path(self.config.db_path).parent / "exports")
+        return write_export(self.db, target, fmt)
 
     # ------------------------------------------------------------------
     # Memory dashboard (backlog #49)
@@ -1105,6 +1217,37 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
     # Called by core/heartbeat.py on a 7-day / 30-day rolling gap, the
     # same pattern as the #6/#30 heartbeat jobs.
 
+    _DIGEST_TOPICS = ("weekly_digest", "monthly_digest")
+    _DIGEST_GAP_DAYS = {"weekly": 7, "monthly": 30}
+
+    def digest_due(self, period: str, now: Optional[datetime] = None) -> bool:
+        """
+        Is a *period* digest owed? Persisted (newest ``<period>_digest`` row) so
+        the cadence survives restarts. With no digest yet, one is owed once the
+        oldest summary is a full period old.
+        """
+        gap = timedelta(days=self._DIGEST_GAP_DAYS[period])
+        now = now or datetime.now(timezone.utc)
+
+        def parse(ts: Optional[str]) -> Optional[datetime]:
+            if not ts:
+                return None
+            try:
+                d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+        try:
+            last = parse(self.db.get_latest_summary_time(f"{period}_digest"))
+            if last is not None:
+                return now - last >= gap
+            oldest = parse(self.db.get_oldest_summary_time())
+        except Exception:
+            logger.exception("digest_due(%s) failed.", period)
+            return False
+        return oldest is not None and now - oldest >= gap
+
     def generate_periodic_digest(self, period: str = "weekly") -> Optional[str]:
         """
         Roll up recent summaries into one higher-level digest via the LLM
@@ -1113,9 +1256,11 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
         digest text, or None if there was nothing to summarise or
         generation failed — logged either way, never raised.
         """
-        n = 7 if period == "weekly" else 30
+        days = 7 if period == "weekly" else 30
+        # Time-based: summaries from the last *days* days, never earlier digests.
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         try:
-            recent = self.db.get_recent_summaries(n=n)
+            recent = self.db.get_summaries_since(since, exclude_topics=self._DIGEST_TOPICS)[-60:]
         except Exception:
             logger.exception("generate_periodic_digest: could not fetch summaries.")
             return None
@@ -1167,7 +1312,7 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
 
         kind = meta.get("type")
         provenance = MnemosyneEngine._provenance_phrase(
-            meta.get("created_at"), meta.get("source")
+            meta.get("created_at"), meta.get("source"), meta.get("confidence"),
         )
 
         if kind == "fact":

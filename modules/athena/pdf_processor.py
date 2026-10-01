@@ -144,8 +144,30 @@ class PDFProcessor:
                     "total_pages":  page["total_pages"],
                 })
 
+        # backlog #58/#59: tables and figure captions as their own chunks.
+        all_chunks.extend(self._structured_chunks(file_path))
+
         logger.info("Created %d chunks for %s", len(all_chunks), os.path.basename(file_path))
         return all_chunks
+
+    @staticmethod
+    def _structured_chunks(file_path: str) -> List[Dict[str, Any]]:
+        """Table/figure chunks for *file_path*; [] if disabled or anything goes wrong."""
+        cfg = get_config()
+        want_tables = getattr(cfg, "extract_tables", True)
+        want_figures = getattr(cfg, "index_figure_captions", True)
+        if not (want_tables or want_figures):
+            return []
+        try:
+            from modules.athena.pdf_structures import extract_structures
+            return extract_structures(
+                file_path, extract_tables=want_tables, index_figures=want_figures,
+                max_pages=getattr(cfg, "max_structure_pages", 300),
+            )
+        except Exception:
+            logger.warning("Table/figure extraction failed for %s; continuing without it.",
+                           os.path.basename(file_path), exc_info=True)
+            return []
 
     # ------------------------------------------------------------------
     # Extraction backends
@@ -163,6 +185,9 @@ class PDFProcessor:
 
     def _extract_ocr(self, file_path: str) -> List[Dict[str, Any]]:
         pages: List[Dict[str, Any]] = []
+        # backlog #68: language is decided once per document (first non-blank
+        # page); reset so a previous document's language never leaks in.
+        self._ocr_lang = None
         with fitz.open(file_path) as doc:
             total = len(doc)
             for i, page in enumerate(doc, start=1):
@@ -177,6 +202,9 @@ class PDFProcessor:
 
                 if self._is_blank_page(pil_img):
                     continue
+
+                if self._ocr_lang is None:
+                    self._ocr_lang = self._pick_ocr_language(pil_img)
 
                 cleaned = self._tesseract_ocr(pil_img)
 
@@ -193,14 +221,27 @@ class PDFProcessor:
 
         return pages
 
-    def _tesseract_ocr(self, image: Image.Image) -> str:
+    def _pick_ocr_language(self, image: Image.Image) -> str:
+        """Auto-detect the document language unless disabled in config (backlog #68)."""
+        from modules.athena.ocr_language import DEFAULT_LANG, auto_ocr_language
+
+        if not getattr(get_config(), "ocr_auto_language", True):
+            return DEFAULT_LANG
+        lang = auto_ocr_language(self._tesseract_text, image)
+        if lang != DEFAULT_LANG:
+            logger.info("OCR language auto-detected: %s", lang)
+        return lang
+
+    def _tesseract_text(self, image: Image.Image, lang: str) -> str:
+        """Raw Tesseract call for *lang*; raises on failure (callers decide how to cope)."""
         import pytesseract
+
+        return pytesseract.image_to_string(image, config=f"--oem 3 --psm 4 -l {lang}")
+
+    def _tesseract_ocr(self, image: Image.Image) -> str:
         try:
-            raw =   pytesseract.image_to_string(
-                        image,
-                        config="--oem 3 --psm 4 -l eng"
-                    )
-            return self.clean_text(raw)
+            lang = getattr(self, "_ocr_lang", None) or "eng"
+            return self.clean_text(self._tesseract_text(image, lang))
         except Exception:
             logger.debug("Tesseract failed", exc_info=True)
             return ""

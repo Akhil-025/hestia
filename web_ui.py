@@ -723,10 +723,83 @@ class HestiaWebUI:
                 return jsonify({"error": "Too long"}), 413
 
             try:
-                return jsonify(self.athena.handle("search", {"query": query}, {}))
+                # "debug": true adds the semantic/BM25 score breakdown (#64).
+                entities = {"query": query}
+                if body.get("debug"):
+                    entities["debug"] = True
+                return jsonify(self.athena.handle("search", entities, {}))
             except Exception:
                 logger.exception("[WebUI] athena query error")
                 return jsonify({"error": "Failed"}), 500
+
+        @app.route("/api/athena/feedback", methods=["POST"])
+        def api_athena_feedback():
+            """Mark a source of the last search relevant / not relevant (#63).
+            Body: {"index": 2, "relevant": false} or {"file_name": "x.pdf", ...}."""
+            if not self.athena:
+                return jsonify({"error": "Athena disabled"}), 503
+            body = request.get_json(silent=True) or {}
+            allowed = ("index", "file_name", "relevant", "subject", "module",
+                       "page", "page_number", "chunk_number")
+            entities = {k: body[k] for k in allowed if k in body}
+            if not entities:
+                return jsonify({"error": "Empty"}), 400
+            try:
+                return jsonify(self.athena.handle("mark_feedback", entities, {}))
+            except Exception:
+                logger.exception("[WebUI] athena feedback error")
+                return jsonify({"error": "Failed"}), 500
+
+        @app.route("/api/athena/ingest", methods=["POST"])
+        def api_athena_ingest():
+            """Start indexing in the background (backlog #70); poll /ingest-status."""
+            starter = getattr(self.athena, "start_ingest_background", None)
+            if not callable(starter):
+                return jsonify({"error": "Athena disabled"}), 503
+            try:
+                if starter():
+                    return jsonify({"started": True}), 202
+                return jsonify({"started": False, "error": "Already running"}), 409
+            except Exception:
+                logger.exception("[WebUI] athena ingest start error")
+                return jsonify({"error": "Failed"}), 500
+
+        @app.route("/api/athena/ingest-status")
+        def api_athena_ingest_status():
+            getter = getattr(self.athena, "ingest_status", None)
+            if not callable(getter):
+                return jsonify({"running": False, "total": 0, "done": 0, "percent": 0})
+            try:
+                return jsonify(getter())
+            except Exception:
+                logger.exception("[WebUI] athena ingest status error")
+                return jsonify({"running": False, "total": 0, "done": 0, "percent": 0})
+
+        @app.route("/api/athena/citation-graph")
+        def api_athena_citation_graph():
+            """Which indexed papers cite which, as nodes/links JSON (backlog #60)."""
+            getter = getattr(self.athena, "citation_graph", None)
+            if not callable(getter):
+                return jsonify({"error": "Athena disabled"}), 503
+            try:
+                return jsonify(getter(request.args.get("subject") or None))
+            except Exception:
+                logger.exception("[WebUI] athena citation graph error")
+                return jsonify({"error": "Failed"}), 500
+
+        @app.route("/api/athena/citation-graph/view")
+        def api_athena_citation_graph_view():
+            """The same graph as a self-contained interactive page (shown in an iframe)."""
+            renderer = getattr(self.athena, "citation_graph_html", None)
+            if not callable(renderer):
+                return "Athena disabled", 503
+            try:
+                html = renderer(request.args.get("subject") or None, request.args.get("focus") or None)
+                return html, 200, {"Content-Type": "text/html; charset=utf-8",
+                                   "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"}
+            except Exception:
+                logger.exception("[WebUI] athena citation graph view error")
+                return "Could not build the citation graph.", 500
 
     # ── MNEMOSYNE (knowledge graph, study, quizzes) ──────
 
@@ -745,6 +818,34 @@ class HestiaWebUI:
             except Exception:
                 logger.exception("[WebUI] mnemosyne graph error")
                 return jsonify({"nodes": [], "links": []})
+
+        @app.route("/api/mnemosyne/dashboard")
+        def api_mnemosyne_dashboard():
+            """Facts / summaries / DB size / embeddings (#49)."""
+            getter = getattr(self.memory, "get_memory_dashboard", None)
+            if not callable(getter):
+                return jsonify({})
+            try:
+                return jsonify(getter())
+            except Exception:
+                logger.exception("[WebUI] mnemosyne dashboard error")
+                return jsonify({})
+
+        @app.route("/api/mnemosyne/export")
+        def api_mnemosyne_export():
+            """Full memory backup as a download (#44). ?format=json (default) or markdown."""
+            exporter = getattr(self.memory, "export_memory", None)
+            if not callable(exporter):
+                return jsonify({"error": "Export unavailable"}), 503
+            fmt = "markdown" if request.args.get("format", "json").lower() in ("md", "markdown") else "json"
+            try:
+                body = exporter(fmt)
+            except Exception:
+                logger.exception("[WebUI] mnemosyne export error")
+                return jsonify({"error": "Failed"}), 500
+            ext, mime = ("md", "text/markdown") if fmt == "markdown" else ("json", "application/json")
+            return Response(body, mimetype=mime, headers={
+                "Content-Disposition": f"attachment; filename=hestia_memory.{ext}"})
 
         @app.route("/api/mnemosyne/learning")
         def api_mnemosyne_learning():

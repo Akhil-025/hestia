@@ -441,6 +441,90 @@ graph_connections:
   - "whats connected to"
   - "rebuild the knowledge graph"
 
+recall_on_date:
+  - "what did i say on"
+  - "what did i say last"
+  - "what did i tell you on"
+  - "what did i tell you last"
+  - "what did we talk about on"
+  - "what did we talk about last"
+  - "recall what i said on"
+  - "recall what i said last"
+
+get_memory_stats:
+  - "memory stats"
+  - "memory dashboard"
+  - "how big is your memory"
+  - "how much memory do you"
+  - "how many facts"
+
+export_memory:
+  - "export my memory"
+  - "export your memory"
+  - "export memory"
+  - "back up my memory"
+  - "backup my memory"
+  - "download my memory"
+  - "export everything you remember"
+
+review_stale_facts:
+  - "review stale facts"
+  - "review my stale facts"
+  - "review old memories"
+  - "review my old memories"
+  - "which facts are stale"
+  - "what facts are stale"
+  - "what facts are out of date"
+  - "which of my facts are out of date"
+  - "any stale facts"
+  - "keep all stale"
+  - "keep all the stale"
+  - "keep my stale"
+
+set_fact_importance:
+  - phrase: "as very important"
+    match: contains
+  - "mark that fact as"
+  - "mark this fact as"
+  - "mark my fact"
+  - "this fact is important"
+  - "that fact is important"
+  - "that is an important fact"
+  - "this is an important fact"
+
+athena_mark_feedback:
+  - "that source wasn't"
+  - "that source was not"
+  - "that source isn't"
+  - "that source is not"
+  - "that source was useful"
+  - "that source was relevant"
+  - "the first source"
+  - "the second source"
+  - "the third source"
+  - "the last source"
+  - "mark the first source"
+  - "mark the second source"
+  - "mark the third source"
+  - "mark that source"
+  - "source 1 wasn't"
+  - "source 2 wasn't"
+  - "source 3 wasn't"
+
+athena_search:
+  - "show scores for"
+  - "search with scores"
+  - "debug search"
+  - "turn on retrieval scores"
+  - "turn off retrieval scores"
+  - "turn on score breakdown"
+  - "turn off score breakdown"
+
+athena_get_citations:
+  - "give me a bibliography"
+  - "cite those sources"
+  - "cite that"
+
 obsidian_sync:
   - "sync my obsidian"
   - "sync obsidian"
@@ -451,3 +535,36 @@ watch_papers:
   - "stop watching arxiv"
   - "check for new papers"
   - "any new papers"
+
+# --- Athena: generated files (backlog #53, #51, #52, #66) -------------------
+athena_generate_report:
+  - "generate a report on"
+  - "generate a report about"
+  - "make a report on"
+  - "make a pdf report"
+  - "make a pdf on"
+  - "export a report on"
+  - "make a latex"
+  - "make slides on"
+  - "make slides about"
+  - "make a powerpoint on"
+  - "make a powerpoint about"
+athena_methodology:
+  - "draft a methodology"
+  - "write a methodology"
+  - "generate a methodology"
+  - "design a methodology"
+  - "methodology for"
+
+athena_citation_graph:
+  - "citation graph"
+  - "show the citation graph"
+  - "draw the citation graph"
+  - "draw a citation graph"
+  - "make a citation graph"
+  - "who cites"
+  - "which papers cite"
+  - "which of my papers cite"
+  - "what does my paper cite"
+  - phrase: "what cites"
+    match: prefix

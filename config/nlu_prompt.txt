@@ -41,6 +41,7 @@ save_name, get_user_info, set_preference, get_system_info,
 learn_fact, forget_fact,
 start_quiz, answer_quiz, quiz_performance, add_study_fact, review_study,
 graph_connections, recall_episode, obsidian_sync, watch_papers,
+review_stale_facts, export_memory, set_fact_importance, recall_on_date, get_memory_stats,
 chat,
 iris_search, iris_ingest, iris_status, iris_analyse, iris_query,
 iris_find_duplicates, iris_correct_caption, iris_organize_albums,
@@ -48,6 +49,7 @@ iris_compare_photos,
 athena_search, athena_ingest, athena_status, athena_check_updates,
 athena_mark_feedback, athena_literature_review, athena_research_gaps,
 athena_compare_documents, athena_get_citations, athena_translate_document,
+athena_generate_report, athena_methodology, athena_citation_graph,
 add_goal, get_goals, update_goal, remove_goal, abandon_goal,
 add_habit, complete_habit, list_habits, remove_habit,
 productivity_summary, get_at_risk_goals, get_motivation,
@@ -174,11 +176,35 @@ User: what research gaps exist in my heat transfer papers
 User: compare paper1.pdf and paper2.pdf on their methodology
 {"intent": "athena_compare_documents", "entities": {"file_names": ["paper1.pdf", "paper2.pdf"], "query": "their methodology"}, "response": "Comparing those documents.", "confidence": 0.85}
 
+User: the second source wasn't relevant
+{"intent": "athena_mark_feedback", "entities": {"index": "2", "relevant": "false"}, "response": "Noted.", "confidence": 0.9}
+
+User: that first source was really useful
+{"intent": "athena_mark_feedback", "entities": {"index": "1", "relevant": "true"}, "response": "Noted.", "confidence": 0.88}
+
+User: show scores for heat transfer coefficients
+{"intent": "athena_search", "entities": {"query": "heat transfer coefficients", "debug": "true"}, "response": "Searching with scores.", "confidence": 0.9}
+
 User: give me a bibliography for that
 {"intent": "athena_get_citations", "entities": {}, "response": "Building a bibliography.", "confidence": 0.8}
 
 User: translate notes.pdf into spanish
 {"intent": "athena_translate_document", "entities": {"file_name": "notes.pdf", "target_language": "Spanish"}, "response": "Translating that document.", "confidence": 0.85}
+
+User: make a pdf report on heat transfer
+{"intent": "athena_generate_report", "entities": {"subject": "heat transfer", "format": "pdf"}, "response": "Creating that report.", "confidence": 0.9}
+
+User: turn my machine learning notes into a powerpoint
+{"intent": "athena_generate_report", "entities": {"subject": "machine learning", "format": "pptx"}, "response": "Building the slides.", "confidence": 0.85}
+
+User: draft a methodology for studying sleep and exam scores
+{"intent": "athena_methodology", "entities": {"question": "sleep and exam scores"}, "response": "Drafting a methodology.", "confidence": 0.85}
+
+User: show me which of my papers cite each other
+{"intent": "athena_citation_graph", "entities": {}, "response": "Building the citation graph.", "confidence": 0.9}
+
+User: who cites attention is all you need
+{"intent": "athena_citation_graph", "entities": {"focus": "attention is all you need"}, "response": "Checking who cites it.", "confidence": 0.85}
 
 User: search heat transfer notes
 {"intent": "athena_search", "entities": {"query": "heat transfer notes"}, "response": "Searching your documents.", "confidence": 0.95}
@@ -272,6 +298,58 @@ User: any new papers on my topics
 
 User: tell me about myself
 {"intent": "get_user_info", "entities": {}, "response": "Let me think about what I know.", "confidence": 0.9}
+
+# ---- MNEMOSYNE: MANAGING THE MEMORY ITSELF ----
+#
+# recall_on_date       -> "what did I say on / last <day or date>" -- a CALENDAR
+#                         lookup (entities: date = the phrase as spoken). Not
+#                         recall_episode (that is by topic), not get_history.
+# get_memory_stats     -> how big the memory is (facts, summaries, database
+#                         size, embeddings). NOT get_system_info (that is
+#                         CPU / RAM / battery of the machine).
+# export_memory        -> back up / dump everything remembered to a file
+#                         (entities: format = json or markdown).
+# set_fact_importance  -> the user stresses that a remembered fact matters more
+#                         or less (entities: key = which fact, importance =
+#                         critical / high / low).
+# review_stale_facts   -> facts not mentioned for months that were flagged for
+#                         review; also "keep" them (entities: action = list /
+#                         keep, optional key).
+
+User: what did I say last Tuesday
+{"intent": "recall_on_date", "entities": {"date": "last Tuesday"}, "response": "Looking back.", "confidence": 0.93}
+
+User: what did I tell you on 12 March
+{"intent": "recall_on_date", "entities": {"date": "12 March"}, "response": "Checking that day.", "confidence": 0.93}
+
+User: how many facts do you remember
+{"intent": "get_memory_stats", "entities": {}, "response": "Checking my memory.", "confidence": 0.93}
+
+User: how big is your memory
+{"intent": "get_memory_stats", "entities": {}, "response": "Checking my memory.", "confidence": 0.9}
+
+User: export my memory as markdown
+{"intent": "export_memory", "entities": {"format": "markdown"}, "response": "Exporting.", "confidence": 0.95}
+
+User: back up everything you remember about me
+{"intent": "export_memory", "entities": {"format": "json"}, "response": "Exporting.", "confidence": 0.9}
+
+User: mark my allergy as very important
+{"intent": "set_fact_importance", "entities": {"key": "allergy", "importance": "high"}, "response": "Marked.", "confidence": 0.93}
+
+User: my passport number is critical, never let it fall out of memory
+{"intent": "set_fact_importance", "entities": {"key": "passport number", "importance": "critical"}, "response": "Marked.", "confidence": 0.88}
+
+User: which of my facts are out of date
+{"intent": "review_stale_facts", "entities": {"action": "list"}, "response": "Let me check.", "confidence": 0.92}
+
+User: keep all the stale facts
+{"intent": "review_stale_facts", "entities": {"action": "keep"}, "response": "Keeping them.", "confidence": 0.9}
+
+# A hedged statement is still learn_fact -- Mnemosyne notices the hedge itself.
+
+User: I think my locker number is 42
+{"intent": "learn_fact", "entities": {"key": "locker_number", "value": "42"}, "response": "Got it.", "confidence": 0.9}
 
 ---
 
@@ -1120,6 +1198,17 @@ STRICT RULES:
   forget_fact instead.
 - "what do you know about me" / "tell me about myself" -> get_user_info
   with NO "key" entity (omit it entirely; do not invent a key)
+- "what did I say on/last <day or date>" -> recall_on_date (a calendar
+  lookup), NEVER recall_episode or get_history. "how big / how many facts is
+  your memory" -> get_memory_stats, NEVER get_system_info. "export / back up
+  my memory" -> export_memory, NEVER export_calendar.
+- Feedback on the sources of the last document search ("the second source
+  wasn't relevant") -> athena_mark_feedback (entities: index or file_name,
+  relevant true/false). "show scores for <query>" -> athena_search; the
+  semantic/BM25 breakdown is then included in the reply.
+- "which papers cite which" / "citation graph" / "who cites <paper>" -> athena_citation_graph (entities: optional
+  subject or focus). It maps citations BETWEEN the user's own indexed papers; "cite those sources" / a
+  bibliography of the last search is athena_get_citations, NEVER athena_citation_graph.
 - "list/show/what are my habits" -> list_habits, NEVER get_goals.
   "what are my goals" -> get_goals, NEVER list_habits. Habits and goals
   are different Artemis concepts -- do not swap them.

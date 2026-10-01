@@ -256,6 +256,77 @@ class MnemosyneDB:
         )
         return [dict(row) for row in cur.fetchall()]
 
+    def get_interactions_between(self, start_utc: str, end_utc: str) -> list[dict]:
+        """start_utc <= pushed_at < end_utc ('YYYY-MM-DD HH:MM:SS' UTC); handles ranges and local days that straddle UTC midnight."""
+        cur = self._conn.execute(
+            """
+            SELECT user_text, hestia_response, intent, pushed_at
+            FROM interaction_log
+            WHERE pushed_at >= ? AND pushed_at < ?
+            ORDER BY id ASC
+            """,
+            (start_utc, end_utc),
+        )
+        return [
+            {"query": r["user_text"], "response": r["hestia_response"],
+             "intent": r["intent"], "pushed_at": r["pushed_at"]}
+            for r in cur.fetchall()
+        ]
+
+    def get_facts_created_between(self, start_utc: str, end_utc: str) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT key, value, source, confidence, created_at
+            FROM facts WHERE created_at >= ? AND created_at < ?
+            ORDER BY created_at ASC
+            """,
+            (start_utc, end_utc),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def get_latest_summary_time(self, topic: str) -> Optional[str]:
+        """created_at of the newest summary with this exact topic, or None."""
+        row = self._conn.execute(
+            "SELECT MAX(created_at) AS t FROM summaries WHERE topic = ?", (topic,)
+        ).fetchone()
+        return row["t"] if row and row["t"] else None
+
+    def get_oldest_summary_time(self) -> Optional[str]:
+        row = self._conn.execute("SELECT MIN(created_at) AS t FROM summaries").fetchone()
+        return row["t"] if row and row["t"] else None
+
+    def get_summaries_since(self, since: str, exclude_topics: tuple = ()) -> list[dict]:
+        """Summaries created at/after *since*, oldest first, minus the given (digest) topics."""
+        marks = ",".join("?" for _ in exclude_topics)
+        clause = f" AND COALESCE(topic, '') NOT IN ({marks})" if exclude_topics else ""
+        cur = self._conn.execute(
+            f"SELECT * FROM summaries WHERE created_at >= ?{clause} ORDER BY created_at ASC",
+            (since, *exclude_topics),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def count_stale_facts(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) FROM facts WHERE stale = 1").fetchone()[0]
+
+    def clear_stale(self, keys: Optional[list] = None) -> int:
+        """
+        Un-flag stale facts (all if *keys* is None). Also resets last_accessed:
+        "keep" means the fact is still wanted, so the decay job must not
+        re-flag it on its very next run.
+        """
+        with self._lock, self._conn:
+            if keys is None:
+                return self._conn.execute(
+                    "UPDATE facts SET stale = 0, last_accessed = CURRENT_TIMESTAMP WHERE stale = 1"
+                ).rowcount
+            n = 0
+            for k in keys:
+                n += self._conn.execute(
+                    "UPDATE facts SET stale = 0, last_accessed = CURRENT_TIMESTAMP "
+                    "WHERE key = ? AND stale = 1", (k,)
+                ).rowcount
+            return n
+
     # Summaries
     def add_summary(self, period_start, period_end, content, topic, interaction_count) -> int:
         with self._lock, self._conn:

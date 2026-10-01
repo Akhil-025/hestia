@@ -1,138 +1,102 @@
 # ============================================================================
-# Core Web & APIs
+# Hestia - runtime requirements          (Python 3.10+; developed on 3.12)
 # ============================================================================
-fastapi>=0.103.0
-uvicorn>=0.23.2
+# Install the right PyTorch build FIRST (see the end of this file), then:
+#     pip install -r requirements.txt
+# Test tooling lives in requirements-dev.txt.
+#
+# Each package below is imported by the code; a few are only needed for an
+# optional feature, and the module that uses them degrades gracefully without
+# them (noted per section).
+
+# ============================================================================
+# Core: web, API, config
+# ============================================================================
 flask
-waitress
-requests
-playwright
-
-# ============================================================================
-# Google Integrations
-# ============================================================================
-google-api-python-client
-google-auth-oauthlib
-google-auth-httplib2
-google-generativeai
-
-# ============================================================================
-# AI / LLM APIs
-# ============================================================================
-anthropic
-langchain>=1.0          # modules/pluto/advisor_agent.py's ReAct financial advisor
-langchain-core>=0.3     # Tool / LLM / PromptTemplate primitives used by advisor_agent.py
-langgraph>=0.0.10
-
-# ============================================================================
-# Config (Pluto module)
-# ============================================================================
+waitress                  # production server for web_ui.py (falls back to Flask's)
+fastapi>=0.103.0          # api.py - sync API and /health endpoints
+uvicorn>=0.23.2
 pydantic>=2.0
-pydantic-settings>=2.0
+pydantic-settings>=2.0    # modules/pluto/config.py
+requests
+pyyaml
+python-dotenv             # main.py loads .env at startup (was missing)
 
 # ============================================================================
-# Audio Processing
+# Memory, RAG, NLP  (Mnemosyne, Athena, Iris)
 # ============================================================================
+chromadb
+sentence-transformers     # text embeddings and the CLIP image embedder
+rank-bm25                 # Athena hybrid search
+dateparser                # Chronos, entity confidence
+langdetect                # Athena OCR language detection
 numpy
+torch>=2.1.0
+
+# ============================================================================
+# Documents and imaging  (Athena, Iris)
+# ============================================================================
+pymupdf                   # imported as fitz; PDF text, tables, figures
+pdfplumber                # PDF table extraction
+python-docx
+python-pptx               # read .pptx and write generated slide decks
+EbookLib
+reportlab                 # Athena PDF export
+pillow
+imagehash
+pytesseract               # OCR; also needs the Tesseract binary installed
+easyocr                   # optional GPU OCR (heavy); Athena falls back without it
+
+# ============================================================================
+# Voice  (optional - text mode works without any of these)
+# ============================================================================
 sounddevice
 webrtcvad
 noisereduce
-
-# Speech-to-Text
-vosk
-faster-whisper
-
-# Text-to-Speech
-pyttsx3
+vosk                      # wake word
+faster-whisper            # speech-to-text
+pyttsx3                   # text-to-speech
 
 # ============================================================================
-# Telegram
+# Telegram  (optional)
 # ============================================================================
 python-telegram-bot[job-queue]
-ffmpeg-python
+ffmpeg-python             # voice-note conversion; also needs the ffmpeg binary
 
 # ============================================================================
-# Data & Machine Learning
+# Google integrations  (optional - Gmail / Calendar via core/google_agent.py)
 # ============================================================================
-torch>=2.1.0
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+
+# ============================================================================
+# Browser automation  (optional - Hephaestus / core/browser_agent.py)
+# ============================================================================
+playwright                # then run once: playwright install chromium
+
+# ============================================================================
+# Pluto - finance  (optional - Pluto is skipped if these are missing)
+# ============================================================================
 pandas>=2.1.1
 polars>=0.19.12
-scikit-learn>=1.3.1
+scikit-learn>=1.3.1       # LightGBM's LGBMRegressor uses the scikit-learn API
 xgboost>=2.0.0
-lightgbm>=4.1.0        # modules/pluto/forecasting.py's spending forecaster
-
-# ============================================================================
-# Databases & Storage
-# ============================================================================
+lightgbm>=4.1.0           # modules/pluto/forecasting.py
+PyPortfolioOpt>=1.5.5     # modules/pluto/portfolio.py
+vectorbt>=0.25.0          # modules/pluto/backtest.py
+plotly<6                  # vectorbt imports Scattermapbox, which Plotly 6 renamed
+langgraph>=0.0.10         # modules/pluto/agents.py
+langchain-core>=0.3       # modules/pluto/advisor_agent.py (Tool / LLM / PromptTemplate)
 psycopg2-binary>=2.9.9
 redis>=5.0.1
 qdrant-client>=1.6.2
-chromadb
-
-# ============================================================================
-# RAG & NLP
-# ============================================================================
-sentence-transformers
-rank-bm25
-
-# ============================================================================
-# Finance
-# ============================================================================
-PyPortfolioOpt>=1.5.5  # modules/pluto/portfolio.py's max-Sharpe optimizer
-vectorbt>=0.25.0        # modules/pluto/backtest.py's SMA-crossover backtester
-# vectorbt 1.1.0 imports plotly.graph_objects.Scattermapbox, which Plotly
-# 6.x renamed to Scattermap — importing vectorbt raises at import time
-# against modern Plotly. Pin plotly below 6 until vectorbt is upgraded
-# or replaced. (Confirmed broken/fixed empirically, not just from docs —
-# see modules/pluto/backtest.py's module docstring.)
-plotly<6
-
-# ============================================================================
-# Document Processing
-# ============================================================================
-pymupdf
-python-docx
-python-pptx
-EbookLib
-
-# OCR
-pytesseract      # Requires the Tesseract OCR binary
-easyocr          # Optional GPU OCR (heavy)
-
-# ============================================================================
-# Imaging
-# ============================================================================
-pillow
-imagehash
-
-# ============================================================================
-# Date & Time
-# ============================================================================
-dateparser
-
-# ============================================================================
-# Configuration
-# ============================================================================
-pyyaml
-
-# ============================================================================
-# Monitoring
-# ============================================================================
 prometheus-client
 
 # ============================================================================
-# Notes
+# PyTorch build (install before the rest of this file)
 # ============================================================================
-# Install the appropriate PyTorch build before installing the rest:
-#
-# CPU:
-#   uv pip install torch --index-url https://download.pytorch.org/whl/cpu
-#
-# CUDA 12.1:
-#   uv pip install torch --index-url https://download.pytorch.org/whl/cu121
-#
-# CUDA 12.4:
-#   uv pip install torch --index-url https://download.pytorch.org/whl/cu124
-
-
-pytest
+#   CPU:      pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   CUDA 12.1: pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   CUDA 12.4: pip install torch --index-url https://download.pytorch.org/whl/cu124

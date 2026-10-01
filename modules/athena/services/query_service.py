@@ -3,6 +3,7 @@ modules/athena/services/query_service.py
 
 Full query pipeline — fixed for Hestia (relative imports).
 """
+import hashlib
 import logging
 import time
 from typing import Optional, Dict, Any, List
@@ -94,7 +95,7 @@ class CacheManager:
     @classmethod
     def generate_key(cls, question: str, sources: List[SourceDocument], use_cloud: bool) -> str:
         context_ids = [
-            f"{s.file_name}:{s.page_number}:{s.chunk_number or 0}"
+            f"{s.file_name}:{s.page_number}:{s.chunk_number or 0}:{hashlib.sha1((s.text or '').encode('utf-8')).hexdigest()[:12]}"
             for s in sources
         ]
         mode     = "cloud" if use_cloud else "local"
