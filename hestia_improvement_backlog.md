@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 112 ✅ + 5 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #270 and #275.
+**Tally: 117 ✅ + 5 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -21,6 +21,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 5. Iris | 6 of 10 |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
+| 13. Ares | 5 of 5 |
 | 15. Metis & Orpheus | 6 of 6 |
 | 10. Artemis | 8 done (`#122`–`#125`, `#127`–`#130`), 1 partial (`#121`), of 10 (`#126` is counted under Apollo cross-module) |
 | Apollo cross-module | 5 done (`#126`, `#149`, `#159`, `#161`, `#233`), 1 partial (`#183`) |
@@ -222,11 +223,11 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 13. Ares — Strategy
 
-153. `[M]` Add a GATE/career-ranking specialization mode using the existing decision-support toolkit but scoped prompts.
-154. `[Q]` Add a "revisit this decision" reminder — schedule a follow-up check on a past strategic_plan/decision_support output.
-155. `[M]` Add outcome tracking — let the user record what actually happened after a plan/decision, and use it to calibrate future confidence.
-156. `[M]` Add a lightweight Monte Carlo simulator for numeric decisions (expected value under uncertainty) rather than the full Hecate-level system.
-157. `[Q]` Add named "playbooks" (saved SWOT/premortem templates for recurring decision types) instead of starting from scratch each time.
+153. ✅ `[M]` Add a GATE/career-ranking specialization mode using the existing decision-support toolkit but scoped prompts.
+154. ✅ `[Q]` Add a "revisit this decision" reminder — schedule a follow-up check on a past strategic_plan/decision_support output.
+155. ✅ `[M]` Add outcome tracking — let the user record what actually happened after a plan/decision, and use it to calibrate future confidence.
+156. ✅ `[M]` Add a lightweight Monte Carlo simulator for numeric decisions (expected value under uncertainty) rather than the full Hecate-level system.
+157. ✅ `[Q]` Add named "playbooks" (saved SWOT/premortem templates for recurring decision types) instead of starting from scratch each time.
 
 ## 14. Hecate — Decision Engine
 

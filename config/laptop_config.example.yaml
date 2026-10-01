@@ -143,6 +143,10 @@ artemis:
     lateness_minutes: 60             # how long past your usual time before nudging
   habit_grace_days: 0                # missed days a habit streak survives (0-7); a habit can set its own ("give reading a grace period of 2 days")
 
+ares:
+  # auto_review_days: 14             # also remind me to revisit every plan/decision/career ranking after N days (off by default; "revisit it in 2 weeks" works any time)
+  # db_path: "data/ares/ares.db"     # where Ares keeps tracked decisions, outcomes and playbooks
+
 # Surface disagreements between modules (e.g. Apollo says rest, Artemis says push).
 consensus:
   enabled: true                      # kill switch; only appends a note on a few intents

@@ -58,6 +58,8 @@ list_goal_templates, add_goal_from_template, list_badges,
 productivity_summary, get_at_risk_goals, get_motivation,
 ares_analyse_risk, ares_swot_analysis, ares_strategic_plan, ares_decision_support,
 ares_premortem_analysis, ares_competitive_analysis, ares_contingency_plan, ares_war_room_briefing,
+ares_career_ranking, ares_schedule_review, ares_record_outcome, ares_outcome_stats,
+ares_simulate_outcomes, ares_save_playbook, ares_list_playbooks, ares_run_playbook, ares_delete_playbook,
 apollo_log_workout, apollo_track_sleep, apollo_log_mood, apollo_log_health, apollo_get_health_summary,
 apollo_log_weight, apollo_log_water, apollo_set_health_goal, apollo_get_goal_progress,
 apollo_set_units, apollo_get_sleep_quality, apollo_get_correlations, apollo_log_meal,
@@ -594,6 +596,70 @@ User: catch me up on where things stand with the job search
 
 User: give me the full strategic picture on the startup
 {"intent": "ares_war_room_briefing", "entities": {"topic": "startup"}, "response": "Pulling together a briefing.", "confidence": 0.88}
+
+# ares_career_ranking: RANK a set of career/education paths against weighted
+# criteria (including GATE choices like M.Tech vs PSU vs private job). Use
+# this instead of ares_decision_support when the user asks to RANK or SCORE
+# career/education options. Put the options in "options" as a comma-separated
+# string; put any criteria they name in "criteria" (comma-separated, optional
+# ":weight" 1-5). Use ares_decision_support for general life decisions.
+
+User: rank my GATE options: M.Tech, PSU, private job
+{"intent": "ares_career_ranking", "entities": {"topic": "post-GATE path", "options": "M.Tech, PSU, private job", "mode": "gate"}, "response": "Ranking your options.", "confidence": 0.92}
+
+User: rank these career paths for me: data science, embedded systems, academia, weighing salary and learning
+{"intent": "ares_career_ranking", "entities": {"topic": "career path", "options": "data science, embedded systems, academia", "criteria": "salary, learning"}, "response": "Ranking your options.", "confidence": 0.9}
+
+# ares_schedule_review: schedule a follow-up reminder to REVISIT a past
+# plan/decision. Put the delay in "when" ("in 2 weeks", "next month").
+
+User: remind me to revisit my job decision in 2 weeks
+{"intent": "ares_schedule_review", "entities": {"topic": "job decision", "when": "in 2 weeks"}, "response": "Scheduling a review.", "confidence": 0.92}
+
+User: check back on the thesis plan next month
+{"intent": "ares_schedule_review", "entities": {"topic": "thesis plan", "when": "next month"}, "response": "Scheduling a review.", "confidence": 0.88}
+
+# ares_record_outcome: the user reports HOW a past plan/decision turned out.
+# "outcome" is one of: success, mixed, failure. Different from
+# ares_outcome_stats, which asks for a summary of all of them.
+
+User: the move to the new team worked out well
+{"intent": "ares_record_outcome", "entities": {"topic": "move to the new team", "outcome": "success"}, "response": "Logging the outcome.", "confidence": 0.88}
+
+User: record the outcome for the startup plan, it failed
+{"intent": "ares_record_outcome", "entities": {"topic": "startup plan", "outcome": "failure"}, "response": "Logging the outcome.", "confidence": 0.9}
+
+User: how have my past decisions turned out
+{"intent": "ares_outcome_stats", "entities": {}, "response": "Pulling up your track record.", "confidence": 0.9}
+
+# ares_simulate_outcomes: Monte Carlo / expected value over NUMBERS the user
+# gives. Not a qualitative analysis -- use only when there are probabilities
+# or ranges of money/values. Keep the original wording in raw_query; if the
+# user gave structured numbers, "scenarios" is a list of
+# {"probability": 0.6, "value": 1000000}, or use "low"/"likely"/"high".
+
+User: simulate this: 60% chance of gaining 10 lakh, 40% chance of losing 2 lakh
+{"intent": "ares_simulate_outcomes", "entities": {"topic": "the bet"}, "response": "Running the simulation.", "confidence": 0.92}
+
+User: run a monte carlo, somewhere between 50k and 200k, most likely 100k
+{"intent": "ares_simulate_outcomes", "entities": {"topic": "the project", "low": "50k", "likely": "100k", "high": "200k"}, "response": "Running the simulation.", "confidence": 0.9}
+
+# ares_save_playbook / ares_list_playbooks / ares_run_playbook /
+# ares_delete_playbook: NAMED, reusable analysis templates. "analysis" is
+# one of: swot, premortem, risk, plan, decision, competitive, contingency,
+# career. "criteria" is the standing checklist, as the user said it.
+
+User: save a playbook called job offer that runs a premortem and always considers salary, growth and commute
+{"intent": "ares_save_playbook", "entities": {"name": "job offer", "analysis": "premortem", "criteria": "salary, growth, commute"}, "response": "Saving the playbook.", "confidence": 0.92}
+
+User: what playbooks do I have
+{"intent": "ares_list_playbooks", "entities": {}, "response": "Listing your playbooks.", "confidence": 0.92}
+
+User: run my job offer playbook on the Bangalore offer
+{"intent": "ares_run_playbook", "entities": {"name": "job offer", "topic": "the Bangalore offer"}, "response": "Running the playbook.", "confidence": 0.92}
+
+User: delete the job offer playbook
+{"intent": "ares_delete_playbook", "entities": {"name": "job offer"}, "response": "Deleting the playbook.", "confidence": 0.9}
 
 ---
 
@@ -1287,3 +1353,15 @@ STRICT RULES:
   known about the topic. Do NOT use it for a request to start a single
   fresh analysis (risk, SWOT, plan, decision, premortem, competitive,
   contingency) -- those map to their own specific ares_* intent instead.
+- ares_career_ranking -> RANK/SCORE career or education options (GATE
+  routes included). ares_decision_support -> any other "should I A or B".
+  Do not swap them.
+- ares_simulate_outcomes -> only when the user supplies probabilities or
+  numeric ranges. A qualitative "what are the odds" question with no
+  numbers is ares_analyse_risk, not a simulation.
+- ares_record_outcome -> the user REPORTS how something went.
+  ares_outcome_stats -> asks for a SUMMARY of how things have gone.
+  ares_schedule_review -> asks to be reminded to LOOK AGAIN later. Do not
+  use set_reminder for "remind me to revisit my decision/plan".
+- A request that mentions a saved "playbook" by name is ares_run_playbook;
+  creating one is ares_save_playbook, never take_note or learn_fact.

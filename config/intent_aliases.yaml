@@ -661,3 +661,66 @@ athena_citation_graph:
   - "what does my paper cite"
   - phrase: "what cites"
     match: prefix
+
+# --- Ares: career ranking, reviews, outcomes, simulation, playbooks (#153-#157)
+# Prefix phrases only. "remind me to revisit" is longer than set_reminder's
+# "remind me to", and longer prefixes win, so it routes here instead.
+ares_career_ranking:
+  - "rank my career options"
+  - "rank my career paths"
+  - "rank my gate options"
+  - "rank my options"
+  - "career ranking"
+
+ares_schedule_review:
+  - "remind me to revisit"
+  - "remind me to review my decision"
+  - "remind me to review my plan"
+  - "revisit this decision"
+  - "schedule a decision review"
+  - "schedule a review"
+
+ares_record_outcome:
+  - "record the outcome"
+  - "record outcome"
+  - "log the outcome"
+  - "log outcome"
+
+ares_outcome_stats:
+  - "decision track record"
+  - "my track record"
+  - "how have my decisions turned out"
+  - "how have my past decisions turned out"
+  - "decision outcomes"
+
+ares_simulate_outcomes:
+  - "monte carlo"
+  - "run a monte carlo"
+  - "run a simulation"
+  - "simulate the outcomes"
+  - "simulate outcomes"
+
+ares_save_playbook:
+  - "save a playbook"
+  - "save playbook"
+  - "create a playbook"
+  - "make a playbook"
+  - "new playbook"
+
+ares_list_playbooks:
+  - "list my playbooks"
+  - "show my playbooks"
+  - "my playbooks"
+  - "what playbooks"
+
+ares_run_playbook:
+  - "run playbook"
+  - "run the playbook"
+  - "run my playbook"
+  - "use my playbook"
+
+ares_delete_playbook:
+  - "delete playbook"
+  - "delete the playbook"
+  - "delete my playbook"
+  - "remove the playbook"

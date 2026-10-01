@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from modules.base import BaseModule
 from core.ollama_client import generate
 from core.free_apis import FreeAPIError, sec_company_search as _fa_sec_company_search
+from . import simulate as _sim
+from .db import AresDB
 
 log = logging.getLogger(__name__)
 
@@ -210,6 +212,90 @@ lists, and set "confidence" to "Low". Do NOT invent a scenario, situation,
 or details of any kind — including unrelated scenarios like business or
 military situations — when KNOWN CONTEXT is empty. JSON only."""
 
+_CAREER_PROMPT = """You are Ares, a career-decision assistant.
+The user is choosing between career/education paths: {topic}
+Options to rank: {options}
+{scope_line}
+Score every option on every criterion below, from 1 (poor) to 10 (excellent),
+where a HIGH score is always GOOD for the user (for a cost/effort criterion,
+high means cheap/easy).
+Criteria: {criteria}
+
+KNOWN CONTEXT (may be empty):
+{grounding}
+
+Respond with ONLY valid JSON in this exact structure:
+{{
+  "options": [
+    {{
+      "option": "option name exactly as the user gave it",
+      "scores": {{"criterion name": 7}},
+      "strengths": ["strength 1", "strength 2"],
+      "risks": ["risk 1", "risk 2"]
+    }}
+  ],
+  "deciding_factor": "the one thing that should tip the choice",
+  "next_step": "the single most useful action to take now",
+  "data_to_verify": ["fact the user should confirm from an official source, 1", "fact 2"]
+}}
+
+Only rank the options the user actually named — never add alternatives.
+Do NOT state specific cutoffs, ranks, salaries, seat counts, fees or dates
+unless they appear in KNOWN CONTEXT or in the user's own message; describe
+relative differences instead, and put anything you would need to look up in
+"data_to_verify". """ + _GROUNDING_RULE + """ JSON only."""
+
+_CAREER_DEFAULT_CRITERIA = {
+    "earning potential": 3,
+    "long-term growth": 4,
+    "job security": 3,
+    "learning and skill fit": 4,
+    "alignment with my goals": 5,
+    "ease of entry": 2,
+}
+_CAREER_GATE_CRITERIA = {
+    "feasibility at my expected score": 5,
+    "career outcomes": 4,
+    "learning and research value": 3,
+    "job security": 3,
+    "cost and time": 3,
+    "alignment with my goals": 5,
+}
+_CAREER_GATE_SCOPE = (
+    "This is a GATE-exam-related choice (e.g. M.Tech vs PSU vs private job vs "
+    "other routes). Judge feasibility only from the score/rank the user has "
+    "stated, if any; if they gave none, say feasibility is unknown rather "
+    "than guessing."
+)
+
+_PLAYBOOK_ANALYSES = (
+    # (internal intent, keywords) — checked by earliest match in the text.
+    ("premortem_analysis", ("premortem", "pre-mortem", "pre mortem")),
+    ("swot_analysis", ("swot",)),
+    ("contingency_plan", ("contingency", "fallback", "plan b")),
+    ("competitive_analysis", ("competitive", "competitor", "competition")),
+    ("career_ranking", ("career ranking", "career", "ranking")),
+    ("analyse_risk", ("risk",)),
+    ("decision_support", ("decision",)),
+    ("strategic_plan", ("strategic plan", "plan")),
+)
+_PLAYBOOK_LABELS = {
+    "premortem_analysis": "premortem", "swot_analysis": "SWOT",
+    "contingency_plan": "contingency plan", "competitive_analysis": "competitive analysis",
+    "career_ranking": "career ranking", "analyse_risk": "risk analysis",
+    "decision_support": "decision support", "strategic_plan": "strategic plan",
+}
+
+_OUTCOME_SCORES = {"success": 1.0, "mixed": 0.5, "failure": 0.0}
+_MIN_CALIBRATION_SAMPLES = 3
+
+_NUM_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12,
+}
+_UNIT_DAYS = {"day": 1, "week": 7, "fortnight": 14, "month": 30, "year": 365}
+
 
 class AresEngine(BaseModule):
     name = "ares"
@@ -222,6 +308,16 @@ class AresEngine(BaseModule):
         "competitive_analysis",
         "contingency_plan",
         "war_room_briefing",
+        # Backlog #153-#157
+        "career_ranking",
+        "schedule_review",
+        "record_outcome",
+        "outcome_stats",
+        "simulate_outcomes",
+        "save_playbook",
+        "list_playbooks",
+        "run_playbook",
+        "delete_playbook",
     }
 
     # Low temperature for these calls: every prompt above asks for
@@ -234,10 +330,28 @@ class AresEngine(BaseModule):
     # failure causes, not to suppress the hypothetical itself.
     _ANALYSIS_OPTIONS = {"temperature": 0.2}
 
-    def __init__(self, memory=None, ollama_cfg: dict = None, llm=None):
+    def __init__(
+        self,
+        memory=None,
+        ollama_cfg: dict = None,
+        llm=None,
+        db_path: str | None = None,
+        auto_review_days: int | None = None,
+    ):
         self._memory = memory
         self._ollama = ollama_cfg or {}
         self._llm_instance = llm  # HestiaLLM | None — preferred path
+        # Decisions/outcomes/playbooks (#154, #155, #157). Opened lazily so
+        # merely constructing the engine never touches disk. With no
+        # db_path the store is in-memory and lasts for the process only;
+        # main.py passes a real path.
+        self._db_path = db_path or ":memory:"
+        self._db_instance: AresDB | None = None
+        # When set (config `ares.auto_review_days`), every plan/decision/
+        # career ranking also schedules a "how did it turn out?" reminder.
+        self._auto_review_days = (
+            max(1, min(730, int(auto_review_days))) if auto_review_days else None
+        )
 
     def can_handle(self, intent: str) -> bool:
         return intent in self._INTENTS
@@ -259,6 +373,24 @@ class AresEngine(BaseModule):
             return self._contingency_plan(entities, context)
         if intent == "war_room_briefing":
             return self._war_room_briefing(entities, context)
+        if intent == "career_ranking":
+            return self._career_ranking(entities, context)
+        if intent == "schedule_review":
+            return self._schedule_review(entities, context)
+        if intent == "record_outcome":
+            return self._record_outcome(entities, context)
+        if intent == "outcome_stats":
+            return self._outcome_stats(entities, context)
+        if intent == "simulate_outcomes":
+            return self._simulate_outcomes(entities, context)
+        if intent == "save_playbook":
+            return self._save_playbook(entities, context)
+        if intent == "list_playbooks":
+            return self._list_playbooks(entities, context)
+        if intent == "run_playbook":
+            return self._run_playbook(entities, context)
+        if intent == "delete_playbook":
+            return self._delete_playbook(entities, context)
         return {
             "response": f"{intent.replace('_', ' ').title()} is coming soon.",
             "data": {},
@@ -334,8 +466,16 @@ class AresEngine(BaseModule):
         general strategic reasoning instead") rather than fabricating
         specifics to satisfy "be specific to the topic".
         """
+        # A saved playbook's standing criteria (#157) arrive via context so
+        # every analysis prompt picks them up through this one block.
+        focus = ((context or {}).get("_ares_focus") or "").strip()
+        focus_part = (
+            "Standing criteria for this analysis (from the user's saved "
+            "playbook; address each one explicitly):\n" + focus
+        ) if focus else ""
+
         if not self._memory:
-            return ""
+            return focus_part
 
         parts: list[str] = []
 
@@ -370,6 +510,9 @@ class AresEngine(BaseModule):
         if recent_intents:
             parts.append("Recent conversation topics: " + ", ".join(recent_intents[-5:]))
 
+        if focus_part:
+            parts.append(focus_part)
+
         return "\n\n".join(parts)
 
     # ── strategic_plan ───────────────────────────────────────────────────────
@@ -385,6 +528,12 @@ class AresEngine(BaseModule):
 
         response = self._format_plan(topic, plan)
         self._persist(f"plan_{topic}", response)
+
+        decision_id, review_note = self._record_decision("plan", topic, response)
+        if decision_id is not None:
+            plan["decision_id"] = decision_id
+        if review_note:
+            response += "\n\n" + review_note
 
         milestone = plan.get("first_milestone", {})
         if milestone.get("description") and self._memory:
@@ -512,17 +661,7 @@ class AresEngine(BaseModule):
 
     def _decision_support(self, entities: dict, context: dict) -> dict:
         topic   = self._topic(entities)
-        options = entities.get("options", "")
-
-        # Fallback: try to extract options from the raw query using an "or"/
-        # comma split before giving up and asking the user to list them.
-        if not options:
-            raw_query = entities.get("raw_query", "")
-            if raw_query:
-                parts = re.split(r'\bor\b|,', raw_query, flags=re.IGNORECASE)
-                parts = [p.strip() for p in parts if len(p.strip()) > 3]
-                if len(parts) >= 2:
-                    options = ", ".join(parts)
+        options = self._extract_options(entities)
 
         # clarifying question if no options provided
         if not options:
@@ -544,6 +683,17 @@ class AresEngine(BaseModule):
 
         response = self._format_decision(topic, result)
         self._persist(f"decision_{topic}", response)
+
+        top = self._top_score(result.get("options_analysis"))
+        raw_conf = top / 10.0 if top is not None else None
+        decision_id, review_note = self._record_decision(
+            "decision", topic, response, options, raw_conf
+        )
+        if decision_id is not None:
+            result["decision_id"] = decision_id
+        response = self._with_track_record(response, result, raw_conf)
+        if review_note:
+            response += "\n\n" + review_note
 
         if result.get("next_step") and self._memory:
             due_dt = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
@@ -831,3 +981,726 @@ class AresEngine(BaseModule):
             lines += [f"CONFIDENCE: {result['confidence']}"]
 
         return "\n".join(lines).strip()
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # Backlog #153-#157: career ranking, review reminders, outcome tracking,
+    # Monte Carlo, playbooks.
+    # ═════════════════════════════════════════════════════════════════════════
+
+    # ── shared helpers ───────────────────────────────────────────────────────
+
+    @property
+    def _db(self) -> AresDB:
+        if self._db_instance is None:
+            self._db_instance = AresDB(self._db_path)
+        return self._db_instance
+
+    @staticmethod
+    def _extract_options(entities: dict) -> str:
+        """
+        Options as a comma-separated string: the `options` entity if present,
+        else a best-effort "or"/comma split of the raw query. Shared by
+        decision_support and career_ranking.
+        """
+        options = entities.get("options", "")
+        if isinstance(options, (list, tuple)):
+            options = ", ".join(str(o) for o in options)
+
+        # Fallback: try to extract options from the raw query using an
+        # "or"/comma split before giving up and asking the user to list them.
+        if not options:
+            raw_query = entities.get("raw_query", "")
+            if raw_query:
+                parts = re.split(r'\bor\b|,', raw_query, flags=re.IGNORECASE)
+                parts = [p.strip() for p in parts if len(p.strip()) > 3]
+                if len(parts) >= 2:
+                    options = ", ".join(parts)
+        return options
+
+    @staticmethod
+    def _top_score(options_analysis) -> float | None:
+        """Highest numeric 0-10 score among decision_support's options."""
+        best = None
+        for opt in options_analysis or []:
+            try:
+                score = float(opt.get("score"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if 0 <= score <= 10 and (best is None or score > best):
+                best = score
+        return best
+
+    @staticmethod
+    def _parse_delay_days(text: str) -> int | None:
+        """'in 2 weeks', 'three months', 'tomorrow', 'next week' -> days (1-730)."""
+        t = (text or "").lower()
+        m = re.search(
+            r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s+(day|week|fortnight|month|year)s?\b", t
+        )
+        if m:
+            n = int(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS[m.group(1)]
+            return max(1, min(730, n * _UNIT_DAYS[m.group(2)]))
+        if "tomorrow" in t:
+            return 1
+        m = re.search(r"\bnext\s+(week|fortnight|month|year)\b", t)
+        if m:
+            return _UNIT_DAYS[m.group(1)]
+        return None
+
+    def _schedule_reminder(self, text: str, days: int) -> str | None:
+        """Add a Mnemosyne reminder `days` from now. Returns the ISO due time, or None."""
+        if not self._memory:
+            return None
+        due = datetime.now(timezone.utc) + timedelta(days=days)
+        try:
+            self._memory.add_reminder(text, due.isoformat())
+        except Exception:
+            log.warning("Ares: add_reminder failed.", exc_info=True)
+            return None
+        return due.isoformat()
+
+    def _record_decision(
+        self,
+        kind: str,
+        topic: str,
+        summary: str,
+        options=None,
+        predicted_confidence: float | None = None,
+    ) -> tuple[int | None, str]:
+        """
+        Remember an analysis so it can be revisited and given an outcome.
+        Returns (decision_id, note); note is non-empty only when a review
+        reminder was auto-scheduled. Never raises: tracking is a bonus and
+        must not break the analysis itself.
+        """
+        try:
+            if isinstance(options, str):
+                options = [o.strip() for o in options.split(",") if o.strip()]
+            decision_id = self._db.add_decision(
+                kind, topic, summary, options, predicted_confidence
+            )
+        except Exception:
+            log.warning("Ares: could not record decision for %r.", topic, exc_info=True)
+            return None, ""
+
+        note = ""
+        if self._auto_review_days:
+            due = self._schedule_reminder(
+                f"Revisit your {kind} on '{topic}': how did it turn out?",
+                self._auto_review_days,
+            )
+            if due:
+                try:
+                    self._db.set_review(decision_id, due)
+                except Exception:
+                    log.warning("Ares: set_review failed.", exc_info=True)
+                note = f"Review reminder set for {due[:10]}."
+        return decision_id, note
+
+    def _calibration(self) -> dict | None:
+        """
+        Compare past predicted confidence with how things actually turned out
+        (success 1, mixed 0.5, failure 0). None until there are enough
+        resolved decisions to say anything.
+        """
+        try:
+            rows = self._db.resolved_with_confidence()
+        except Exception:
+            log.warning("Ares: calibration lookup failed.", exc_info=True)
+            return None
+        rows = [r for r in rows if r.get("outcome") in _OUTCOME_SCORES]
+        n = len(rows)
+        if n < _MIN_CALIBRATION_SAMPLES:
+            return None
+        mean_pred = sum(r["predicted_confidence"] for r in rows) / n
+        actual = sum(_OUTCOME_SCORES[r["outcome"]] for r in rows) / n
+        return {
+            "n": n,
+            "mean_predicted": mean_pred,
+            "actual_rate": actual,
+            "gap": mean_pred - actual,
+            # Shrink toward the raw score until there is a decent sample.
+            "weight": min(1.0, n / 10.0),
+        }
+
+    @staticmethod
+    def _calibrated(raw: float, cal: dict) -> float:
+        adjusted = raw + (cal["actual_rate"] - cal["mean_predicted"]) * cal["weight"]
+        return max(0.05, min(0.95, adjusted))
+
+    def _with_track_record(self, response: str, data: dict, raw_conf: float | None) -> str:
+        """Append a calibrated-confidence note once enough outcomes exist (#155)."""
+        if raw_conf is None:
+            return response
+        cal = self._calibration()
+        if not cal:
+            return response
+        adjusted = self._calibrated(raw_conf, cal)
+        data["calibrated_confidence"] = round(adjusted, 2)
+        if cal["gap"] > 0.05:
+            trend = "your earlier picks scored higher than they turned out"
+        elif cal["gap"] < -0.05:
+            trend = "your earlier picks turned out better than they scored"
+        else:
+            trend = "your earlier picks have been well calibrated"
+        return (
+            f"{response}\n\nTRACK RECORD\n"
+            f"  Raw confidence {raw_conf:.2f}, calibrated {adjusted:.2f} "
+            f"(based on {cal['n']} past outcomes; {trend})"
+        )
+
+    # ── career_ranking (#153) ────────────────────────────────────────────────
+    # Same toolkit as decision_support, but with a scoped prompt and weighted
+    # criteria. The model only scores each option per criterion; the weighted
+    # total and the ranking are computed here, because small local models are
+    # unreliable at arithmetic.
+
+    @staticmethod
+    def _parse_criteria(raw) -> dict[str, int]:
+        """'salary:5, location, growth:4' (or a list) -> {name: weight 1-5}."""
+        if not raw:
+            return {}
+        items = raw if isinstance(raw, (list, tuple)) else re.split(r"[;,\n]", str(raw))
+        out: dict[str, int] = {}
+        for item in items:
+            text = str(item).strip()
+            if not text:
+                continue
+            m = re.match(r"^(.*?)\s*[:=]\s*(\d+)$", text)
+            name, weight = (m.group(1).strip(), int(m.group(2))) if m else (text, 3)
+            if name:
+                out[name[:40]] = max(1, min(5, weight))
+            if len(out) >= 8:
+                break
+        return out
+
+    @staticmethod
+    def _match_scores(raw_scores, criteria: dict[str, int]) -> dict[str, float]:
+        """Map whatever keys the model used back onto the requested criteria."""
+        if not isinstance(raw_scores, dict):
+            return {}
+        by_lower = {c.lower(): c for c in criteria}
+        out: dict[str, float] = {}
+        for key, val in raw_scores.items():
+            try:
+                score = float(val)
+            except (TypeError, ValueError):
+                continue
+            k = str(key).strip().lower()
+            target = by_lower.get(k)
+            if target is None:
+                k_words = set(re.findall(r"[a-z]+", k))
+                best, best_overlap = None, 0
+                for lower, orig in by_lower.items():
+                    overlap = len(k_words & set(re.findall(r"[a-z]+", lower)))
+                    if overlap > best_overlap:
+                        best, best_overlap = orig, overlap
+                target = best
+            if target is not None and target not in out:
+                out[target] = max(1.0, min(10.0, score))
+        return out
+
+    def _career_ranking(self, entities: dict, context: dict) -> dict:
+        topic = self._topic(entities)
+        options = self._extract_options(entities)
+
+        if not options:
+            return {
+                "response": (
+                    f"I can rank your options for {topic}. "
+                    "What are they? List them and I'll score each one."
+                ),
+                "data": {},
+                "confidence": 0.6,
+            }
+
+        scan = f"{topic} {options} {entities.get('raw_query', '')}"
+        gate = (
+            str(entities.get("mode", "")).lower() == "gate"
+            or re.search(r"\bgate\b", scan, re.IGNORECASE) is not None
+        )
+        criteria = self._parse_criteria(entities.get("criteria")) or dict(
+            _CAREER_GATE_CRITERIA if gate else _CAREER_DEFAULT_CRITERIA
+        )
+        criteria_str = ", ".join(f"{name} (weight {w}/5)" for name, w in criteria.items())
+
+        raw = self._ollama_call(
+            _CAREER_PROMPT.format(
+                topic=topic,
+                options=options,
+                scope_line=_CAREER_GATE_SCOPE if gate else "",
+                criteria=criteria_str,
+                grounding=self._grounding(context) or "(none)",
+            )
+        )
+        result = self._parse(raw, "career_ranking")
+        if not result:
+            return {"response": raw or "I had trouble ranking those options.",
+                    "data": {}, "confidence": 0.3}
+
+        def _strs(v) -> list[str]:
+            return [str(x) for x in v][:3] if isinstance(v, list) else []
+
+        ranked = []
+        for o in result.get("options") or []:
+            if not isinstance(o, dict) or not o.get("option"):
+                continue
+            scores = self._match_scores(o.get("scores"), criteria)
+            if not scores:
+                continue
+            total_w = sum(criteria[c] for c in scores)
+            total = sum(criteria[c] * s for c, s in scores.items()) / total_w
+            ranked.append({
+                "option": str(o["option"]),
+                "score": round(total, 1),
+                "scores": scores,
+                "strengths": _strs(o.get("strengths")),
+                "risks": _strs(o.get("risks")),
+            })
+        ranked.sort(key=lambda r: r["score"], reverse=True)
+
+        if not ranked:
+            return {"response": "I couldn't get usable scores for those options. Try again, or "
+                                "list the options and the criteria that matter to you.",
+                    "data": {}, "confidence": 0.3}
+
+        data = {
+            "ranking": ranked,
+            "criteria": criteria,
+            "gate_mode": gate,
+            "deciding_factor": result.get("deciding_factor") or "",
+            "next_step": result.get("next_step") or "",
+            "data_to_verify": _strs(result.get("data_to_verify")),
+        }
+        response = self._format_career(topic, data)
+        self._persist(f"career_{topic}", response)
+
+        raw_conf = ranked[0]["score"] / 10.0
+        decision_id, review_note = self._record_decision(
+            "career", topic, response, [r["option"] for r in ranked], raw_conf
+        )
+        if decision_id is not None:
+            data["decision_id"] = decision_id
+        response = self._with_track_record(response, data, raw_conf)
+        if review_note:
+            response += "\n\n" + review_note
+
+        if data["next_step"] and self._memory:
+            self._schedule_reminder(data["next_step"], 1)
+
+        return {"response": response, "data": data, "confidence": 0.9}
+
+    @staticmethod
+    def _format_career(topic: str, data: dict) -> str:
+        scope = " (GATE mode)" if data.get("gate_mode") else ""
+        lines = [f"Career Ranking: {topic.title()}{scope}", ""]
+
+        lines.append("WEIGHTS")
+        lines.append("  " + ", ".join(f"{c} x{w}" for c, w in data["criteria"].items()))
+        lines.append("")
+
+        lines.append("RANKING")
+        for i, r in enumerate(data["ranking"], 1):
+            lines.append(f"  {i}. {r['option']}  [{r['score']:.1f}/10]")
+            lines.append("     Scores: " + ", ".join(f"{c} {s:g}" for c, s in r["scores"].items()))
+            for s in r["strengths"]:
+                lines.append(f"     + {s}")
+            for k in r["risks"]:
+                lines.append(f"     - {k}")
+        lines.append("")
+
+        if data.get("deciding_factor"):
+            lines += ["DECIDING FACTOR", f"  {data['deciding_factor']}", ""]
+        if data.get("data_to_verify"):
+            lines.append("VERIFY BEFORE DECIDING")
+            for d in data["data_to_verify"]:
+                lines.append(f"  • {d}")
+            lines.append("")
+        if data.get("next_step"):
+            lines += ["NEXT STEP", f"  {data['next_step']}"]
+
+        return "\n".join(lines).strip()
+
+    # ── schedule_review (#154) ───────────────────────────────────────────────
+
+    def _schedule_review(self, entities: dict, context: dict) -> dict:
+        topic = (entities.get("topic") or "").strip()
+        when_text = f"{entities.get('when', '')} {entities.get('raw_query', '')}"
+        days = self._parse_delay_days(when_text) or 14
+
+        row = self._db.find_decision(topic)
+        if not topic and not row:
+            return {
+                "response": (
+                    "Which decision or plan should I remind you to revisit? "
+                    "I don't have any saved yet."
+                ),
+                "data": {}, "confidence": 0.5,
+            }
+        label = topic or row["topic"]
+        # A topic that matches nothing saved still gets a reminder; the user
+        # may be asking about something decided outside Ares.
+        kind = row["kind"] if row and row["kind"] in ("plan", "decision", "career") else "decision"
+
+        if not self._memory:
+            return {"response": "Reminders aren't available right now, so I can't schedule a review.",
+                    "data": {}, "confidence": 0.3}
+        due = self._schedule_reminder(f"Revisit your {kind} on '{label}': how did it turn out?", days)
+        if not due:
+            return {"response": "I couldn't schedule that reminder. Please try again.",
+                    "data": {}, "confidence": 0.3}
+
+        if row:
+            self._db.set_review(row["id"], due)
+        due_str = datetime.fromisoformat(due).strftime("%d %b %Y")
+        extra = "" if row else " (I don't have a saved analysis for that, but the reminder is set.)"
+        return {
+            "response": (
+                f"Okay, I'll remind you on {due_str} to revisit '{label}'.{extra} "
+                "When you know how it went, tell me and I'll log the outcome."
+            ),
+            "data": {"due": due, "days": days, "decision_id": row["id"] if row else None},
+            "confidence": 0.9,
+        }
+
+    # ── record_outcome / outcome_stats (#155) ────────────────────────────────
+
+    @staticmethod
+    def _parse_outcome(text: str) -> str | None:
+        t = (text or "").lower()
+        if re.search(r"\b(mixed|partly|partially|so-so|half|kind of|sort of|okay-ish|meh)\b", t):
+            return "mixed"
+        if re.search(
+            r"\b(fail(?:ed|ure)?|didn'?t work|did not work|went badly|backfired|"
+            r"wrong call|regret|bad idea|flopped|bombed|went wrong)\b", t
+        ):
+            return "failure"
+        if re.search(
+            r"\b(success(?:ful|fully)?|succeeded|worked|went well|paid off|"
+            r"right call|good call|great|nailed|worked out)\b", t
+        ):
+            return "success"
+        return None
+
+    def _record_outcome(self, entities: dict, context: dict) -> dict:
+        topic = (entities.get("topic") or "").strip()
+        note = (entities.get("note") or entities.get("raw_query") or "").strip()
+        outcome = self._parse_outcome(str(entities.get("outcome") or "")) \
+            or self._parse_outcome(note)
+
+        if outcome is None:
+            return {
+                "response": "How did it turn out: did it work, was it mixed, or did it fail?",
+                "data": {}, "confidence": 0.5,
+            }
+
+        row = self._db.find_decision(topic, open_only=True) or self._db.find_decision(topic)
+        tracked = row is not None
+        if row is None:
+            if not topic:
+                return {"response": "Which decision or plan was that about?",
+                        "data": {}, "confidence": 0.5}
+            # No saved analysis: log it anyway so the track record is complete.
+            # It has no predicted confidence, so it can't skew calibration.
+            decision_id = self._db.add_decision("manual", topic, "")
+            row = self._db.get_decision(decision_id)
+
+        previous = row.get("outcome")
+        self._db.record_outcome(row["id"], outcome, note)
+
+        label = {"success": "worked", "mixed": "turned out mixed", "failure": "failed"}[outcome]
+        lines = [f"Logged: '{row['topic']}' {label}."]
+        if previous and previous != outcome:
+            lines.append(f"(This replaces the earlier outcome: {previous}.)")
+        if not tracked:
+            lines.append("I had no saved analysis for it, so it won't affect confidence calibration.")
+        cal = self._calibration()
+        if cal:
+            lines.append(
+                f"Across {cal['n']} tracked decisions, your average predicted confidence "
+                f"was {cal['mean_predicted']:.0%} and the actual success rate {cal['actual_rate']:.0%}; "
+                "future decision confidence will be adjusted to match."
+            )
+        return {
+            "response": " ".join(lines),
+            "data": {"decision_id": row["id"], "outcome": outcome, "calibration": cal},
+            "confidence": 0.9,
+        }
+
+    def _outcome_stats(self, entities: dict, context: dict) -> dict:
+        counts = self._db.outcome_counts()
+        total = sum(counts.values())
+        if total == 0:
+            return {
+                "response": (
+                    "I haven't tracked any plans or decisions yet. They're saved "
+                    "automatically when I make a plan, decision or career ranking; "
+                    "afterwards you can tell me how each one turned out."
+                ),
+                "data": {}, "confidence": 0.7,
+            }
+
+        resolved = {k: v for k, v in counts.items() if k in _OUTCOME_SCORES}
+        n_resolved = sum(resolved.values())
+        lines = ["Decision Track Record", ""]
+        lines.append(
+            f"  Tracked: {total}   Resolved: {n_resolved}   Waiting on an outcome: {counts.get('pending', 0)}"
+        )
+        if n_resolved:
+            rate = sum(_OUTCOME_SCORES[k] * v for k, v in resolved.items()) / n_resolved
+            lines.append(
+                f"  Worked: {resolved.get('success', 0)}   Mixed: {resolved.get('mixed', 0)}   "
+                f"Failed: {resolved.get('failure', 0)}   (success rate {rate:.0%})"
+            )
+
+        cal = self._calibration()
+        lines.append("")
+        if cal:
+            lines.append("CALIBRATION")
+            lines.append(
+                f"  Predicted {cal['mean_predicted']:.0%} on average vs {cal['actual_rate']:.0%} actual "
+                f"over {cal['n']} decisions."
+            )
+        else:
+            lines.append(
+                f"CALIBRATION\n  Needs at least {_MIN_CALIBRATION_SAMPLES} resolved decisions that had a "
+                "confidence score (decisions and career rankings do; plans don't)."
+            )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        due = self._db.due_reviews(now_iso)
+        if due:
+            lines += ["", "DUE FOR REVIEW"]
+            for d in due[:5]:
+                lines.append(f"  • {d['topic']} (review date {d['review_at'][:10]})")
+
+        recent = self._db.recent(5)
+        if recent:
+            lines += ["", "RECENT"]
+            for d in recent:
+                lines.append(f"  • {d['topic']} [{d['kind']}]: {d['outcome'] or 'no outcome yet'}")
+
+        return {"response": "\n".join(lines),
+                "data": {"counts": counts, "calibration": cal, "due_reviews": len(due)},
+                "confidence": 0.9}
+
+    # ── simulate_outcomes (#156) ─────────────────────────────────────────────
+
+    def _simulate_outcomes(self, entities: dict, context: dict) -> dict:
+        topic = (entities.get("topic") or "this decision").strip()
+        raw_query = entities.get("raw_query") or ""
+
+        options = None
+        ent_options = entities.get("options")
+        if isinstance(ent_options, list) and ent_options and all(isinstance(o, dict) for o in ent_options):
+            options = ent_options
+        elif isinstance(entities.get("scenarios"), list) and entities["scenarios"]:
+            options = [{"name": entities.get("name") or "Option",
+                        "scenarios": entities["scenarios"], "cost": entities.get("cost")}]
+        elif entities.get("low") is not None and entities.get("high") is not None:
+            options = [{"name": entities.get("name") or "Option", "low": entities["low"],
+                        "likely": entities.get("likely"), "high": entities["high"],
+                        "cost": entities.get("cost")}]
+
+        try:
+            if options is None:
+                parsed = _sim.parse_text(f"{entities.get('text', '')} {raw_query}")
+                if parsed:
+                    if entities.get("cost") not in (None, ""):
+                        parsed["cost"] = entities["cost"]
+                    options = [parsed]
+
+            if not options:
+                return {
+                    "response": (
+                        "To simulate it I need numbers. Give me either scenarios, e.g. "
+                        "\"60% chance of 10 lakh, 40% chance of losing 2 lakh\", or a range, e.g. "
+                        "\"between 50k and 200k, most likely 100k\". You can add a fixed cost too."
+                    ),
+                    "data": {}, "confidence": 0.5,
+                }
+
+            runs = entities.get("runs") or _sim.DEFAULT_RUNS
+            seed = entities.get("seed")
+            result = _sim.run(
+                options,
+                runs=int(runs),
+                seed=int(seed) if seed not in (None, "") else None,
+            )
+        except _sim.SimulationInputError as e:
+            return {"response": f"I couldn't run that simulation: {e}",
+                    "data": {}, "confidence": 0.4}
+        except (TypeError, ValueError):
+            return {"response": "I couldn't run that simulation: the numbers weren't in a form I could read.",
+                    "data": {}, "confidence": 0.4}
+
+        response = _sim.format_result(topic, result)
+        self._persist(f"simulation_{topic}", response)
+        return {"response": response, "data": result, "confidence": 0.95}
+
+    # ── playbooks (#157) ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_analysis(text: str) -> str | None:
+        """Internal intent named in *text*, by earliest keyword match."""
+        t = (text or "").lower().replace("_", " ")
+        best, best_pos = None, None
+        for intent, words in _PLAYBOOK_ANALYSES:
+            if t.strip() == intent.replace("_", " "):
+                return intent
+            for w in words:
+                m = re.search(r"\b" + re.escape(w) + r"\b", t)
+                if m and (best_pos is None or m.start() < best_pos):
+                    best, best_pos = intent, m.start()
+        return best
+
+    @staticmethod
+    def _playbook_name_from_text(raw: str) -> str:
+        m = re.search(
+            r"(?:called|named|name it|titled)\s+[\"'“‘]?(.+?)[\"'”’]?"
+            r"(?=\s+(?:that|which|to|with|for|and|runs?|using)\b|[,.;:]|$)",
+            raw, re.IGNORECASE,
+        )
+        if not m:
+            m = re.search(
+                r"playbook\s+for\s+[\"'“‘]?(.+?)[\"'”’]?"
+                r"(?=\s+(?:that|which|with|using|runs?)\b|[,.;:]|$)",
+                raw, re.IGNORECASE,
+            )
+        return m.group(1).strip() if m else ""
+
+    def _save_playbook(self, entities: dict, context: dict) -> dict:
+        raw = entities.get("raw_query") or ""
+        name = (entities.get("name") or entities.get("playbook") or "").strip() \
+            or self._playbook_name_from_text(raw)
+        name = re.sub(r"\s+", " ", name)[:60]
+        if not name:
+            return {"response": "What should I call this playbook?",
+                    "data": {}, "confidence": 0.5}
+
+        analysis_src = entities.get("analysis") or entities.get("type") or entities.get("framework")
+        if analysis_src:
+            analysis = self._detect_analysis(str(analysis_src))
+        else:
+            analysis = self._detect_analysis(raw.lower().replace(name.lower(), " "))
+        if not analysis:
+            return {
+                "response": (
+                    f"Which analysis should the '{name}' playbook run: SWOT, premortem, risk, "
+                    "strategic plan, decision support, competitive, contingency or career ranking?"
+                ),
+                "data": {}, "confidence": 0.5,
+            }
+
+        criteria = entities.get("criteria") or entities.get("focus") or ""
+        if isinstance(criteria, (list, tuple)):
+            criteria = "; ".join(str(c) for c in criteria)
+        criteria = str(criteria).strip()
+        if not criteria:
+            m = re.search(
+                r"(?:always\s+)?(?:consider(?:s|ing)?|check(?:s|ing)?|include(?:s)?|cover(?:s)?|"
+                r"weigh(?:s)?|criteria(?:\s+(?:are|is))?|focus(?:es)?\s+on)\s*:?\s+(.+?)[.]?$",
+                raw, re.IGNORECASE,
+            )
+            criteria = m.group(1).strip() if m else ""
+
+        options = entities.get("options") or ""
+        if isinstance(options, (list, tuple)):
+            options = ", ".join(str(o) for o in options)
+
+        existed = self._db.save_playbook(
+            name, analysis, criteria[:600], str(entities.get("topic") or "").strip(), str(options)
+        )
+        label = _PLAYBOOK_LABELS[analysis]
+        verb = "Updated" if existed else "Saved"
+        crit_note = f" It will always cover: {criteria}." if criteria else ""
+        return {
+            "response": (
+                f"{verb} playbook '{name}' ({label}).{crit_note} "
+                f"Run it any time with \"run my {name} playbook on <topic>\"."
+            ),
+            "data": {"name": name, "analysis": analysis, "criteria": criteria, "updated": existed},
+            "confidence": 0.9,
+        }
+
+    def _list_playbooks(self, entities: dict, context: dict) -> dict:
+        books = self._db.list_playbooks()
+        if not books:
+            return {
+                "response": (
+                    "You haven't saved any playbooks yet. Try: \"save a playbook called job offer "
+                    "that runs a premortem and always considers salary, growth and commute\"."
+                ),
+                "data": {"playbooks": []}, "confidence": 0.8,
+            }
+        lines = ["Playbooks", ""]
+        for b in books:
+            line = f"  • {b['name']}: {_PLAYBOOK_LABELS.get(b['analysis'], b['analysis'])}"
+            if b.get("criteria"):
+                crit = b["criteria"] if len(b["criteria"]) <= 80 else b["criteria"][:77] + "..."
+                line += f" (covers {crit})"
+            if b.get("uses"):
+                line += f", used {b['uses']}x"
+            lines.append(line)
+        return {"response": "\n".join(lines), "data": {"playbooks": books}, "confidence": 0.9}
+
+    def _lookup_playbook(self, entities: dict) -> tuple[dict | None, str]:
+        """(playbook, original_text_searched). Exact name first, then name-in-sentence."""
+        name = (entities.get("name") or entities.get("playbook") or "").strip()
+        raw = entities.get("raw_query") or ""
+        pb = self._db.get_playbook(name) if name else None
+        if pb is None and name:
+            pb = self._db.find_playbook_in_text(name)
+        if pb is None and raw:
+            pb = self._db.find_playbook_in_text(raw)
+        return pb, (name or raw)
+
+    def _run_playbook(self, entities: dict, context: dict) -> dict:
+        pb, searched = self._lookup_playbook(entities)
+        if pb is None:
+            names = [b["name"] for b in self._db.list_playbooks()]
+            have = f" You have: {', '.join(names)}." if names else " You haven't saved any yet."
+            what = f"'{searched}'" if searched else "that"
+            return {"response": f"I don't have a playbook called {what}.{have}",
+                    "data": {}, "confidence": 0.5}
+
+        topic = (entities.get("topic") or "").strip()
+        if not topic:
+            raw = entities.get("raw_query") or ""
+            idx = raw.lower().find(pb["name_key"])
+            rest = raw[idx + len(pb["name_key"]):] if idx >= 0 else raw
+            rest = re.sub(r"^\s*playbook\b", "", rest, flags=re.IGNORECASE)
+            m = re.search(r"\b(?:on|for|about|regarding)\s+(.+?)[.?!]*$", rest, re.IGNORECASE)
+            topic = m.group(1).strip() if m else ""
+        topic = topic or (pb.get("topic") or "").strip()
+        if not topic:
+            return {"response": f"What should I run the '{pb['name']}' playbook on?",
+                    "data": {}, "confidence": 0.5}
+
+        sub_entities = {"topic": topic}
+        options = entities.get("options") or pb.get("options") or ""
+        if options:
+            sub_entities["options"] = options
+        sub_context = dict(context or {})
+        if pb.get("criteria"):
+            sub_context["_ares_focus"] = pb["criteria"]
+
+        result = self.handle(pb["analysis"], sub_entities, sub_context)
+        self._db.touch_playbook(pb["name"])
+
+        result = dict(result)
+        result["response"] = f"Playbook: {pb['name']}\n\n{result['response']}"
+        data = dict(result.get("data") or {})
+        data["playbook"] = pb["name"]
+        result["data"] = data
+        return result
+
+    def _delete_playbook(self, entities: dict, context: dict) -> dict:
+        pb, searched = self._lookup_playbook(entities)
+        if pb is None:
+            return {"response": f"I couldn't find a playbook called '{searched}'." if searched
+                    else "Which playbook should I delete?",
+                    "data": {}, "confidence": 0.5}
+        self._db.delete_playbook(pb["name"])
+        return {"response": f"Deleted playbook '{pb['name']}'.",
+                "data": {"name": pb["name"]}, "confidence": 0.9}

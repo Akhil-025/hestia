@@ -235,6 +235,17 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "ares_competitive_analysis": "ares",
     "ares_contingency_plan": "ares",
     "ares_war_room_briefing": "ares",
+    # Career ranking, review reminders, outcome tracking, Monte Carlo and
+    # playbooks (backlog #153-#157).
+    "ares_career_ranking": "ares",
+    "ares_schedule_review": "ares",
+    "ares_record_outcome": "ares",
+    "ares_outcome_stats": "ares",
+    "ares_simulate_outcomes": "ares",
+    "ares_save_playbook": "ares",
+    "ares_list_playbooks": "ares",
+    "ares_run_playbook": "ares",
+    "ares_delete_playbook": "ares",
 
     # --- Apollo (health tracking) ---
     "apollo_log_workout": "apollo",
@@ -370,7 +381,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.16.0"
+REGISTRY_VERSION: str = "2.17.0"
 
 
 def registry_fingerprint() -> str:

@@ -418,8 +418,20 @@ class HestiaBuilder:
         )
         apollo = ApolloEngine(ollama_cfg=self.ollama_cfg, config=apollo_cfg)
         orchestrator.register(apollo)
+        # Ares keeps tracked decisions, outcomes and playbooks (#154, #155,
+        # #157) in its own SQLite file; `ares:` in laptop_config.yaml is optional.
+        ares_cfg = self.config.get("ares") or {}
+        ares_db_path = ares_cfg.get("db_path") or str(
+            Path(__file__).resolve().parent / "data" / "ares" / "ares.db"
+        )
+        os.makedirs(os.path.dirname(os.path.abspath(ares_db_path)), exist_ok=True)
         orchestrator.register(
-            AresEngine(memory=mnemosyne, ollama_cfg=self.ollama_cfg)
+            AresEngine(
+                memory=mnemosyne,
+                ollama_cfg=self.ollama_cfg,
+                db_path=ares_db_path,
+                auto_review_days=ares_cfg.get("auto_review_days"),
+            )
         )
         # Writing pair (backlog #164, #168, #169, #270). Orpheus and Metis
         # are wired to each other so a writing session can chain

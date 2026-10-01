@@ -110,6 +110,11 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("artemis.nudges.enabled", (bool,), False),
     ("artemis.nudges.lateness_minutes", (int, float), False),
 
+    # Ares (backlog #154). Optional.
+    ("ares", (dict,), False),
+    ("ares.auto_review_days", (int, float), False),
+    ("ares.db_path", (str,), False),
+
     # Apollo / Dionysus / consensus / maintenance (backlog #111-#120, #149, #159, #233). All optional.
     ("apollo", (dict,), False),
     ("apollo.timezone", (str,), False),

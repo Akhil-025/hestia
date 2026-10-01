@@ -12,6 +12,67 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Ares: career ranking, review reminders, outcome tracking, Monte Carlo, playbooks (#153-#157)
+
+Registry version 2.17.0 (minor: 9 intents added). New tests:
+`tests/test_ares_backlog.py`. New files: `modules/ares/db.py`,
+`modules/ares/simulate.py`. Ares now keeps a small SQLite file
+(`data/ares/ares.db`, or `ares.db_path`) for tracked decisions and playbooks.
+
+### Added
+
+- **Career / GATE ranking (#153).** "Rank my GATE options: M.Tech, PSU, private
+  job" (`ares_career_ranking`). The model scores each option 1 to 10 on each
+  criterion; the weighted total and the ranking are computed in code, not by
+  the model. GATE mode (detected from the wording, or `mode: gate`) swaps in
+  GATE-specific criteria. Name your own criteria with optional weights
+  ("salary:5, location:2"). The prompt forbids inventing cutoffs, salaries or
+  seat counts: anything it would need to look up is listed under "verify
+  before deciding".
+- **Revisit reminders (#154).** "Remind me to revisit my job decision in 2
+  weeks" (`ares_schedule_review`; "tomorrow", "next month", "in three weeks"
+  also work, default 14 days, max 2 years) creates a Mnemosyne reminder and
+  links it to the saved analysis. Without a saved analysis the reminder is
+  still set and the reply says so. Optional `ares.auto_review_days` does this
+  automatically for every plan, decision and career ranking (off by default).
+- **Outcome tracking (#155).** Every strategic plan, decision and career
+  ranking is saved automatically. "The Pune decision worked out well" /
+  "the startup plan failed" (`ares_record_outcome`: worked, mixed or failed)
+  logs how it went; "how have my past decisions turned out"
+  (`ares_outcome_stats`) shows counts, success rate, decisions due for review
+  and recent entries. Once 3 or more resolved decisions had a confidence
+  score, new decisions and career rankings get a TRACK RECORD line with a
+  calibrated confidence next to the raw one. The adjustment shrinks toward
+  zero for small samples and is clamped to 0.05 to 0.95. Outcomes logged for
+  something Ares never analysed are kept but excluded from calibration.
+- **Monte Carlo simulator (#156).** "Simulate: 60% chance of gaining 10 lakh,
+  40% chance of losing 2 lakh" or "between 50k and 200k, most likely 100k"
+  (`ares_simulate_outcomes`). Pure Python, no LLM, so no invented numbers.
+  Reports expected value, median, 5th to 95th percentile, worst/best and
+  chance of loss; several options (structured entities) are ranked with a
+  head-to-head win rate. Understands k, m, lakh and crore, and a fixed cost.
+  Probabilities that don't add up are normalised or padded with a "nothing
+  happens" outcome, and the reply says which.
+- **Playbooks (#157).** "Save a playbook called job offer that runs a
+  premortem and always considers salary, growth and commute"
+  (`ares_save_playbook`), then "run my job offer playbook on the Bangalore
+  role" (`ares_run_playbook`), plus `ares_list_playbooks` and
+  `ares_delete_playbook`. A playbook stores the analysis type, standing
+  criteria and optional default topic/options; its criteria are injected into
+  the analysis prompt for that run only.
+- Config: `ares.auto_review_days`, `ares.db_path` (both optional; see
+  `laptop_config.example.yaml`).
+
+### Changed
+
+- `decision_support` and `strategic_plan` now save what they produce (the
+  reply text is unchanged unless a review reminder or track-record note
+  applies).
+- Option extraction for decisions moved into a shared helper; it also accepts
+  a list for `options`.
+
+---
+
 ## [Unreleased] — Artemis: habit controls, focus timer, milestones, badges, nudges (#122-#125, #127-#130)
 
 Registry version 2.16.0 (minor: 12 intents added). New tests:
