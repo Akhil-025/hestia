@@ -74,8 +74,12 @@ class ConsensusEngine:
         out: list[dict[str, Any]] = []
         try:
             for name, habit in tracker.get_habits().items():
-                # An at-risk streak: alive (done yesterday), not done today.
-                if habit.streak >= _STREAK_MIN and habit.last_done == yesterday:
+                # An at-risk streak: alive, not done today, and skipping today would break it
+                # (a paused habit, or one with grace days left, is not at risk).
+                check = getattr(habit, "streak_ends_if_skipped_today", None)
+                at_risk = (check(today, getattr(tracker, "default_grace_days", 0)) if callable(check)
+                           else habit.last_done == yesterday)
+                if habit.streak >= _STREAK_MIN and at_risk:
                     out.append({
                         "direction": "push", "source": "artemis",
                         "weight": 0.5 + min(habit.streak, 14) / 14 * 0.5,

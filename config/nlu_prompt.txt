@@ -52,6 +52,9 @@ athena_compare_documents, athena_get_citations, athena_translate_document,
 athena_generate_report, athena_methodology, athena_citation_graph,
 add_goal, get_goals, update_goal, remove_goal, abandon_goal,
 add_habit, complete_habit, list_habits, remove_habit,
+set_habit_grace, pause_habit, resume_habit, weekly_habit_review,
+start_focus, stop_focus, focus_stats, decompose_goal, complete_milestone,
+list_goal_templates, add_goal_from_template, list_badges,
 productivity_summary, get_at_risk_goals, get_motivation,
 ares_analyse_risk, ares_swot_analysis, ares_strategic_plan, ares_decision_support,
 ares_premortem_analysis, ares_competitive_analysis, ares_contingency_plan, ares_war_room_briefing,
@@ -205,6 +208,42 @@ User: show me which of my papers cite each other
 
 User: who cites attention is all you need
 {"intent": "athena_citation_graph", "entities": {"focus": "attention is all you need"}, "response": "Checking who cites it.", "confidence": 0.85}
+
+User: pause my running habit for two weeks
+{"intent": "pause_habit", "entities": {"name": "running", "days": "14"}, "response": "Pausing that habit.", "confidence": 0.9}
+
+User: I'm back, resume meditation
+{"intent": "resume_habit", "entities": {"name": "meditation"}, "response": "Resuming that habit.", "confidence": 0.9}
+
+User: give my reading habit a grace period of 2 days
+{"intent": "set_habit_grace", "entities": {"name": "reading", "days": "2"}, "response": "Setting the grace period.", "confidence": 0.9}
+
+User: how consistent have I been with my habits this week
+{"intent": "weekly_habit_review", "entities": {}, "response": "Reviewing your week.", "confidence": 0.9}
+
+User: start a 25 minute focus session on my thesis
+{"intent": "start_focus", "entities": {"minutes": "25", "task": "my thesis"}, "response": "Starting a focus session.", "confidence": 0.9}
+
+User: stop the pomodoro
+{"intent": "stop_focus", "entities": {}, "response": "Stopping the session.", "confidence": 0.9}
+
+User: how much have I focused this week
+{"intent": "focus_stats", "entities": {}, "response": "Checking your focus time.", "confidence": 0.9}
+
+User: break down my goal to publish the paper into steps
+{"intent": "decompose_goal", "entities": {"name": "publish the paper"}, "response": "Breaking that goal down.", "confidence": 0.9}
+
+User: I finished step 2 of publish the paper
+{"intent": "complete_milestone", "entities": {"name": "publish the paper", "step": "2"}, "response": "Ticking that step.", "confidence": 0.9}
+
+User: what goal templates do you have
+{"intent": "list_goal_templates", "entities": {}, "response": "Listing templates.", "confidence": 0.9}
+
+User: start the run a 5k template
+{"intent": "add_goal_from_template", "entities": {"template": "run a 5k"}, "response": "Creating that goal.", "confidence": 0.9}
+
+User: show my badges
+{"intent": "list_badges", "entities": {}, "response": "Here are your badges.", "confidence": 0.9}
 
 User: search heat transfer notes
 {"intent": "athena_search", "entities": {"query": "heat transfer notes"}, "response": "Searching your documents.", "confidence": 0.95}
@@ -1209,6 +1248,16 @@ STRICT RULES:
 - "which papers cite which" / "citation graph" / "who cites <paper>" -> athena_citation_graph (entities: optional
   subject or focus). It maps citations BETWEEN the user's own indexed papers; "cite those sources" / a
   bibliography of the last search is athena_get_citations, NEVER athena_citation_graph.
+- "pause" / "vacation mode" / "put on hold" a habit -> pause_habit (entities: name, optional days); "resume" / "unpause"
+  -> resume_habit. "pause" is NEVER remove_habit or abandon_goal: a pause keeps the habit and its streak.
+  "grace period" / "forgive missed days" -> set_habit_grace (entities: name, days). "how consistent was I this week"
+  / "review my habits" -> weekly_habit_review, NEVER productivity_summary (an all-time overview).
+- "focus session" / "pomodoro" / "focus timer" -> start_focus (entities: minutes, task) / stop_focus / focus_stats.
+  A focus session is NOT set_reminder and NOT a habit.
+- "break down / split / plan out a goal" -> decompose_goal (entities: name); "finished step N" / "tick off the
+  first step" -> complete_milestone (entities: name, step). Steps belong to a goal, never to a habit.
+- "goal templates" -> list_goal_templates; "start the <X> template" -> add_goal_from_template (entities: template).
+  "my badges" / "achievements" -> list_badges.
 - "list/show/what are my habits" -> list_habits, NEVER get_goals.
   "what are my goals" -> get_goals, NEVER list_habits. Habits and goals
   are different Artemis concepts -- do not swap them.

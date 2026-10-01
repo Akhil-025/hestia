@@ -556,6 +556,99 @@ athena_methodology:
   - "design a methodology"
   - "methodology for"
 
+pause_habit:
+  - "pause my"
+  - "pause the"
+  - "pause habit"
+  - "put my habit on hold"
+  - "vacation mode for"
+  - "i'm going on holiday pause"
+
+resume_habit:
+  - "resume my"
+  - "resume the"
+  - "resume habit"
+  - "unpause my"
+  - "unpause the"
+  - "unpause habit"
+  - "i'm back resume"
+
+set_habit_grace:
+  - "set a grace period"
+  - "set grace period"
+  - "give my habit a grace period"
+  - "add a grace period"
+  - "grace period for"
+  - "turn off the grace period"
+  - "turn off grace period"
+
+weekly_habit_review:
+  - "weekly habit review"
+  - "habit review"
+  - "review my habits"
+  - "how consistent have i been this week"
+  - "how did my habits go this week"
+  - "habit consistency this week"
+
+start_focus:
+  - "start a focus session"
+  - "start focus session"
+  - "start a pomodoro"
+  - "start pomodoro"
+  - "start a focus timer"
+  - "focus for"
+  - "pomodoro"
+
+stop_focus:
+  - "stop the focus session"
+  - "stop focus session"
+  - "stop my focus session"
+  - "end the focus session"
+  - "end focus session"
+  - "stop the pomodoro"
+  - "stop pomodoro"
+
+focus_stats:
+  - "focus stats"
+  - "focus time this week"
+  - "how much have i focused"
+  - "how long have i focused"
+
+decompose_goal:
+  - "break down my goal"
+  - "break my goal into steps"
+  - "break down the goal"
+  - "split my goal into steps"
+  - "plan out my goal"
+
+complete_milestone:
+  - "finished step"
+  - "completed step"
+  - "done with step"
+  - "tick off step"
+  - "mark step"
+  - "next step done"
+
+list_goal_templates:
+  - "goal templates"
+  - "show goal templates"
+  - "list goal templates"
+  - "what goal templates"
+
+add_goal_from_template:
+  - "start the template"
+  - "use the template"
+  - "add a goal from a template"
+  - "start a goal from the template"
+
+list_badges:
+  - "my badges"
+  - "show my badges"
+  - "show badges"
+  - "list my badges"
+  - "what badges"
+  - "habit badges"
+
 athena_citation_graph:
   - "citation graph"
   - "show the citation graph"

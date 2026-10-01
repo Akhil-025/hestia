@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 104 ✅ + 4 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #126, #149, #159, #161, #183, #233, #259, #270 and #275.
+**Tally: 112 ✅ + 5 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 15 (Metis & Orpheus, #164–#169) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -22,6 +22,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
 | 15. Metis & Orpheus | 6 of 6 |
+| 10. Artemis | 8 done (`#122`–`#125`, `#127`–`#130`), 1 partial (`#121`), of 10 (`#126` is counted under Apollo cross-module) |
 | Apollo cross-module | 5 done (`#126`, `#149`, `#159`, `#161`, `#233`), 1 partial (`#183`) |
 | 26. Docs | 2 of 6 (`#245`, `#249`) |
 | 29. Judgment testing | 1 of 3 (`#259`) |
@@ -180,16 +181,16 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 10. Artemis — Habits & Goals
 
-121. `[M]` Add visual habit graphs (calendar heatmap style) in the web UI — the data already exists via `workout_dates`-style tracking patterns.
-122. `[M]` Add a Pomodoro/focus-session timer with start/stop voice commands feeding into productivity stats.
-123. `[Q]` Add habit "grace periods" (missing one day doesn't reset a streak if within an allowed buffer) as a configurable option.
-124. `[M]` Add goal decomposition — break a large goal into sub-tasks/milestones automatically via LLM, then track each.
-125. `[Q]` Add a weekly habit review prompt (already listed under Mnemosyne's academic memory in HEARTH.txt, but fits naturally here) summarizing consistency %.
+121. 🟡 `[M]` Add visual habit graphs (calendar heatmap style) in the web UI — the data already exists via `workout_dates`-style tracking patterns. *(partial: the Heatmap tab and its JSON endpoint are built and the endpoint is tested; the tab has not been checked visually in a browser, same as #183.)*
+122. ✅ `[M]` Add a Pomodoro/focus-session timer with start/stop voice commands feeding into productivity stats.
+123. ✅ `[Q]` Add habit "grace periods" (missing one day doesn't reset a streak if within an allowed buffer) as a configurable option.
+124. ✅ `[M]` Add goal decomposition — break a large goal into sub-tasks/milestones automatically via LLM, then track each.
+125. ✅ `[Q]` Add a weekly habit review prompt (already listed under Mnemosyne's academic memory in HEARTH.txt, but fits naturally here) summarizing consistency %.
 126. ✅ `[M]` Add habit correlation with Apollo's mood/sleep logs ("habits you kept on high-mood days").
-127. `[L]` Add an achievement/badge system (distinct from full XP/leveling) tied to milestones like 30-day streaks.
-128. `[Q]` Add "pause a habit" (vacation mode) so streaks don't break during planned breaks.
-129. `[M]` Add smart nudges — if a habit is usually done by a certain time and hasn't been logged, send a gentle reminder instead of waiting for end-of-day.
-130. `[M]` Add goal templates (common goal types pre-filled with sensible milestones) to reduce setup friction.
+127. ✅ `[L]` Add an achievement/badge system (distinct from full XP/leveling) tied to milestones like 30-day streaks.
+128. ✅ `[Q]` Add "pause a habit" (vacation mode) so streaks don't break during planned breaks.
+129. ✅ `[M]` Add smart nudges — if a habit is usually done by a certain time and hasn't been logged, send a gentle reminder instead of waiting for end-of-day.
+130. ✅ `[M]` Add goal templates (common goal types pre-filled with sensible milestones) to reduce setup friction.
 
 ## 11. Pluto — Finance
 

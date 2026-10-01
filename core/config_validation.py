@@ -102,6 +102,14 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("writing.export_dir", (str,), False),
     ("writing.plagiarism_web_check", (bool,), False),
 
+    # Artemis (backlog #123). Optional.
+    ("artemis", (dict,), False),
+    ("artemis.habit_grace_days", (int, float), False),
+    ("artemis.timezone", (str,), False),
+    ("artemis.nudges", (dict,), False),
+    ("artemis.nudges.enabled", (bool,), False),
+    ("artemis.nudges.lateness_minutes", (int, float), False),
+
     # Apollo / Dionysus / consensus / maintenance (backlog #111-#120, #149, #159, #233). All optional.
     ("apollo", (dict,), False),
     ("apollo.timezone", (str,), False),

@@ -12,7 +12,90 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
-## [Unreleased] — Athena: citation graph (#60)
+## [Unreleased] — Artemis: habit controls, focus timer, milestones, badges, nudges (#122-#125, #127-#130)
+
+Registry version 2.16.0 (minor: 12 intents added). New tests:
+`tests/test_artemis_habit_controls.py`, `tests/test_artemis_extras.py`.
+
+### Added
+
+- **Grace periods (#123).** A habit's streak can survive missed days.
+  "Give my reading habit a grace period of 2 days" (`set_habit_grace`, 0 to 7,
+  "turn off the grace period" sets it back to strict). The default for habits
+  with no setting of their own is `artemis.habit_grace_days` (default 0, so
+  nothing changes until you opt in). When a grace period saves a streak, the
+  completion reply says how many days were missed.
+- **Pause / resume (#128).** "Pause my running habit for two weeks" or "pause
+  meditation" (`pause_habit`, 1 to 365 days, open-ended if no length is
+  given); "resume running" (`resume_habit`). Paused days never count as missed,
+  so the streak survives a holiday; completing a paused habit resumes it.
+  Missed days after the pause ends still break the streak. Habit names are
+  matched loosely ("running" finds "morning run").
+- **Weekly habit review (#125).** "How consistent have I been this week?"
+  (`weekly_habit_review`): consistency over the last 7 days per habit and
+  overall, the weakest habit, and large moves against the week before. Paused
+  days, days before a habit's history begins, and today (until it's done) are
+  left out of the denominator rather than counted as misses. Habits that were
+  completed before history recording began are reported as "not enough
+  history" instead of guessed at.
+- `list_habits` now shows `paused` and the grace period; `habit_history()`
+  includes `paused`.
+
+- **Focus sessions / Pomodoro (#122).** "Start a 25 minute focus session on my
+  thesis" (`start_focus`, 1 to 180 minutes, default 25), "stop the pomodoro"
+  (`stop_focus`), "how much have I focused this week" (`focus_stats`). A
+  timer in the engine announces the end and suggests a 5-minute break, or a
+  15-minute one after every fourth finished session in a day. Stopping early
+  logs the minutes that actually elapsed; minutes never exceed the planned
+  length. Focus time appears in the productivity summary. A session that
+  ran out while the app was closed is logged as finished when you next start
+  or check one; the spoken alert is lost if Hestia restarts mid-session.
+- **Goal decomposition (#124).** "Break down my goal to publish the paper into
+  steps" (`decompose_goal`) asks the LLM for 4 to 7 milestones, creates the
+  goal if it doesn't exist, and stores the steps on it. "I finished step 2 of
+  <goal>" or "tick off the next step" (`complete_milestone`) ticks one; goal
+  progress follows the steps and the goal completes with the last. If the LLM
+  returns nothing usable, nothing is created and you're told so (no invented
+  steps).
+- **Goal templates (#130).** "What goal templates do you have"
+  (`list_goal_templates`) and "start the run a 5k template"
+  (`add_goal_from_template`): 8 templates (5K, read a book, learn a language,
+  emergency fund, research paper, lose weight, side project, declutter), each
+  with milestones, a due date and a priority.
+- **Badges (#127).** 11 badges earned from streaks (7/30/100/365 days),
+  completions (50/250), tracking 3 habits, completed goals (1/5) and focus
+  time (10/50 hours). A new one is announced in the reply that earns it, once;
+  "show my badges" (`list_badges`) lists them with dates. Badges are awarded
+  from existing data the first time they're checked, so an existing streak
+  earns its badge at your next completion.
+- **Smart nudges (#129).** Each live habit completion records its time of day.
+  Once a habit has 5 recorded times, the heartbeat nudges you if it's an hour
+  past your usual (median) time and it isn't logged: one nudge per habit per
+  day, the longest streak first, none after 22:00, none for paused habits.
+  Config: `artemis.nudges.{enabled, lateness_minutes}` and `artemis.timezone`
+  (falls back to `chronos.timezone`). The heartbeat ticks every 30 minutes, so
+  a nudge can arrive up to that much after the threshold. Back-dated
+  completions don't record a time.
+
+### Changed
+
+- **Consensus (#159).** An Artemis "push" signal now fires only when skipping
+  today would actually break the streak, so a paused habit or one with grace
+  days left no longer counts as at risk.
+- State file: habits gain optional `grace_days` and `pauses` keys, written only
+  when set, so untouched files keep their exact old shape.
+
+### Not done
+
+- #121 (heatmap) was already built under #183 and is still only partly
+  checked: nothing here was looked at in a browser.
+- Streak-milestone notifications (#256) are separate (the badge announcement
+  fires on the completing reply, not as a push). The weekly review is
+  on-request, not a scheduled Heartbeat prompt.
+
+---
+
+## Earlier — Athena: citation graph (#60)
 
 Closes Athena's last open item: #60. Registry version 2.14.0 (minor: 1 intent
 added). New tests: `tests/test_athena_citation_graph.py` (33).

@@ -213,6 +213,18 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "get_at_risk_goals": "artemis",
     "get_motivation": "artemis",
     "suggest_activity": "artemis",
+    "set_habit_grace": "artemis",
+    "pause_habit": "artemis",
+    "resume_habit": "artemis",
+    "weekly_habit_review": "artemis",
+    "start_focus": "artemis",
+    "stop_focus": "artemis",
+    "focus_stats": "artemis",
+    "decompose_goal": "artemis",
+    "complete_milestone": "artemis",
+    "list_goal_templates": "artemis",
+    "add_goal_from_template": "artemis",
+    "list_badges": "artemis",
 
     # --- Ares (strategic/analytical) ---
     "ares_analyse_risk": "ares",
@@ -358,7 +370,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.14.0"
+REGISTRY_VERSION: str = "2.16.0"
 
 
 def registry_fingerprint() -> str:

@@ -136,6 +136,13 @@ apollo:
 dionysus:
   mood_aware: true                   # use your logged mood for movie/music picks when you give none
 
+artemis:
+  # timezone: "Asia/Kolkata"         # clock for focus sessions and "usually done by" times; defaults to chronos.timezone
+  nudges:                            # gentle reminder when a habit you usually log by a certain time isn't logged yet
+    enabled: true                    # needs ~5 logged completions per habit; one nudge per habit per day, none after 22:00
+    lateness_minutes: 60             # how long past your usual time before nudging
+  habit_grace_days: 0                # missed days a habit streak survives (0-7); a habit can set its own ("give reading a grace period of 2 days")
+
 # Surface disagreements between modules (e.g. Apollo says rest, Artemis says push).
 consensus:
   enabled: true                      # kill switch; only appends a note on a few intents

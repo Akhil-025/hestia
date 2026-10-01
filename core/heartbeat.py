@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class HestiaHeartbeat:
     def __init__(self, interval: int = 1800, mnemosyne=None, diagnostics=None,
-                 apollo=None, maintenance=None):
+                 apollo=None, maintenance=None, artemis=None):
         self.interval = interval
         self.mnemosyne = mnemosyne
         # Backlog #6. Optional: a heartbeat built without one (as in the
@@ -25,6 +25,8 @@ class HestiaHeartbeat:
         # weekly-summary, goal-pace and burnout check-ins. Optional, like
         # diagnostics: a heartbeat built without it simply skips them.
         self.apollo = apollo
+        # Backlog #129: ArtemisEngine supplies smart habit nudges. Optional, like apollo.
+        self.artemis = artemis
         # Backlog #233: core.db_maintenance.DBMaintenance (optional).
         self.maintenance = maintenance
         self._last_maintenance_date = None
@@ -68,6 +70,7 @@ class HestiaHeartbeat:
         self._maybe_run_low_confidence_review()
         self._maybe_run_weekly_accuracy_review()
         self._maybe_run_apollo_checkins()
+        self._maybe_run_artemis_checkins()
         self._maybe_run_db_maintenance()
         self._maybe_run_mnemosyne_jobs()
 
@@ -106,6 +109,18 @@ class HestiaHeartbeat:
         "check_burnout",
         "check_goal_pace_reminder",
     )
+
+    def _maybe_run_artemis_checkins(self) -> None:
+        hook = getattr(self.artemis, "check_habit_nudges", None)
+        if not callable(hook):
+            return
+        try:
+            text = hook()
+        except Exception:
+            logging.getLogger(__name__).exception("Artemis habit nudge check failed.")
+            return
+        if isinstance(text, str) and text.strip():
+            bus.emit("speak", {"text": text})
 
     def _maybe_run_apollo_checkins(self) -> None:
         if self.apollo is None:

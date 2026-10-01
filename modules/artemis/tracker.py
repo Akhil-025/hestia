@@ -14,7 +14,14 @@ import tempfile
 import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from . import extras
+
+try:  # stdlib on 3.9+, but tzdata may be missing on some Windows installs
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +48,11 @@ _PROGRESS_MAX = 1.0
 # state file can't grow without bound; ~13 months is plenty for heatmaps and
 # correlations. Oldest dates are dropped first.
 HISTORY_CAP_DAYS = 400
+
+# Habit grace periods (#123) and pauses (#128).
+MAX_GRACE_DAYS = 7          # most missed days a streak may survive
+_MAX_MILESTONES = 12        # per goal
+_MAX_PAUSES = 24            # pause intervals remembered per habit; oldest dropped first
 
 _VALID_PRIORITIES: frozenset[str] = frozenset({"low", "medium", "high"})
 
@@ -75,7 +87,7 @@ class Habit:
     __slots__ = (
         "name", "streak", "last_done",
         "best_streak", "total_completions", "created_at",
-        "history", "history_since",
+        "history", "history_since", "grace_days", "pauses", "times",
     )
 
     def __init__(
@@ -88,6 +100,9 @@ class Habit:
         created_at: str = "",
         history: Optional[list[str]] = None,
         history_since: str = "",
+        grace_days: Optional[int] = None,
+        pauses: Optional[list] = None,
+        times: Optional[list] = None,
     ) -> None:
         self.name = name
         self.streak = streak
@@ -102,6 +117,13 @@ class Habit:
         # can vouch for (days before it are unknown, not "missed").
         self.history: list[str] = _clean_history(history or [])
         self.history_since = history_since
+        # Missed days a streak survives; None means "use the tracker's default" (#123).
+        self.grace_days: Optional[int] = _clean_grace(grace_days)
+        # [[start_iso, end_iso_or_""], ...]: the habit is paused on start <= day < end;
+        # "" means open-ended (#128).
+        self.pauses: list[list[str]] = _clean_pauses(pauses or [])
+        # Minute-of-day (local) of recent completions, for smart nudges (#129).
+        self.times: list[int] = _clean_times(times or [])
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -120,6 +142,12 @@ class Habit:
         if self.history:
             out["history"] = list(self.history)
             out["history_since"] = self.history_since
+        if self.grace_days is not None:
+            out["grace_days"] = self.grace_days
+        if self.pauses:
+            out["pauses"] = [list(p) for p in self.pauses]
+        if self.times:
+            out["times"] = list(self.times)
         return out
 
     @classmethod
@@ -133,6 +161,9 @@ class Habit:
             created_at=str(raw.get("created_at", "")),
             history=raw.get("history") if isinstance(raw.get("history"), list) else None,
             history_since=str(raw.get("history_since", "") or ""),
+            grace_days=raw.get("grace_days"),
+            pauses=raw.get("pauses") if isinstance(raw.get("pauses"), list) else None,
+            times=raw.get("times") if isinstance(raw.get("times"), list) else None,
         )
 
     # ------------------------------------------------------------------
@@ -146,7 +177,86 @@ class Habit:
             self.history.append(day_iso)
             self.history = _clean_history(self.history)
 
-    def complete(self, today: date) -> dict[str, Any]:
+    # ------------------------------------------------------------------
+    # Pauses (#128) and grace periods (#123)
+    # ------------------------------------------------------------------
+
+    def paused_on(self, day: date) -> bool:
+        iso = day.isoformat()
+        return any(start <= iso and (not end or iso < end) for start, end in self.pauses)
+
+    def pause(self, today: date, days: Optional[int] = None) -> bool:
+        """Pause from *today* (for *days* days, or until resumed). False if already paused today."""
+        if self.paused_on(today):
+            return False
+        end = (today + timedelta(days=days)).isoformat() if days else ""
+        self.pauses.append([today.isoformat(), end])
+        self.pauses = _clean_pauses(self.pauses)
+        return True
+
+    def resume(self, today: date) -> bool:
+        """End the pause covering *today*, so *today* counts as a normal day. False if not paused."""
+        iso = today.isoformat()
+        for p in self.pauses:
+            if p[0] <= iso and (not p[1] or iso < p[1]):
+                p[1] = iso
+                self.pauses = _clean_pauses(self.pauses)      # a zero-length pause is dropped
+                return True
+        return False
+
+    def missed_days(self, today: date) -> int:
+        """Days strictly between the last completion and *today* that were neither done nor paused."""
+        try:
+            last = date.fromisoformat(self.last_done)
+        except ValueError:
+            return 0
+        gap = (today - last).days - 1
+        return sum(1 for i in range(1, gap + 1) if not self.paused_on(last + timedelta(days=i)))
+
+    def streak_alive(self, today: date, default_grace: int = 0) -> bool:
+        """Would completing the habit today continue the streak (rather than restart it)?"""
+        if self.streak <= 0 or not self.last_done:
+            return False
+        if self.last_done >= today.isoformat():
+            return True
+        return self.missed_days(today) <= self._grace(default_grace)
+
+    def streak_ends_if_skipped_today(self, today: date, default_grace: int = 0) -> bool:
+        """An alive streak that today's skip would break: no grace left, not paused, not done today."""
+        return (self.streak > 0 and self.last_done < today.isoformat() and not self.paused_on(today)
+                and self.streak_alive(today, default_grace)
+                and self.missed_days(today) + 1 > self._grace(default_grace))
+
+    def _grace(self, default_grace: int) -> int:
+        return self.grace_days if self.grace_days is not None else max(0, int(default_grace))
+
+    def window_stats(self, start: date, end: date, today: date) -> tuple[int, int]:
+        """
+        (days done, days possible) over start..end inclusive. A day is "possible" only if the
+        habit's history covers it and it wasn't paused; today is possible only once done, since
+        the day isn't over. (0, 0) when the habit has no history that reaches the window.
+        """
+        if self.history_since:
+            since = date.fromisoformat(self.history_since)
+        elif self.total_completions == 0:
+            try:
+                since = date.fromisoformat(self.created_at[:10])
+            except ValueError:
+                return 0, 0
+        else:
+            return 0, 0                           # completed before history was recorded: unknown
+        done_set = set(self.history)
+        done = possible = 0
+        d = max(start, since)
+        while d <= end:
+            iso = d.isoformat()
+            if not self.paused_on(d) and (d != today or iso in done_set):
+                possible += 1
+                done += iso in done_set
+            d += timedelta(days=1)
+        return done, possible
+
+    def complete(self, today: date, default_grace: int = 0, at_minute: Optional[int] = None) -> dict[str, Any]:
         """
         Mark the habit as completed for *today*, updating the streak,
         best streak, and completion count.
@@ -155,7 +265,10 @@ class Habit:
         -----
         - Same day  → no-op (idempotent), reports the existing state.
         - Yesterday → extend streak.
+        - Missed days → extend if they fit the habit's grace period (``grace_days``, else
+          *default_grace*); days the habit was paused never count as missed (#123, #128).
         - Older / never done → reset streak to 1.
+        - Completing a paused habit resumes it.
 
         Returns
         -------
@@ -179,13 +292,20 @@ class Habit:
                 "total_completions": self.total_completions,
             }
 
+        resumed = self.resume(today)
+        grace_used = 0
         if self.last_done == yesterday_iso:
+            self.streak += 1
+        elif self.last_done and self.last_done < today_iso and self.streak_alive(today, default_grace):
+            grace_used = self.missed_days(today)
             self.streak += 1
         else:
             self.streak = 1
 
         self.last_done = today_iso
         self._record_history(today_iso)
+        if at_minute is not None and 0 <= at_minute < 1440:
+            self.times = _clean_times(self.times + [at_minute])
         self.total_completions += 1
         is_new_best = self.streak > self.best_streak
         if is_new_best:
@@ -202,6 +322,8 @@ class Habit:
             "best_streak": self.best_streak,
             "is_new_best": is_new_best,
             "total_completions": self.total_completions,
+            "grace_used": grace_used,
+            "resumed": resumed,
         }
 
     def consistency_pct(self, today: date) -> float:
@@ -228,7 +350,7 @@ class Goal:
 
     __slots__ = (
         "name", "progress", "status", "created_at", "updated_at",
-        "due_date", "priority",
+        "due_date", "priority", "milestones",
     )
 
     _VALID_STATUSES = frozenset({"active", "completed", "abandoned"})
@@ -242,6 +364,7 @@ class Goal:
         updated_at: str = "",
         due_date: Optional[str] = None,
         priority: Optional[str] = None,
+        milestones: Optional[list] = None,
     ) -> None:
         self.name = name
         self.progress = progress
@@ -250,13 +373,15 @@ class Goal:
         self.updated_at = updated_at or _utc_now()
         self.due_date = due_date or None      # ISO date string ("YYYY-MM-DD") or None
         self.priority = priority or None      # one of _VALID_PRIORITIES or None
+        # Sub-steps (#124/#130): [{"title", "done"}]. When present, progress follows them.
+        self.milestones: list[dict[str, Any]] = _clean_milestones(milestones or [])
 
     # ------------------------------------------------------------------
     # Serialisation
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "progress": self.progress,
             "status": self.status,
             "created_at": self.created_at,
@@ -264,10 +389,14 @@ class Goal:
             "due_date": self.due_date,
             "priority": self.priority,
         }
+        if self.milestones:
+            out["milestones"] = [dict(m) for m in self.milestones]
+        return out
 
     @classmethod
     def from_dict(cls, name: str, raw: dict[str, Any]) -> "Goal":
         return cls(
+            milestones=raw.get("milestones") if isinstance(raw.get("milestones"), list) else None,
             name=name,
             progress=float(raw.get("progress", 0.0)),
             status=str(raw.get("status", "active")),
@@ -289,6 +418,30 @@ class Goal:
         if self.progress >= _PROGRESS_MAX:
             self.status = "completed"
             logger.info("Goal %r marked as completed.", self.name)
+
+    def set_milestones(self, titles: list[Any]) -> None:
+        """Replace the milestones (keeping "done" for titles that survive) and re-derive progress."""
+        done = {m["title"].lower() for m in self.milestones if m["done"]}
+        fresh = _clean_milestones(titles)
+        for m in fresh:
+            if isinstance(m, dict) and m["title"].lower() in done:
+                m["done"] = True
+        self.milestones = fresh
+        self._sync_progress()
+
+    def complete_milestone(self, ref: Any) -> Optional[dict[str, Any]]:
+        """Tick a milestone by 1-based number or title fragment; None if nothing matches."""
+        idx = _match_milestone(self.milestones, ref)
+        if idx is None:
+            return None
+        self.milestones[idx]["done"] = True
+        self._sync_progress()
+        return self.milestones[idx]
+
+    def _sync_progress(self) -> None:
+        if not self.milestones:
+            return
+        self.update_progress(sum(m["done"] for m in self.milestones) / len(self.milestones))
 
     def set_status(self, status: str) -> None:
         if status not in self._VALID_STATUSES:
@@ -329,6 +482,83 @@ def _clean_history(dates: list[Any]) -> list[str]:
         except ValueError:
             continue
     return sorted(valid)[-HISTORY_CAP_DAYS:]
+
+
+def _clean_times(values: list[Any]) -> list[int]:
+    """Valid minute-of-day ints, newest last, capped."""
+    out: list[int] = []
+    for v in values:
+        try:
+            m = int(v)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= m < 1440:
+            out.append(m)
+    return out[-extras.TIMES_CAP:]
+
+
+def _clean_milestones(items: list[Any]) -> list[dict[str, Any]]:
+    """[{"title": str, "done": bool}], blank/duplicate titles dropped."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for it in items:
+        title = str(it.get("title", "") if isinstance(it, dict) else it).strip()[:120]
+        if not title or title.lower() in seen:
+            continue
+        seen.add(title.lower())
+        out.append({"title": title, "done": bool(it.get("done")) if isinstance(it, dict) else False})
+    return out[:_MAX_MILESTONES]
+
+
+def _match_milestone(milestones: list[dict[str, Any]], ref: Any) -> Optional[int]:
+    """Index of the first not-yet-done milestone matching *ref* (1-based number or title fragment)."""
+    text = str(ref or "").strip().lower()
+    if not text or not milestones:
+        return None
+    if text.isdigit():
+        n = int(text) - 1
+        return n if 0 <= n < len(milestones) else None
+    for i, m in enumerate(milestones):
+        if not m["done"] and text in m["title"].lower():
+            return i
+    for i, m in enumerate(milestones):
+        if text in m["title"].lower():
+            return i
+    return None
+
+
+def _clean_grace(value: Any) -> Optional[int]:
+    """A grace period in whole days within 0..MAX_GRACE_DAYS, or None (use the default)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return max(0, min(MAX_GRACE_DAYS, int(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_pauses(pauses: list[Any]) -> list[list[str]]:
+    """Valid [start, end] pairs, oldest first; zero-length or inverted pauses are dropped."""
+    out: list[list[str]] = []
+    for p in pauses:
+        try:
+            start = date.fromisoformat(str(p[0])[:10]).isoformat()
+            end = date.fromisoformat(str(p[1])[:10]).isoformat() if len(p) > 1 and p[1] else ""
+        except (ValueError, TypeError, IndexError):
+            continue
+        if end and end <= start:
+            continue
+        out.append([start, end])
+    return sorted(out)[-_MAX_PAUSES:]
+
+
+def _load_tz(name: str):
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(name or "UTC")
+        except Exception:
+            logger.warning("Unknown timezone %r; using UTC.", name)
+    return timezone.utc
 
 
 def _today_utc() -> date:
@@ -383,9 +613,17 @@ class ArtemisTracker:
     ----------
     path:
         Path to the JSON state file.
+    timezone_name:
+        IANA zone used to read the clock for completion times and focus sessions (#122, #129).
+    default_grace_days:
+        Missed days a habit's streak survives unless that habit sets its own (#123).
+        0 (the default) keeps the strict "miss a day and it resets" behaviour.
     """
 
-    def __init__(self, path: str | Path = _DEFAULT_PATH) -> None:
+    def __init__(self, path: str | Path = _DEFAULT_PATH, default_grace_days: int = 0,
+                 timezone_name: str = "UTC") -> None:
+        self.default_grace_days = _clean_grace(default_grace_days) or 0
+        self.tz = _load_tz(timezone_name)
         raw_path = Path(path)
         if raw_path.is_absolute():
             self._path = raw_path
@@ -489,7 +727,12 @@ class ArtemisTracker:
 
         logger.info("Habit added: %r", name)
 
-    def complete_habit(self, name: str, today: Optional[date] = None) -> dict[str, Any]:
+    def now(self) -> datetime:
+        """The current moment in the tracker's timezone."""
+        return datetime.now(self.tz)
+
+    def complete_habit(self, name: str, today: Optional[date] = None,
+                       at: Optional[datetime] = None) -> dict[str, Any]:
         """
         Mark *name* as completed for today (or an injected *today* for testing).
 
@@ -507,6 +750,14 @@ class ArtemisTracker:
         """
         _validate_name(name, _MAX_HABIT_NAME_LEN, "Habit")
         effective_today = today or _today_utc()
+        # Time of day is only recorded for a real, live completion (or an explicit *at*), so a
+        # back-dated or test completion never skews the "usually done by" estimate.
+        if at is None and today is None:
+            at = self.now()
+        at_minute = None
+        if at is not None:
+            local = at.astimezone(self.tz) if at.tzinfo else at
+            at_minute = local.hour * 60 + local.minute
 
         with self._lock:
             data = self._read_raw()
@@ -516,11 +767,85 @@ class ArtemisTracker:
                     f"Habit {name!r} not found. Add it first with add_habit()."
                 )
             habit = Habit.from_dict(name, raw)
-            result = habit.complete(effective_today)
+            result = habit.complete(effective_today, self.default_grace_days, at_minute)
             data["habits"][name] = habit.to_dict()
             self._write_raw(data)
 
         return result
+
+    # -- grace periods (#123), pauses (#128), weekly review (#125) ------
+
+    def _mutate_habit(self, name: str, fn) -> Any:
+        _validate_name(name, _MAX_HABIT_NAME_LEN, "Habit")
+        with self._lock:
+            data = self._read_raw()
+            raw = data["habits"].get(name)
+            if raw is None:
+                raise HabitNotFoundError(f"Habit {name!r} not found.")
+            habit = Habit.from_dict(name, raw)
+            result = fn(habit)
+            data["habits"][name] = habit.to_dict()
+            self._write_raw(data)
+        return result
+
+    def set_habit_grace(self, name: str, days: Optional[int]) -> Optional[int]:
+        """Set how many missed days *name*'s streak survives (0 = strict; None = use the default).
+        Returns the value stored. Raises ValueError outside 0..MAX_GRACE_DAYS."""
+        if days is not None and (isinstance(days, bool) or not 0 <= int(days) <= MAX_GRACE_DAYS):
+            raise ValueError(f"Grace period must be between 0 and {MAX_GRACE_DAYS} days.")
+        value = None if days is None else int(days)
+
+        def apply(h: Habit) -> Optional[int]:
+            h.grace_days = value
+            return value
+        return self._mutate_habit(name, apply)
+
+    def pause_habit(self, name: str, days: Optional[int] = None, today: Optional[date] = None) -> dict[str, Any]:
+        """Pause *name* from today for *days* days, or until it is resumed. Streak survives the break."""
+        if days is not None and not 1 <= int(days) <= 365:
+            raise ValueError("A pause must last between 1 and 365 days.")
+        t = today or _today_utc()
+
+        def apply(h: Habit) -> dict[str, Any]:
+            changed = h.pause(t, int(days) if days else None)
+            end = next((p[1] for p in h.pauses if p[0] <= t.isoformat() and (not p[1] or t.isoformat() < p[1])), "")
+            return {"already_paused": not changed, "until": end or None, "streak": h.streak}
+        return self._mutate_habit(name, apply)
+
+    def resume_habit(self, name: str, today: Optional[date] = None) -> dict[str, Any]:
+        t = today or _today_utc()
+
+        def apply(h: Habit) -> dict[str, Any]:
+            return {"was_paused": h.resume(t), "streak": h.streak}
+        return self._mutate_habit(name, apply)
+
+    def weekly_review(self, today: Optional[date] = None, days: int = 7) -> dict[str, Any]:
+        """
+        Consistency over the last *days* days against the *days* before (#125). Paused days and
+        days before a habit's history begins are left out of the denominator rather than counted
+        as misses; a habit with no usable history is listed with ``pct`` None.
+        """
+        t = today or _today_utc()
+        start, prev_end = t - timedelta(days=days - 1), t - timedelta(days=days)
+        prev_start = prev_end - timedelta(days=days - 1)
+        rows, tot_done, tot_poss = [], 0, 0
+        for name, h in self.get_habits().items():
+            done, poss = h.window_stats(start, t, t)
+            pdone, pposs = h.window_stats(prev_start, prev_end, t)
+            rows.append({
+                "name": name, "done": done, "possible": poss,
+                "pct": round(done / poss * 100) if poss else None,
+                "prev_pct": round(pdone / pposs * 100) if pposs >= 3 else None,
+                "streak": h.streak, "paused": h.paused_on(t),
+            })
+            tot_done, tot_poss = tot_done + done, tot_poss + poss
+        scored = [r for r in rows if r["pct"] is not None]
+        return {
+            "start": start.isoformat(), "end": t.isoformat(), "habits": rows,
+            "overall_pct": round(tot_done / tot_poss * 100) if tot_poss else None,
+            "strongest": max(scored, key=lambda r: (r["pct"], r["done"]))["name"] if scored else None,
+            "weakest": min(scored, key=lambda r: (r["pct"], r["done"]))["name"] if len(scored) > 1 else None,
+        }
 
     def remove_habit(self, name: str) -> None:
         """
@@ -567,6 +892,7 @@ class ArtemisTracker:
             out[name] = {
                 "dates": list(h.history), "since": h.history_since,
                 "streak": h.streak, "last_done": h.last_done,
+                "paused": h.paused_on(_today_utc()),
             }
         return out
 
@@ -596,6 +922,7 @@ class ArtemisTracker:
         name: str,
         due_date: Optional[str] = None,
         priority: Optional[str] = None,
+        milestones: Optional[list[str]] = None,
     ) -> None:
         """
         Register a new goal.  Silently no-ops if the goal already exists
@@ -617,7 +944,7 @@ class ArtemisTracker:
             if name in data["goals"]:
                 logger.debug("Goal %r already exists; skipping.", name)
                 return
-            goal = Goal(name=name, due_date=due_date, priority=priority)
+            goal = Goal(name=name, due_date=due_date, priority=priority, milestones=milestones)
             data["goals"][name] = goal.to_dict()
             self._write_raw(data)
 
@@ -747,6 +1074,40 @@ class ArtemisTracker:
                 at_risk[name] = goal
         return at_risk
 
+    # -- milestones (#124, #130) ----------------------------------------
+
+    def set_goal_milestones(self, name: str, titles: list[str]) -> list[dict[str, Any]]:
+        """Replace *name*'s milestones; progress is re-derived from them."""
+        _validate_name(name, _MAX_GOAL_NAME_LEN, "Goal")
+        with self._lock:
+            data = self._read_raw()
+            raw = data["goals"].get(name)
+            if raw is None:
+                raise GoalNotFoundError(f"Goal {name!r} not found.")
+            goal = Goal.from_dict(name, raw)
+            goal.set_milestones(titles)
+            data["goals"][name] = goal.to_dict()
+            self._write_raw(data)
+        return goal.milestones
+
+    def complete_goal_milestone(self, name: str, ref: Any) -> Optional[dict[str, Any]]:
+        """Tick a milestone (1-based number or title fragment). None when *ref* matches nothing."""
+        _validate_name(name, _MAX_GOAL_NAME_LEN, "Goal")
+        with self._lock:
+            data = self._read_raw()
+            raw = data["goals"].get(name)
+            if raw is None:
+                raise GoalNotFoundError(f"Goal {name!r} not found.")
+            goal = Goal.from_dict(name, raw)
+            hit = goal.complete_milestone(ref)
+            if hit is None:
+                return None
+            data["goals"][name] = goal.to_dict()
+            self._write_raw(data)
+        done = sum(m["done"] for m in goal.milestones)
+        return {"title": hit["title"], "done": done, "total": len(goal.milestones),
+                "progress": goal.progress, "goal_completed": goal.status == "completed"}
+
     def remove_goal(self, name: str) -> None:
         """
         Delete a goal permanently.
@@ -796,6 +1157,112 @@ class ArtemisTracker:
     # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------
+
+    # -- generic state access (focus, badges, nudges) -------------------
+
+    def _update_state(self, fn: Callable[[dict[str, Any]], Any]) -> Any:
+        """Run *fn(data)* under the lock and persist the result."""
+        with self._lock:
+            data = self._read_raw()
+            result = fn(data)
+            self._write_raw(data)
+        return result
+
+    def _peek_state(self) -> dict[str, Any]:
+        with self._lock:
+            return self._read_raw()
+
+    # -- focus sessions / Pomodoro (#122) --------------------------------
+
+    def start_focus(self, minutes: int = extras.DEFAULT_FOCUS_MINUTES, task: str = "",
+                    now: Optional[datetime] = None) -> dict[str, Any]:
+        """Start a focus session. Raises ValueError on a bad length or if one is already running."""
+        if isinstance(minutes, bool) or not 1 <= int(minutes) <= extras.MAX_FOCUS_MINUTES:
+            raise ValueError(f"A focus session must be 1 to {extras.MAX_FOCUS_MINUTES} minutes.")
+        moment = now or self.now()
+
+        def apply(data: dict[str, Any]) -> dict[str, Any]:
+            focus = data.setdefault("focus", {})
+            if focus.get("active"):
+                raise ValueError("A focus session is already running.")
+            return extras.focus_start(focus, moment, int(minutes), task)
+        return self._update_state(apply)
+
+    def stop_focus(self, now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
+        """End the running session and log it; None when nothing was running."""
+        moment = now or self.now()
+        return self._update_state(lambda d: extras.focus_finish(d.setdefault("focus", {}), moment))
+
+    def active_focus(self, now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
+        """The running session with ``remaining`` minutes added, or None."""
+        active = self._peek_state().get("focus", {}).get("active")
+        if not active:
+            return None
+        return {**active, "remaining": extras.focus_remaining(active, now or self.now())}
+
+    def completed_focus_today(self, now: Optional[datetime] = None) -> int:
+        """Finished focus sessions that started today (local), for the long-break rule."""
+        today = (now or self.now()).astimezone(self.tz).date().isoformat()
+        sessions = self._peek_state().get("focus", {}).get("sessions", [])
+        return sum(1 for s in sessions if s.get("completed") and str(s.get("start", ""))[:10] == today)
+
+    def focus_stats(self, now: Optional[datetime] = None, days: int = 7) -> dict[str, Any]:
+        return extras.focus_stats(self._peek_state().get("focus", {}), now or self.now(), days)
+
+    # -- badges (#127) ---------------------------------------------------
+
+    def earned_badges(self) -> dict[str, str]:
+        """{badge id: ISO date earned}."""
+        return dict(self._peek_state().get("badges", {}))
+
+    def award_badges(self, today: Optional[date] = None) -> list[str]:
+        """Record any newly earned badges and return their ids (empty when nothing is new)."""
+        stamp = (today or _today_utc()).isoformat()
+
+        def apply(data: dict[str, Any]) -> list[str]:
+            habits = {n: Habit.from_dict(n, r) for n, r in data["habits"].items()}
+            goals = {n: Goal.from_dict(n, r) for n, r in data["goals"].items()}
+            earned = extras.evaluate_badges(habits, goals, data.get("focus", {}))
+            have = data.setdefault("badges", {})
+            new = [b for b in extras.BADGES if b in earned and b not in have]
+            for b in new:
+                have[b] = stamp
+            return new
+        return self._update_state(apply)
+
+    # -- smart nudges (#129) ---------------------------------------------
+
+    def habits_due_for_nudge(self, now: Optional[datetime] = None, lateness_minutes: int = 60,
+                             day_end_minute: int = 22 * 60) -> list[dict[str, Any]]:
+        """
+        Habits usually logged by a certain time that haven't been today, and haven't been
+        nudged today. A habit is due once *lateness_minutes* have passed its usual time;
+        nothing is due after *day_end_minute*. Paused habits are skipped.
+        """
+        moment = (now or self.now()).astimezone(self.tz)
+        today_local = moment.date()
+        minute_now = moment.hour * 60 + moment.minute
+        if minute_now >= day_end_minute:
+            return []
+        data = self._peek_state()
+        nudged = data.get("nudges", {})
+        due = []
+        for name, raw in data["habits"].items():
+            h = Habit.from_dict(name, raw)
+            typical = extras.typical_minute(h.times)
+            if typical is None or h.paused_on(today_local):
+                continue
+            if h.last_done in (today_local.isoformat(), _today_utc().isoformat()):
+                continue
+            if nudged.get(name) == today_local.isoformat():
+                continue
+            if minute_now >= typical + lateness_minutes:
+                due.append({"name": name, "typical_minute": typical, "streak": h.streak})
+        return due
+
+    def mark_nudged(self, name: str, today: Optional[date] = None) -> None:
+        day = (today or self.now().date()).isoformat()
+        self._update_state(lambda d: d.setdefault("nudges", {}).__setitem__(name, day))
 
     def summary(self) -> dict[str, Any]:
         """Return a lightweight summary suitable for logging or a status API."""

@@ -382,7 +382,12 @@ class HestiaBuilder:
             proactive_weather=bool(chronos_cfg.get("proactive_weather", False)),
         )
         orchestrator.register(chronos)
-        artemis = ArtemisEngine(ollama_cfg=self.ollama_cfg)
+        artemis_cfg = self.config.get("artemis") or {}
+        artemis = ArtemisEngine(ollama_cfg=self.ollama_cfg,
+                                habit_grace_days=int(artemis_cfg.get("habit_grace_days", 0) or 0),
+                                timezone_name=artemis_cfg.get("timezone")
+                                or chronos_cfg.get("timezone", "Asia/Kolkata"),
+                                nudges=artemis_cfg.get("nudges") or {})
         orchestrator.register(artemis)
 
         hermes = None
@@ -563,7 +568,7 @@ class HestiaBuilder:
 
     def build_heartbeat(
         self, mnemosyne: MnemosyneEngine, diagnostics: Any = None,
-        apollo: Any = None,
+        apollo: Any = None, artemis: Any = None,
     ) -> HestiaHeartbeat:
         # diagnostics powers the nightly low-confidence review (backlog
         # #6); optional, so a heartbeat built without one just never runs
@@ -578,7 +583,7 @@ class HestiaBuilder:
             )
         return HestiaHeartbeat(
             interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics,
-            apollo=apollo, maintenance=maintenance,
+            apollo=apollo, maintenance=maintenance, artemis=artemis,
         )
 
     def build_web_ui(
@@ -805,7 +810,8 @@ class Hestia:
         self._init_event_bus()
 
         self.heartbeat = builder.build_heartbeat(
-            self.mnemosyne, diagnostics=self.diagnostics, apollo=self.apollo
+            self.mnemosyne, diagnostics=self.diagnostics, apollo=self.apollo,
+            artemis=self.artemis,
         )
         # Chronos owns reminder delivery (recurring, snooze, location and the
         # missed-reminder catch-up on startup - backlog #81-#89). When its
