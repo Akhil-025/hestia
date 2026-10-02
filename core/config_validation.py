@@ -96,6 +96,24 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("hecate", (dict,), False),
     ("hecate.session_ttl_seconds", (int, float), False),
 
+    # Voice pipeline (backlog #170-#179). All optional.
+    ("stt", (dict,), False),
+    ("stt.vad_aggressiveness", (int,), False),
+    ("tts", (dict,), False),
+    ("tts.voices", (dict,), False),
+    ("tts.voice_by_module", (dict,), False),
+    ("wake_word", (dict,), False),
+    ("wake_word.sensitivity", (str,), False),
+    ("barge_in", (dict,), False),
+    ("barge_in.use_calibration", (bool,), False),
+    ("barge_in.min_rms", (int, float), False),
+    ("barge_in.vad_aggressiveness", (int,), False),
+    ("barge_in.echo_cancel", (dict,), False),
+    ("barge_in.echo_cancel.enabled", (bool,), False),
+    ("barge_in.echo_cancel.filter_len", (int,), False),
+    ("barge_in.echo_cancel.mu", (int, float), False),
+    ("barge_in.echo_cancel.delay_ms", (int, float), False),
+
     # Writing modules (Metis + Orpheus): backlog #168, #270. All optional.
     ("writing", (dict,), False),
     ("writing.polish_pass", (bool,), False),
@@ -290,6 +308,31 @@ def validate_config(cfg: Any) -> ValidationReport:
                 report.errors.append(
                     f"{dotted}: {value} is outside the valid TCP port range "
                     f"(1-65535)."
+                )
+
+    # Voice-pipeline cross-checks. Warnings, not errors: each setting has a
+    # safe fallback, but a typo here silently does nothing, which is worse.
+    found, value = _lookup(cfg, "wake_word.sensitivity")
+    if found and isinstance(value, str) and \
+            value.strip().lower() not in ("quiet", "normal", "noisy"):
+        report.warnings.append(
+            f"wake_word.sensitivity: {value!r} is not one of quiet, normal, "
+            f"noisy — 'normal' will be used."
+        )
+    for dotted in ("stt.vad_aggressiveness", "barge_in.vad_aggressiveness"):
+        found, value = _lookup(cfg, dotted)
+        if found and isinstance(value, int) and not isinstance(value, bool) \
+                and not (0 <= value <= 3):
+            report.errors.append(f"{dotted}: {value} is outside webrtcvad's 0-3 range.")
+    found, voices = _lookup(cfg, "tts.voices")
+    found_map, mapping = _lookup(cfg, "tts.voice_by_module")
+    if found_map and isinstance(mapping, dict):
+        known = set(voices) if found and isinstance(voices, dict) else set()
+        for module, profile in mapping.items():
+            if profile not in known:
+                report.warnings.append(
+                    f"tts.voice_by_module.{module}: voice profile {profile!r} "
+                    f"is not defined under tts.voices — the base voice will be used."
                 )
 
     # Typo detection on top-level keys.

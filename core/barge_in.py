@@ -60,6 +60,17 @@ class BargeInListener:
     or routing playback + capture through a real AEC stage (e.g.
     WebRTC's or Speex's echo canceller) if/when that's wired in. See
     config/laptop_config.yaml's `barge_in` section for tuning guidance.
+
+    Optional echo cancellation (backlog #175)
+    ------------------------------------------
+    Pass ``echo_canceller`` (a core.echo_cancel.NLMSEchoCanceller) and every
+    mic frame is run through it *before* the VAD / RMS checks, so Hestia's own
+    voice is subtracted first. Only the detection path sees the cleaned
+    audio; the pre-roll and follow-up recording keep the raw frames, so what
+    gets transcribed is exactly what the mic heard. It needs a playback
+    reference, which only the Piper TTS path provides (see core/echo_cancel.py
+    for the limits). A failing canceller is ignored frame-by-frame — it must
+    never stop barge-in from working.
     """
 
     def __init__(
@@ -71,6 +82,7 @@ class BargeInListener:
         pre_roll_frames: int = 10,
         post_trigger_silence_frames: int = 25,
         max_capture_seconds: float = 12.0,
+        echo_canceller=None,
     ):
         """
         vad_aggressiveness: webrtcvad's 0-3 scale (higher = stricter,
@@ -103,6 +115,10 @@ class BargeInListener:
         max_capture_seconds: hard cap on how long phase 2 will keep
         recording, in case silence is never detected (e.g. a VAD that
         never settles) — keeps a stuck barge-in from listening forever.
+
+        echo_canceller: optional object with ``process(frame) -> frame`` that
+        removes Hestia's own playback from each mic frame before detection
+        (see the class docstring). None = no echo cancellation.
         """
         self._vad = webrtcvad.Vad(vad_aggressiveness)
         self.samplerate = samplerate
@@ -111,6 +127,7 @@ class BargeInListener:
         self._pre_roll_frames = max(1, pre_roll_frames)
         self._post_trigger_silence_frames = post_trigger_silence_frames
         self._max_capture_seconds = max_capture_seconds
+        self._echo_canceller = echo_canceller
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -204,6 +221,17 @@ class BargeInListener:
             return 0.0
         return float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
 
+    def _clean(self, data: np.ndarray) -> np.ndarray:
+        """Run *data* through the echo canceller if there is one."""
+        if self._echo_canceller is None:
+            return data
+        try:
+            return np.asarray(
+                self._echo_canceller.process(data.reshape(-1))
+            ).reshape(data.shape)
+        except Exception:
+            return data
+
     def _run(self) -> None:
         # 30ms frames at 16kHz = 480 samples (webrtcvad requires 10/20/30ms
         # frames) — same framing core/stt.py's VAD uses.
@@ -239,10 +267,13 @@ class BargeInListener:
             except Exception:
                 return False
 
+            # Raw audio goes in the pre-roll (it is what gets transcribed);
+            # detection runs on the echo-cancelled copy.
             pre_roll.append(data)
+            analysed = self._clean(data)
 
-            is_speech = self._vad.is_speech(data.tobytes(), self.samplerate)
-            loud_enough = self._frame_rms(data) >= self._min_rms
+            is_speech = self._vad.is_speech(analysed.tobytes(), self.samplerate)
+            loud_enough = self._frame_rms(analysed) >= self._min_rms
 
             if is_speech and loud_enough:
                 consecutive_speech += 1

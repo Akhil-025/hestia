@@ -108,6 +108,32 @@ logger = _configure_logging()
 import yaml
 
 from core.barge_in import BargeInListener
+from core.echo_cancel import EchoReference, NLMSEchoCanceller
+from core.mic_calibration import (
+    current_input_device_name,
+    format_report,
+    load_calibration,
+    run_calibration,
+    save_calibration,
+)
+from core.voice_commands import (
+    DND_OFF,
+    DND_ON,
+    DND_STATUS,
+    REPEAT,
+    SET_SENSITIVITY,
+    VoiceCommand,
+    parse_voice_command,
+)
+from core.voice_state import (
+    STATE_INACTIVE,
+    STATE_LISTENING,
+    STATE_SPEAKING,
+    STATE_THINKING,
+    STATE_TYPED,
+    STATE_WAKE,
+    VoiceState,
+)
 from core.config_validation import ConfigError, validate_config, validate_or_raise
 from core.module_loader import discover_skills
 from core.query_splitter import candidate_segments
@@ -122,7 +148,7 @@ from core.llm import HestiaLLM
 from core.nlu import HestiaNLU
 from core.ollama_manager import OllamaManager
 from core.stt import HestiaSTT
-from core.tts import HestiaTTS
+from core.tts import HestiaTTS, NullTTS
 from core.wake_word import WakeWordDetector
 from modules.apollo import ApolloEngine
 from modules.ares import AresEngine
@@ -131,6 +157,7 @@ from modules.chronos.engine import ChronosEngine
 from modules.dionysus import DionysusEngine
 from modules.hecate import HecateEngine
 from modules.hecate.intent_registry import (
+    MODULE_PREFIXES,
     module_for_intent,
     registry_info,
     strip_module_prefix,
@@ -155,6 +182,19 @@ _OLLAMA_STARTUP_DELAY = 2          # seconds after ensure_running()
 _STT_MAX_DURATION = 10             # seconds per utterance
 _WAKE_WORD_TIMEOUT = 30            # seconds per listen cycle
 _MIN_VOICE_INPUT_LEN = 2           # discard utterances shorter than this
+_MAX_VOICE_FAILURES = 3            # consecutive mic/STT errors before falling back to typing
+
+
+def _format_minutes(minutes: float) -> str:
+    """Spoken form of a duration: 30 -> "30 minutes", 90 -> "1 hour 30 minutes"."""
+    total = int(round(minutes))
+    hours, mins = divmod(total, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if mins or not hours:
+        parts.append(f"{mins} minute{'s' if mins != 1 else ''}")
+    return " ".join(parts)
 _RECENT_CONTEXT_TURNS = 5
 
 
@@ -538,52 +578,145 @@ class HestiaBuilder:
 
     def build_io(
         self,
-    ) -> tuple[HestiaSTT, HestiaTTS, WakeWordDetector, BargeInListener]:
+    ) -> tuple[
+        Optional[HestiaSTT],
+        "HestiaTTS | NullTTS",
+        Optional[WakeWordDetector],
+        Optional[BargeInListener],
+    ]:
+        """Build the voice I/O components, degrading instead of crashing.
+
+        Each component is constructed independently (backlog #179): a missing
+        Vosk model, a Whisper load failure or an absent audio stack costs you
+        *that* feature, not the whole assistant. A component that fails comes
+        back as ``None`` (``NullTTS`` for speech) and the reason is recorded in
+        ``self.io_errors`` so the voice loop can fall back to typed input and
+        say why. Hestia itself still starts, text/web/Telegram keep working.
+        """
         stt_cfg = self.config.get("stt", {})
         tts_cfg = self.config.get("tts", {})
         wake_cfg = self.config.get("wake_word", {})
         barge_in_cfg = self.config.get("barge_in", {})
+        self.io_errors: dict[str, str] = {}
 
-        stt = HestiaSTT(
-            model_size=stt_cfg.get("model_size", "base.en"),
-            device=stt_cfg.get("device", "cuda"),
-            compute_type=stt_cfg.get("compute_type", "int8"),
-            samplerate=stt_cfg.get("samplerate", 16000),
-            noise_filter=stt_cfg.get("noise_filter", True),
-            silence_frames=stt_cfg.get("silence_frames", 33),
-        )
-        tts = HestiaTTS(
-            engine=tts_cfg.get("engine", "pyttsx3"),
-            rate=tts_cfg.get("rate", 175),
-            volume=tts_cfg.get("volume", 1.0),
-            piper_model_path=tts_cfg.get("piper_model_path"),
-        )
-        wake_detector = WakeWordDetector(
-            model_path=wake_cfg.get("model_path", "models/vosk-model-small-en-us-0.15"),
-            wake_words=wake_cfg.get("wake_words"),
-        )
+        # Saved per-device calibration (backlog #174): fills in only the
+        # settings the config leaves unset, and is ignored if it was made
+        # on a different input device.
+        calib: Optional[dict] = None
+        if barge_in_cfg.get("use_calibration", True):
+            try:
+                calib = load_calibration(device=current_input_device_name())
+            except Exception:
+                calib = None
+        if calib:
+            logger.info(
+                "Using saved mic calibration (min_rms=%g, vad=%d, wake=%s). "
+                "Settings in your config take precedence.",
+                calib["min_rms"], calib["vad_aggressiveness"], calib["wake_sensitivity"],
+            )
+        calib_vad = calib["vad_aggressiveness"] if calib else 2
+
+        stt: Optional[HestiaSTT] = None
+        try:
+            stt = HestiaSTT(
+                model_size=stt_cfg.get("model_size", "base.en"),
+                device=stt_cfg.get("device", "cuda"),
+                compute_type=stt_cfg.get("compute_type", "int8"),
+                samplerate=stt_cfg.get("samplerate", 16000),
+                noise_filter=stt_cfg.get("noise_filter", True),
+                silence_frames=stt_cfg.get("silence_frames", 33),
+                vad_aggressiveness=stt_cfg.get("vad_aggressiveness", calib_vad),
+            )
+        except Exception as exc:
+            self.io_errors["stt"] = str(exc) or exc.__class__.__name__
+            logger.warning("Speech-to-text unavailable: %s", self.io_errors["stt"])
+
+        # Echo cancellation needs a playback reference, which only Piper
+        # exposes (backlog #175). Off unless explicitly enabled.
+        ec_cfg = barge_in_cfg.get("echo_cancel") or {}
+        echo_reference = None
+        if ec_cfg.get("enabled", False):
+            if tts_cfg.get("engine", "pyttsx3") == "piper":
+                echo_reference = EchoReference()
+            else:
+                logger.warning(
+                    "barge_in.echo_cancel.enabled needs tts.engine: piper "
+                    "(pyttsx3 plays through the OS, so there is no playback "
+                    "reference to cancel); leaving echo cancellation off."
+                )
+
+        try:
+            tts = HestiaTTS(
+                engine=tts_cfg.get("engine", "pyttsx3"),
+                rate=tts_cfg.get("rate", 175),
+                volume=tts_cfg.get("volume", 1.0),
+                piper_model_path=tts_cfg.get("piper_model_path"),
+                voices=tts_cfg.get("voices"),
+                echo_reference=echo_reference,
+            )
+        except Exception as exc:
+            tts = NullTTS()
+            self.io_errors["tts"] = str(exc) or exc.__class__.__name__
+            logger.warning("Text-to-speech unavailable: %s", self.io_errors["tts"])
+
+        if echo_reference is not None and getattr(tts, "engine", None) != "piper":
+            logger.warning(
+                "Piper isn't the active TTS engine (model missing?); "
+                "echo cancellation is off."
+            )
+            echo_reference = None
+
+        wake_detector: Optional[WakeWordDetector] = None
+        try:
+            wake_detector = WakeWordDetector(
+                model_path=wake_cfg.get("model_path", "models/vosk-model-small-en-us-0.15"),
+                wake_words=wake_cfg.get("wake_words"),
+                sensitivity=wake_cfg.get(
+                    "sensitivity", calib["wake_sensitivity"] if calib else "normal"
+                ),
+            )
+        except Exception as exc:
+            self.io_errors["wake_word"] = str(exc) or exc.__class__.__name__
+            logger.warning("Wake-word detection unavailable: %s", self.io_errors["wake_word"])
+
         # Barge-in is opt-out (default true): it only ever runs while
         # Hestia is speaking (see Hestia._speak_streaming /
         # _speak_with_barge_in), so leaving it enabled costs nothing when
         # the user never interrupts, and lets them the moment they do.
-        barge_in = BargeInListener(
-            samplerate=barge_in_cfg.get("samplerate", stt_cfg.get("samplerate", 16000)),
-            vad_aggressiveness=barge_in_cfg.get("vad_aggressiveness", 2),
-            speech_frames_to_trigger=barge_in_cfg.get("speech_frames_to_trigger", 3),
-            # See core/barge_in.py's docstring: without real acoustic echo
-            # cancellation, min_rms is the only lever for cutting down
-            # false self-interruptions from Hestia's own voice bleeding
-            # into the mic on shared speaker/mic hardware (e.g. a
-            # laptop). Raise barge_in.min_rms in config if she's
-            # interrupting herself; lower it (or use a headset, the real
-            # fix) if real interruptions go unnoticed.
-            min_rms=barge_in_cfg.get("min_rms", 300.0),
-            pre_roll_frames=barge_in_cfg.get("pre_roll_frames", 10),
-            post_trigger_silence_frames=barge_in_cfg.get(
-                "post_trigger_silence_frames", stt_cfg.get("silence_frames", 33) - 8
-            ),
-            max_capture_seconds=barge_in_cfg.get("max_capture_seconds", 12.0),
-        )
+        barge_in: Optional[BargeInListener] = None
+        try:
+            canceller = None
+            if echo_reference is not None:
+                canceller = NLMSEchoCanceller(
+                    echo_reference,
+                    filter_len=int(ec_cfg.get("filter_len", 1024)),
+                    mu=float(ec_cfg.get("mu", 0.4)),
+                    delay_ms=float(ec_cfg.get("delay_ms", 0.0)),
+                )
+            barge_in = BargeInListener(
+                samplerate=barge_in_cfg.get("samplerate", stt_cfg.get("samplerate", 16000)),
+                vad_aggressiveness=barge_in_cfg.get("vad_aggressiveness", calib_vad),
+                speech_frames_to_trigger=barge_in_cfg.get("speech_frames_to_trigger", 3),
+                # See core/barge_in.py's docstring: min_rms is the cheap
+                # lever against false self-interruptions from Hestia's own
+                # voice bleeding into the mic on shared speaker/mic
+                # hardware (e.g. a laptop). `python main.py --calibrate-mic`
+                # measures a value for this device; an explicit value here
+                # always wins over the saved calibration. Raise it if she's
+                # interrupting herself; lower it (or use a headset, the
+                # real fix) if real interruptions go unnoticed.
+                min_rms=barge_in_cfg.get("min_rms", calib["min_rms"] if calib else 300.0),
+                pre_roll_frames=barge_in_cfg.get("pre_roll_frames", 10),
+                post_trigger_silence_frames=barge_in_cfg.get(
+                    "post_trigger_silence_frames", stt_cfg.get("silence_frames", 33) - 8
+                ),
+                max_capture_seconds=barge_in_cfg.get("max_capture_seconds", 12.0),
+                echo_canceller=canceller,
+            )
+        except Exception as exc:
+            self.io_errors["barge_in"] = str(exc) or exc.__class__.__name__
+            logger.warning("Barge-in unavailable: %s", self.io_errors["barge_in"])
+
         return stt, tts, wake_detector, barge_in
 
     # -- Heartbeat / web UI / sync API ------------------------------------
@@ -620,6 +753,7 @@ class HestiaBuilder:
         skill_loader: Optional[Any] = None,
         stt: Optional[HestiaSTT] = None,
         tts: Optional[HestiaTTS] = None,
+        voice_state: Optional[Any] = None,
     ) -> Optional[Any]:
         try:
             from web_ui import HestiaWebUI
@@ -634,6 +768,7 @@ class HestiaBuilder:
                 skill_loader=skill_loader,
                 stt=stt,
                 tts=tts,
+                voice_state=voice_state,
             )
             web_ui.start()
             logger.info("Web UI started.")
@@ -768,6 +903,23 @@ class Hestia:
     ``process_text`` as the single synchronous query entry point.
     """
 
+    # Last thing Hestia said in reply to you or announced proactively, for
+    # "repeat that" (backlog #171). Deliberately NOT updated by "Yes?" /
+    # "I didn't catch that." / local-command acknowledgements.
+    _last_spoken: str = ""
+    _voice_io_errors: dict = {}
+
+    @property
+    def voice_state(self) -> VoiceState:
+        """Shared listening-state + do-not-disturb holder (see
+        core/voice_state.py). Created on first use so the object also exists
+        on instances built without running __init__."""
+        vs = self.__dict__.get("_voice_state")
+        if vs is None:
+            vs = VoiceState()
+            self.__dict__["_voice_state"] = vs
+        return vs
+
     def __init__(self, config_path: str | Path = _DEFAULT_CONFIG) -> None:
         logger.info("Initialising Hestia…")
         self._config_path = Path(config_path)
@@ -826,7 +978,13 @@ class Hestia:
         self.diagnostics.bind_orchestrator(self.orchestrator)
 
         self.stt, self.tts, self.wake_detector, self.barge_in = builder.build_io()
-        self._barge_in_enabled: bool = self.config.get("barge_in", {}).get("enabled", True)
+        self._voice_io_errors = dict(getattr(builder, "io_errors", {}) or {})
+        # Barge-in needs a working listener; if it failed to build there is
+        # simply nothing to arm (see build_io).
+        self._barge_in_enabled: bool = bool(
+            self.config.get("barge_in", {}).get("enabled", True)
+            and self.barge_in is not None
+        )
 
         # -- Wiring: connect already-built subsystems together -------------
         self._init_event_bus()
@@ -863,7 +1021,10 @@ class Hestia:
             chronos=self.chronos,
             athena=self.athena,
             stt=self.stt,
-            tts=self.tts,
+            # A NullTTS has nothing to synthesise with; hand the web UI None
+            # so /api/tts reports "not available" instead of failing per call.
+            tts=self.tts if getattr(self.tts, "available", True) else None,
+            voice_state=self.voice_state,
         )
 
         self.telegram_bot = builder.build_telegram_bot(self.process_text, self.stt, self.mnemosyne)
@@ -898,10 +1059,29 @@ class Hestia:
 
         bus.on("interaction_logged", _on_interaction)
 
-        # TTS output
+        # TTS output (proactive notifications: reminders, nudges, the
+        # morning brief...). Honours do-not-disturb (backlog #173): while it
+        # is on, announcements are held and read out together afterwards.
         def _on_speak(data: dict) -> None:
             try:
-                self.tts.speak(data.get("text", ""))
+                text = data.get("text", "") or ""
+                vs = self.voice_state
+                if vs.dnd_active():
+                    vs.hold(text)
+                    logger.info(
+                        "Do-not-disturb: held a notification (%d waiting).",
+                        vs.held_count(),
+                    )
+                    return
+                # A timed DND that ran out since the last notification:
+                # read what piled up first, in the same utterance (speak()
+                # cancels earlier speech, so two calls would clip the digest).
+                digest = self._held_notifications_digest()
+                if digest:
+                    text = f"{digest} {text}".strip()
+                self._last_spoken = text
+                voice = data.get("voice") or self._voice_profile_for_module(data.get("module"))
+                self._speak(text, voice)
             except Exception:
                 logger.exception("speak handler failed.")
 
@@ -932,6 +1112,148 @@ class Hestia:
         logger.info("Event bus wired.")
 
     # ------------------------------------------------------------------
+    # Voice helpers: per-module voices, local commands, do-not-disturb
+    # ------------------------------------------------------------------
+
+    def _speak(self, text: str, voice: Optional[str] = None) -> None:
+        """tts.speak(), adding ``voice=`` only when a profile was chosen so
+        the default call stays exactly ``speak(text)``."""
+        if voice:
+            self.tts.speak(text, voice=voice)
+        else:
+            self.tts.speak(text)
+
+    def _voice_profile_for_module(self, module: Optional[str]) -> Optional[str]:
+        """Voice profile configured for *module* (backlog #170), else the
+        ``default`` mapping, else None (= the base voice). Configured via
+        ``tts.voices`` (the profiles) and ``tts.voice_by_module`` (who uses
+        which). A mapping that names a profile that doesn't exist is ignored
+        rather than failing."""
+        tts_cfg = (getattr(self, "config", None) or {}).get("tts") or {}
+        mapping = tts_cfg.get("voice_by_module") or {}
+        if not mapping or not tts_cfg.get("voices"):
+            return None
+        profile = mapping.get(module) if module else None
+        if not profile:
+            profile = mapping.get("default")
+        if not profile:
+            return None
+        has_voice = getattr(self.tts, "has_voice", None)
+        if callable(has_voice) and not has_voice(profile):
+            return None
+        return profile
+
+    def _voice_profile_for_intent(self, intent: Optional[str]) -> Optional[str]:
+        """Resolve an NLU intent to its owning module, then to a voice."""
+        if not intent:
+            return self._voice_profile_for_module(None)
+        module = module_for_intent(intent) or next(
+            (p.rstrip("_") for p in MODULE_PREFIXES if intent.startswith(p)), None
+        )
+        return self._voice_profile_for_module(module)
+
+    def _held_notifications_digest(self) -> str:
+        """Collect notifications held during do-not-disturb into one
+        utterance ("" if DND is still on or nothing was held)."""
+        vs = self.voice_state
+        if vs.dnd_active():
+            return ""
+        held = vs.release_held()
+        if not held:
+            return ""
+        n = len(held)
+        return (
+            f"While notifications were muted, {n} came in. " + " ".join(held)
+        )
+
+    def _try_local_command(self, cleaned: str, voice_turn: bool) -> Optional[str]:
+        """Handle assistant-voice control phrases ("repeat that", "do not
+        disturb", "I'm in a noisy room") before NLU. Returns the spoken
+        reply, or None if *cleaned* is an ordinary query."""
+        cmd = parse_voice_command(cleaned)
+        if cmd is None:
+            return None
+
+        logger.info("You: %s", cleaned)
+        try:
+            response = self._run_voice_command(cmd)
+        except Exception:
+            logger.exception("Voice command %r failed.", cmd.name)
+            response = "Sorry, that didn't work."
+        logger.info("Hestia: %s", response)
+
+        try:
+            if voice_turn:
+                self._speak_with_barge_in(response)
+            else:
+                self.tts.speak(response)
+        except Exception:
+            logger.exception("TTS failed.")
+
+        if voice_turn:
+            try:
+                self.wake_detector.flush_audio_queue()
+            except Exception:
+                logger.debug("flush_audio_queue() failed; ignoring.")
+        return response
+
+    def _run_voice_command(self, cmd: VoiceCommand) -> str:
+        """Carry out *cmd* and return the sentence to say back."""
+        vs = self.voice_state
+
+        if cmd.name == REPEAT:
+            return self._last_spoken or "I haven't said anything yet."
+
+        if cmd.name == DND_ON:
+            vs.set_dnd(True, cmd.minutes)
+            if cmd.unparsed:
+                return (
+                    f"I didn't understand '{cmd.unparsed}' as a length of time, "
+                    "so do not disturb is on until you say resume notifications."
+                )
+            if cmd.minutes:
+                return (
+                    f"Do not disturb is on for {_format_minutes(cmd.minutes)}. "
+                    "I'll hold reminders and nudges until then."
+                )
+            return (
+                "Do not disturb is on. I'll hold reminders and nudges until "
+                "you say resume notifications."
+            )
+
+        if cmd.name == DND_OFF:
+            was_on = vs.dnd_active()
+            vs.set_dnd(False)
+            digest = self._held_notifications_digest()
+            if digest:
+                return f"Notifications are back on. {digest}"
+            return "Notifications are back on." if was_on else "Notifications weren't muted."
+
+        if cmd.name == DND_STATUS:
+            if not vs.dnd_active():
+                return "Do not disturb is off."
+            held = vs.held_count()
+            remaining = vs.dnd_remaining_minutes()
+            until = (
+                f" for another {_format_minutes(max(remaining, 1))}"
+                if remaining is not None else ""
+            )
+            waiting = f" {held} notification{'s' if held != 1 else ''} waiting." if held else ""
+            return f"Do not disturb is on{until}.{waiting}"
+
+        if cmd.name == SET_SENSITIVITY:
+            detector = getattr(self, "wake_detector", None)
+            if detector is None:
+                return (
+                    "Wake word detection isn't running, so there's no "
+                    "sensitivity to change."
+                )
+            applied = detector.set_sensitivity(cmd.level)
+            return f"Wake word sensitivity set to {applied}."
+
+        return ""
+
+    # ------------------------------------------------------------------
     # Core query entry point
     # ------------------------------------------------------------------
 
@@ -954,6 +1276,12 @@ class Hestia:
         cleaned = _clean_input(text)
         if not cleaned:
             return ""
+
+        # "repeat that" / "do not disturb" / "I'm in a noisy room": controls
+        # for the voice pipeline itself, answered before NLU.
+        local = self._try_local_command(cleaned, voice_turn=False)
+        if local is not None:
+            return local
 
         # One id per query, attached to a contextvar and stamped onto every
         # log record emitted while this query is in flight (backlog #17).
@@ -994,13 +1322,15 @@ class Hestia:
 
         logger.info("Hestia: %s", response)
 
+        self._last_spoken = response
         try:
-            self.tts.speak(response)
+            self._speak(response, self._voice_profile_for_intent(nlu_result.get("intent")))
         except Exception:
             logger.exception("TTS failed.")
 
         try:
-            self.wake_detector.flush_audio_queue()
+            if self.wake_detector is not None:
+                self.wake_detector.flush_audio_queue()
         except Exception:
             logger.debug("flush_audio_queue() failed; ignoring.")
 
@@ -1432,7 +1762,12 @@ class Hestia:
         if not cleaned:
             return ""
 
+        local = self._try_local_command(cleaned, voice_turn=True)
+        if local is not None:
+            return local
+
         logger.info("You: %s", cleaned)
+        self.voice_state.set_state(STATE_THINKING)
 
         try:
             context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
@@ -1440,6 +1775,8 @@ class Hestia:
         except Exception:
             logger.exception("NLU failed for input=%r.", cleaned[:80])
             nlu_result = {"intent": "chat", "entities": {}, "response": ""}
+
+        voice = self._voice_profile_for_intent(nlu_result.get("intent"))
 
         stream = None
         try:
@@ -1452,7 +1789,7 @@ class Hestia:
             stream = None
 
         if stream is not None:
-            response = self._speak_streaming(stream)
+            response = self._speak_streaming(stream, voice)
         else:
             try:
                 response = self.orchestrator.dispatch(cleaned, nlu_result)
@@ -1462,7 +1799,9 @@ class Hestia:
 
             response = _postprocess(response)
             logger.info("Hestia: %s", response)
-            self._speak_with_barge_in(response)
+            self._speak_with_barge_in(response, voice)
+
+        self._last_spoken = response
 
         try:
             self.wake_detector.flush_audio_queue()
@@ -1480,7 +1819,7 @@ class Hestia:
 
         return response
 
-    def _speak_streaming(self, chunks) -> str:
+    def _speak_streaming(self, chunks, voice: Optional[str] = None) -> str:
         """
         Feed a generator of streamed text chunks into HestiaTTS.speak_stream
         while the barge-in listener is armed, and return the full
@@ -1494,7 +1833,10 @@ class Hestia:
                 parts.append(chunk)
                 yield chunk
 
-        self._with_barge_in(lambda: self.tts.speak_stream(_tap()))
+        if voice:
+            self._with_barge_in(lambda: self.tts.speak_stream(_tap(), voice=voice))
+        else:
+            self._with_barge_in(lambda: self.tts.speak_stream(_tap()))
 
         response = "".join(parts).strip()
         if not response:
@@ -1502,10 +1844,10 @@ class Hestia:
         logger.info("Hestia: %s", response)
         return response
 
-    def _speak_with_barge_in(self, response: str) -> None:
+    def _speak_with_barge_in(self, response: str, voice: Optional[str] = None) -> None:
         """Speak a single finished response with the barge-in listener
         armed, so even non-streamed replies can be interrupted."""
-        self._with_barge_in(lambda: self.tts.speak(response))
+        self._with_barge_in(lambda: self._speak(response, voice))
 
     def _with_barge_in(self, speak_fn) -> None:
         """
@@ -1517,17 +1859,22 @@ class Hestia:
         HestiaSTT owning the microphone (see core/barge_in.py's
         docstring).
         """
-        if not self._barge_in_enabled:
+        vs = self.voice_state
+        vs.set_state(STATE_SPEAKING)
+
+        if not self._barge_in_enabled or self.barge_in is None:
             speak_fn()
             self.tts.wait_until_done()
             return
 
         self.barge_in.reset()
         self.barge_in.start(on_barge_in=self.tts.stop)
+        vs.set_barge_in_armed(True)
         try:
             speak_fn()
             self.tts.wait_until_done()
         finally:
+            vs.set_barge_in_armed(False)
             self.barge_in.stop()
 
     # ------------------------------------------------------------------
@@ -1557,33 +1904,76 @@ class Hestia:
         fired but for some reason didn't end up with usable audio (e.g.
         it hit max_capture_seconds with nothing but noise).
         """
+        if self.stt is None or self.wake_detector is None:
+            missing = [k for k in ("stt", "wake_word") if k in self._voice_io_errors]
+            detail = "; ".join(f"{k}: {self._voice_io_errors[k]}" for k in missing)
+            try:
+                self._voice_fallback_to_typing(
+                    "Voice input isn't available" + (f" ({detail})" if detail else "")
+                )
+            finally:
+                self._shutdown()
+            return
+
+        vs = self.voice_state
         logger.info("Voice loop started — listening for wake word.")
+        failures = 0
         try:
             skip_wake_word = False
             pending_audio = None
             while True:
-                if pending_audio is not None:
-                    text = self.stt.transcribe_audio(pending_audio)
-                    pending_audio = None
-                elif skip_wake_word:
-                    skip_wake_word = False
-                    text = self.stt.listen_once(max_duration=_STT_MAX_DURATION)
-                else:
-                    if not self.wake_detector.listen_for_wake_word(
-                        timeout=_WAKE_WORD_TIMEOUT
-                    ):
-                        continue
+                try:
+                    if pending_audio is not None:
+                        vs.set_state(STATE_THINKING)
+                        text = self.stt.transcribe_audio(pending_audio)
+                        pending_audio = None
+                    elif skip_wake_word:
+                        skip_wake_word = False
+                        vs.set_state(STATE_LISTENING)
+                        text = self.stt.listen_once(max_duration=_STT_MAX_DURATION)
+                    else:
+                        vs.set_state(STATE_WAKE)
+                        if not self.wake_detector.listen_for_wake_word(
+                            timeout=_WAKE_WORD_TIMEOUT
+                        ):
+                            self._speak_held_notifications()
+                            failures = 0
+                            continue
 
-                    self.tts.speak("Yes?")
-                    self.tts.wait_until_done()
-                    text = self.stt.listen_once(max_duration=_STT_MAX_DURATION)
+                        vs.set_state(STATE_SPEAKING)
+                        self.tts.speak("Yes?")
+                        self.tts.wait_until_done()
+                        vs.set_state(STATE_LISTENING)
+                        text = self.stt.listen_once(max_duration=_STT_MAX_DURATION)
+                    failures = 0
+                except Exception as exc:
+                    # Mic unplugged, PortAudio error, model crash... One bad
+                    # cycle shouldn't end voice mode, but a mic that keeps
+                    # failing means voice mode can't work: drop to typing
+                    # instead of spinning (backlog #179).
+                    failures += 1
+                    logger.warning(
+                        "Voice input error (%d/%d): %s",
+                        failures, _MAX_VOICE_FAILURES, exc,
+                    )
+                    pending_audio = None
+                    skip_wake_word = False
+                    if failures >= _MAX_VOICE_FAILURES:
+                        self._voice_fallback_to_typing(
+                            f"The microphone keeps failing ({exc})"
+                        )
+                        break
+                    time.sleep(0.5)
+                    continue
 
                 if not text or len(text.strip()) < _MIN_VOICE_INPUT_LEN:
+                    vs.set_state(STATE_SPEAKING)
                     self.tts.speak("I didn't catch that.")
                     self.tts.wait_until_done()
                     continue
 
                 if text.lower().strip() in _EXIT_WORDS:
+                    vs.set_state(STATE_SPEAKING)
                     self.tts.speak("Goodbye.")
                     self.tts.wait_until_done()
                     break
@@ -1600,7 +1990,42 @@ class Hestia:
         except KeyboardInterrupt:
             logger.info("Voice loop interrupted by user.")
         finally:
+            vs.set_state(STATE_INACTIVE)
             self._shutdown()
+
+    def _speak_held_notifications(self) -> None:
+        """Read out notifications held during a do-not-disturb that has since
+        run out (a timed DND ends silently, so the voice loop checks for
+        leftovers each idle cycle)."""
+        try:
+            digest = self._held_notifications_digest()
+            if digest:
+                self._last_spoken = digest
+                self.tts.speak(digest)
+                self.tts.wait_until_done()
+        except Exception:
+            logger.exception("Could not read held notifications.")
+
+    def _voice_fallback_to_typing(self, reason: str) -> None:
+        """Voice mode can't run: say so and carry on with typed input
+        (backlog #179). Replies are still spoken if a speech engine works."""
+        self.voice_state.set_state(STATE_TYPED, detail=reason)
+        logger.warning("%s — falling back to typed input.", reason)
+        print(
+            f"\n[voice] {reason}.\n"
+            "[voice] Continuing with typed input; type 'exit' to quit.\n",
+            file=sys.stderr,
+        )
+        while True:
+            try:
+                user_input = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not user_input:
+                continue
+            if user_input.lower() in _EXIT_WORDS:
+                break
+            self.process_text(user_input)
 
     def run_cli_loop(self) -> None:
         """Accept text queries from stdin."""
@@ -1639,7 +2064,8 @@ class Hestia:
             # max_capture_seconds) before stop() returns — fine during
             # normal turn-taking, but shutdown (e.g. Ctrl-C) should never
             # be held up by that.
-            self.barge_in.stop(force=True)
+            if self.barge_in is not None:
+                self.barge_in.stop(force=True)
         except Exception:
             logger.debug("barge_in.stop() raised; ignoring.")
 
@@ -1753,6 +2179,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  python main.py --voice                      # wake word + STT\n"
             '  python main.py --dry-run "log my sleep"     # show routing, run nothing\n'
             "  python main.py --check-config               # validate config and exit\n"
+            "  python main.py --calibrate-mic              # tune barge-in / VAD for this mic\n"
             "  python main.py --quiet                      # warnings only\n"
             "  python main.py --verbose                    # full debug trace\n"
         ),
@@ -1786,6 +2213,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Validate the configuration file and exit. Exit code 0 if valid, "
             "1 if not. Does not start any subsystem."
+        ),
+    )
+    # Backlog #174.
+    parser.add_argument(
+        "--calibrate-mic",
+        action="store_true",
+        help=(
+            "Measure this microphone/speaker pair (quiet room, your voice, "
+            "Hestia's own echo) and save recommended barge-in / VAD / "
+            "wake-word settings to data/mic_calibration.json, then exit."
         ),
     )
     # Backlog #275.
@@ -1844,6 +2281,42 @@ def _run_check_config(path: str) -> int:
     return 0 if report.ok else 1
 
 
+def _run_calibrate_mic(path: str) -> int:
+    """Implement --calibrate-mic. Does not boot Hestia: it needs only the
+    microphone and, if one can be started, the configured TTS engine (for the
+    echo measurement)."""
+    tts = None
+    config_path = Path(path)
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            tts_cfg = cfg.get("tts") or {}
+            tts = HestiaTTS(
+                engine=tts_cfg.get("engine", "pyttsx3"),
+                rate=tts_cfg.get("rate", 175),
+                volume=tts_cfg.get("volume", 1.0),
+                piper_model_path=tts_cfg.get("piper_model_path"),
+            )
+        except Exception as exc:
+            print(f"(Echo test skipped — TTS unavailable: {exc})", file=sys.stderr)
+            tts = None
+    try:
+        result = run_calibration(tts=tts)
+    except (KeyboardInterrupt, EOFError):
+        print("\nCalibration cancelled.")
+        return 1
+    except Exception as exc:
+        print(f"Calibration failed: {exc}", file=sys.stderr)
+        return 1
+    print()
+    print(format_report(result))
+    saved = save_calibration(result)
+    print(f"\nSaved to {saved}. Hestia uses it automatically for any setting "
+          "your config doesn't pin.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -1854,6 +2327,10 @@ def main(argv: list[str] | None = None) -> int:
     # precisely when Hestia won't start.
     if args.check_config:
         return _run_check_config(args.config)
+
+    # Likewise: calibration only needs the mic, not a booted assistant.
+    if args.calibrate_mic:
+        return _run_calibrate_mic(args.config)
 
     try:
         hestia = Hestia(config_path=args.config)

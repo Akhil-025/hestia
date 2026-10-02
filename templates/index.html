@@ -1409,6 +1409,29 @@
       50% { box-shadow: 0 0 0 8px transparent; }
     }
 
+    .voice-indicator {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      padding: 0 4px 6px;
+    }
+    .voice-indicator.on { display: flex; }
+    .voice-indicator .vi-dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+    }
+    .voice-indicator.mic-open .vi-dot {
+      background: var(--accent2);
+      animation: micPulse 1.1s ease-in-out infinite;
+    }
+    .voice-indicator .vi-dnd {
+      margin-left: 6px; padding: 1px 7px; border-radius: 8px;
+      border: 1px solid var(--border2); font-size: 11px;
+    }
+
     .speak-btn {
       background: none;
       border: none;
@@ -2109,6 +2132,11 @@
       </div>
       <div class="chat-wrap">
         <div class="chat-messages" id="chat-messages"></div>
+        <div class="voice-indicator" id="voice-indicator" role="status" aria-live="polite">
+          <span class="vi-dot" aria-hidden="true"></span>
+          <span class="vi-text" id="voice-indicator-text"></span>
+          <span class="vi-dnd" id="voice-indicator-dnd" hidden>Do not disturb</span>
+        </div>
         <div class="chat-footer">
           <input type="text" class="chat-input" id="chat-input" placeholder="Ask Hestia anything…">
           <button class="mic-btn" id="chat-mic" type="button" title="Speak" aria-label="Speak">🎙</button>
@@ -3090,6 +3118,43 @@
     chatMsgs.scrollTop = chatMsgs.scrollHeight;
     return b;
   }
+
+  // ── Voice-loop state (mic indicator → /api/voice/state) ────
+  const VOICE_STATE_LABELS = {
+    waiting_for_wake: 'Listening for “Hey Hestia”',
+    listening: 'Listening to you…',
+    thinking: 'Thinking…',
+    speaking: 'Speaking',
+    typed: 'Voice unavailable — typed input only'
+  };
+  async function pollVoiceState() {
+    const box = document.getElementById('voice-indicator');
+    if (!box) return;
+    try {
+      const resp = await fetch('/api/voice/state', {
+        headers: apiKey ? { 'X-API-Key': apiKey } : {}
+      });
+      if (!resp.ok) { box.classList.remove('on'); return; }
+      const s = await resp.json();
+      const show = s.active || s.state === 'typed' || s.dnd;
+      box.classList.toggle('on', !!show);
+      box.classList.toggle('mic-open', !!s.mic_open);
+      let label = VOICE_STATE_LABELS[s.state] || '';
+      if (s.mic_open) label += ' · mic open';
+      else if (s.active) label += ' · mic closed';
+      document.getElementById('voice-indicator-text').textContent = label;
+      const dnd = document.getElementById('voice-indicator-dnd');
+      dnd.hidden = !s.dnd;
+      if (s.dnd) {
+        dnd.textContent = 'Do not disturb' +
+          (s.held_notifications ? ' · ' + s.held_notifications + ' held' : '');
+      }
+    } catch (_) {
+      box.classList.remove('on');
+    }
+  }
+  pollVoiceState();
+  setInterval(pollVoiceState, 2000);
 
   // ── Voice output (speaker icon → /api/tts) ────────────
   let ttsAudio = null;

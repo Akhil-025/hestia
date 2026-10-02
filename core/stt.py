@@ -71,11 +71,16 @@ class HestiaSTT:
 
     def __init__(self, model_size: str = "base.en", device: str = "cuda",
                  compute_type: str = "int8", samplerate: int = 16000,
-                 noise_filter: bool = True, silence_frames: int = 33):
+                 noise_filter: bool = True, silence_frames: int = 33,
+                 vad_aggressiveness: int = 2):
         """Initialize Whisper model, VAD, and noise filter.
 
         silence_frames: number of consecutive non-speech 30ms VAD frames that
         must elapse before recording stops (33 frames ≈ 990ms of silence).
+
+        vad_aggressiveness: webrtcvad's 0-3 scale (higher = stricter, fewer
+        false positives from background noise). `python main.py
+        --calibrate-mic` can recommend a value for your room.
 
         device: "cuda", "cpu", or "auto". "cuda" degrades gracefully to
         "cpu" when no usable GPU is detected, rather than raising — see
@@ -102,7 +107,7 @@ class HestiaSTT:
             print(f"Model load failed: {e}")
             raise
 
-        self.vad = webrtcvad.Vad(2)  # 0–3 (higher = stricter)
+        self.vad = webrtcvad.Vad(max(0, min(3, int(vad_aggressiveness))))  # 0–3 (higher = stricter)
         self.noise_filter = NoiseFilter(enabled=noise_filter)
 
     def listen_once(self, max_duration: int = 10, on_partial: Optional[Callable[[str], None]] = None) -> str:

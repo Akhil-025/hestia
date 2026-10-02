@@ -40,6 +40,8 @@ stt:
   compute_type: "float16"
   samplerate: 16000
   noise_filter: true
+  # vad_aggressiveness: 2   # webrtcvad 0-3; if unset, uses the value from
+  #                         # `python main.py --calibrate-mic`, else 2.
 
 # TTS
 tts:
@@ -47,11 +49,33 @@ tts:
   rate: 175
   volume: 1.0
   piper_model_path: "models/piper/en_US-lessac-medium.onnx"
+  # Optional distinct voices per kind of reply (backlog #170). Each profile
+  # overrides only what it sets: `voice_name` (a substring of an installed
+  # pyttsx3 voice name), `piper_model_path`, `rate`, `volume`. Then say which
+  # module speaks in which profile; modules not listed use `default`, and
+  # with no `default` they use the base voice above. Proactive announcements
+  # (reminders, nudges) use the module that raised them.
+  # voices:
+  #   calm:
+  #     voice_name: "Hazel"
+  #     rate: 160
+  #     piper_model_path: "models/piper/en_GB-alba-medium.onnx"
+  #   brisk:
+  #     rate: 190
+  # voice_by_module:
+  #   apollo: calm       # health
+  #   artemis: calm
+  #   pluto: brisk       # finance
+  #   default: null
 
 # Wake word (Vosk)
 wake_word:
   model_path: "models/vosk-model-small-en-us-0.15"
   wake_words: null
+  # quiet = also accept near-miss spellings (soft voice, quiet room)
+  # normal = exact match (default)  noisy = stricter, fewer false wakes
+  # Say "I'm in a noisy room" / "I'm in a quiet room" to switch live.
+  # sensitivity: "normal"
 
 # Barge-in: lets you interrupt Hestia mid-reply by just talking over her,
 # instead of waiting for her to finish — see core/barge_in.py. Only ever
@@ -81,6 +105,19 @@ barge_in:
                                     # recording that starts once barge-in
                                     # fires
   max_capture_seconds: 12.0    # hard cap on that follow-up recording
+  # use_calibration: true      # fill unset min_rms / vad_aggressiveness /
+                                # wake_word.sensitivity from the file written by
+                                # `python main.py --calibrate-mic`. Anything you
+                                # set explicitly in this file wins.
+  # Experimental acoustic echo cancellation (adaptive filter) for the
+  # self-interruption problem above. Needs tts.engine: "piper" (the only
+  # engine whose output Hestia can see), so it does nothing with pyttsx3.
+  # Synthetic-tested only — compare against a headset before trusting it.
+  # echo_cancel:
+  #   enabled: false
+  #   filter_len: 1024        # taps; 1024 = 64 ms at 16 kHz
+  #   mu: 0.4                 # adaptation step (0-2)
+  #   delay_ms: 0             # raise if speaker->mic latency exceeds the filter
 
 # Ollama
 ollama:

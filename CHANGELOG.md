@@ -12,6 +12,85 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Voice pipeline: voices per module, repeat that, do-not-disturb, mic calibration, wake-word sensitivity, listening indicator, graceful fallback (#170, #171, #172, #173, #174, #175 partial, #176, #178, #179)
+
+New tests: `tests/test_voice_pipeline.py`. All new settings are optional; an
+existing config behaves exactly as before. Not done: #177 (speaker
+identification).
+
+### Added
+
+- **Per-module voices (#170).** `tts.voices` defines named profiles (any of
+  `voice_name`, `piper_model_path`, `rate`, `volume`); `tts.voice_by_module`
+  says which module speaks in which, with an optional `default`. Spoken
+  replies use the module that handled the query; proactive announcements use
+  the module that raised them (or an explicit `voice` in the `speak` event).
+  A profile naming a voice or Piper model that doesn't exist keeps the rest of
+  its settings and falls back to the base voice with a warning.
+- **"Repeat that" (#171).** "Repeat that", "say it again", "what did you say"
+  replay the last reply or announcement. The whole utterance must be the
+  command, so "can you repeat that recipe for pancakes" goes to the normal
+  pipeline. Acknowledgements ("Yes?", "I didn't catch that") and the repeat
+  itself don't overwrite what gets repeated.
+- **Do-not-disturb (#173).** "Do not disturb [for 30 minutes / an hour]",
+  "mute notifications", "resume notifications", "is do not disturb on".
+  Proactive announcements (the `speak` bus event: reminders, nudges, the
+  morning brief) are held and read out together when DND ends; replies to
+  your own questions are never held. Timed DND expires without a timer
+  thread. At most 50 notifications are held (oldest dropped). A duration
+  that can't be parsed turns DND on open-ended and says so rather than
+  guessing. Also `POST /api/voice/dnd`.
+- **Mic calibration (#174).** `python main.py --calibrate-mic` measures room
+  noise, your voice and (if TTS starts) Hestia's own echo, then saves
+  recommended `barge_in.min_rms`, VAD aggressiveness and wake-word
+  sensitivity to `data/mic_calibration.json`. Used at startup only for
+  settings your config doesn't set, and ignored if it was made on a
+  different input device. `barge_in.use_calibration: false` turns it off.
+  `stt.vad_aggressiveness` is a new setting.
+- **Echo cancellation (#175, partial).** `core/echo_cancel.py`: an NLMS
+  adaptive filter that subtracts Hestia's playback from the mic before
+  barge-in's VAD and RMS checks, freezing adaptation during double-talk.
+  Opt-in via `barge_in.echo_cancel.enabled`.
+- **Wake-word sensitivity (#176).** `wake_word.sensitivity`: `quiet` (also
+  accepts near-miss spellings such as "hesta"/"hestiya", compared word by
+  word), `normal` (the previous exact-match behaviour, default) and `noisy`
+  (ignores long utterances and low-confidence matches). Switch live with "I'm
+  in a noisy room" / "I'm in a quiet room".
+- **Listening indicator (#178).** `GET /api/voice/state` and a status line
+  above the chat box showing whether the server's mic is open (waiting for
+  the wake word, listening, thinking, speaking, or typed-only) plus a DND
+  badge. `core/voice_state.py` holds the shared state.
+- **Typed fallback (#179).** Each voice component now builds independently:
+  a missing Vosk model, STT load failure or absent audio stack disables only
+  that part (`NullTTS` stands in for speech) and `--voice` carries on with
+  typed input, saying why. Three consecutive mic errors during a session
+  also fall back to typing instead of looping.
+
+### Changed
+
+- **Streaming TTS splitter (#172).** `speak_stream` already existed; its
+  sentence splitting is now abbreviation-aware ("Dr.", "e.g.", initials,
+  decimals), speaks line-separated lists as they arrive, and flushes a long
+  unpunctuated first sentence at a clause break so speech starts sooner.
+- A failure while speaking one utterance no longer kills the TTS worker
+  thread (it previously left `wait_until_done()` able to hang).
+
+### Not done / limits
+
+- **#177 speaker identification** not started.
+- **Echo cancellation is unproven on real hardware.** Tests use synthetic
+  echo only. It needs `tts.engine: piper` (pyttsx3 plays through the OS, so
+  there's nothing to cancel against; it's left off with a warning). If it
+  doesn't help, raise `delay_ms`, or use a headset.
+- "Repeat that" after a barge-in replays the whole reply, not just the part
+  that was cut off.
+- The web UI indicator and DND badge were checked through the JSON endpoints
+  and for JS syntax only, not in a browser.
+- `config/laptop_config.yaml` (your live config) was not changed; the new
+  options are documented in `config/laptop_config.example.yaml`.
+
+---
+
 ## [Unreleased] — Dionysus: events, surprise me, budgets, recharge routines, more/less like this, expiring dismissals (#146, #147, #150, #151, #152, #269)
 
 Registry version 2.18.0 (minor: 5 intents added). New tests:

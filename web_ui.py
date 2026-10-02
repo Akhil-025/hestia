@@ -37,6 +37,7 @@ class HestiaWebUI:
         athena=None,  # AthenaEngine | None — powers /api/athena/*
         stt=None,  # HestiaSTT | None — powers /api/stt
         tts=None,  # HestiaTTS | None — powers /api/tts
+        voice_state=None,  # core.voice_state.VoiceState | None — powers /api/voice/*
     ) -> None:
         self.memory = memory
         self.skill_loader = skill_loader
@@ -50,6 +51,7 @@ class HestiaWebUI:
         self.athena = athena
         self.stt = stt
         self.tts = tts
+        self.voice_state = voice_state
         # Optional shared-secret auth for /api/*. If unset, the API is
         # unauthenticated (fine for strictly-localhost, single-user use —
         # but anything reachable beyond localhost should set this).
@@ -488,6 +490,37 @@ class HestiaWebUI:
             except Exception:
                 logger.exception("[WebUI] tts error")
                 return jsonify({"error": "Synthesis failed"}), 500
+
+        # Live voice-pipeline state for the "listening" indicator and the
+        # do-not-disturb toggle (backlog #178, #173). The state comes from
+        # the voice loop itself (core/voice_state.py), so the dot reflects
+        # whether the *server's* microphone is actually open — which matters
+        # when voice mode runs headless and there is no terminal to look at.
+        @self.app.route("/api/voice/state")
+        def api_voice_state():
+            if self.voice_state is None:
+                return jsonify({
+                    "active": False, "state": "inactive", "detail": None,
+                    "mic_open": False, "dnd": False,
+                    "dnd_remaining_minutes": None, "held_notifications": 0,
+                })
+            return jsonify(self.voice_state.snapshot())
+
+        @self.app.route("/api/voice/dnd", methods=["POST"])
+        def api_voice_dnd():
+            if self.voice_state is None:
+                return jsonify({"error": "Voice state not available"}), 503
+            body = request.get_json(silent=True) or {}
+            on = body.get("on")
+            if not isinstance(on, bool):
+                return jsonify({"error": "'on' (true/false) required"}), 400
+            minutes = body.get("minutes")
+            if minutes is not None:
+                if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) \
+                        or not (0 < minutes <= 24 * 60):
+                    return jsonify({"error": "'minutes' must be between 0 and 1440"}), 400
+            self.voice_state.set_dnd(on, minutes)
+            return jsonify(self.voice_state.snapshot())
 
     # ── ADMIN ───────────────────────────────────────────
 

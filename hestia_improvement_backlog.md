@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 121 ✅ + 7 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
+**Tally: 129 ✅ + 8 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -250,16 +250,16 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 16. Voice Pipeline (STT / TTS / Wake Word / Barge-in)
 
-170. `[M]` Add per-entity TTS voices (HEARTH.txt's "11 voices" idea, scoped down) — even 2–3 distinct Piper voices for different response types (health vs. finance vs. casual) adds real personality.
-171. `[Q]` Add a "repeat that" / "say it again" voice command using the last TTS output buffer.
-172. `[M]` Add streaming TTS (start speaking the first sentence while the rest is still generating) to cut perceived latency.
-173. `[Q]` Add a mute/do-not-disturb voice toggle that suppresses proactive notifications without killing the whole assistant.
-174. `[M]` Tune `min_rms`/`vad_aggressiveness` automatically per-device via a short calibration routine instead of manual config tuning (the config file already flags this as finicky).
-175. `[M]` Add acoustic echo cancellation (even a basic adaptive filter) to fix the self-interruption issue the config comments call out.
-176. `[Q]` Add wake-word sensitivity levels (quiet room vs. noisy room presets).
+170. ✅ `[M]` Add per-entity TTS voices (HEARTH.txt's "11 voices" idea, scoped down) — even 2–3 distinct Piper voices for different response types (health vs. finance vs. casual) adds real personality.
+171. ✅ `[Q]` Add a "repeat that" / "say it again" voice command using the last TTS output buffer.
+172. ✅ `[M]` Add streaming TTS (start speaking the first sentence while the rest is still generating) to cut perceived latency. *(`speak_stream` already existed; this pass made the sentence splitter abbreviation-aware, line-break-aware and able to flush long first sentences early.)*
+173. ✅ `[Q]` Add a mute/do-not-disturb voice toggle that suppresses proactive notifications without killing the whole assistant.
+174. ✅ `[M]` Tune `min_rms`/`vad_aggressiveness` automatically per-device via a short calibration routine instead of manual config tuning (the config file already flags this as finicky).
+175. 🟡 `[M]` Add acoustic echo cancellation (even a basic adaptive filter) to fix the self-interruption issue the config comments call out. *(partial: an adaptive-filter (NLMS) canceller is wired into barge-in and is tested against synthetic echo only; it has not been tried on real speakers/mics, and it needs the Piper engine because pyttsx3 output can't be captured. Off by default. A headset is still the reliable fix.)*
+176. ✅ `[Q]` Add wake-word sensitivity levels (quiet room vs. noisy room presets).
 177. `[M]` Add speaker identification (differentiate you from a housemate/guest) if privacy-sensitive modules (Pluto, Mnemosyne) should behave differently by speaker.
-178. `[Q]` Add a visual "listening" indicator in the web UI synced to actual mic state, for when voice mode runs headless.
-179. `[M]` Add graceful STT fallback to typed input when the mic/model fails to load, instead of crashing voice mode.
+178. ✅ `[Q]` Add a visual "listening" indicator in the web UI synced to actual mic state, for when voice mode runs headless.
+179. ✅ `[M]` Add graceful STT fallback to typed input when the mic/model fails to load, instead of crashing voice mode.
 
 ## 17. Web UI & Dashboard
 

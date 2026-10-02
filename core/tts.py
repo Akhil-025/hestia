@@ -6,9 +6,84 @@ import sys
 import threading
 import queue
 import subprocess
+from typing import Optional
 
 import pyttsx3
 import sounddevice as sd
+
+
+# ----------------------------------------------------------------------
+# Streaming sentence splitter (backlog #172)
+# ----------------------------------------------------------------------
+#
+# speak_stream() has to decide, while text is still arriving, how much of it
+# is safe to start speaking. Splitting on ". " alone has three failure modes
+# that make streaming TTS sound worse than waiting would:
+#   * abbreviations ("Dr. Patel", "e.g. this") get cut mid-name,
+#   * bullet lists / line-separated output with no end punctuation sit
+#     unspoken until the whole reply is done,
+#   * a very long first sentence delays the first word of speech, which is
+#     exactly the latency streaming exists to remove.
+
+_BOUNDARY_RE = re.compile(r"""([.!?]+["')\]]*)(\s+)|(\n+)""")
+
+_ABBREVIATIONS = frozenset({
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g",
+    "i.e", "eg", "ie", "no", "approx", "inc", "ltd", "co", "fig", "cf", "al",
+    "gen", "col", "lt", "sgt", "capt", "rev", "hon", "mt", "ft",
+})
+
+# If this many characters pile up without a sentence boundary, speak up to the
+# last clause break (comma / semicolon / colon) instead of waiting.
+CLAUSE_FLUSH_CHARS = 140
+_CLAUSE_MIN_CHARS = 40
+_CLAUSE_BREAK_RE = re.compile(r"[,;:](?=\s)")
+
+
+def _is_abbreviation(segment: str) -> bool:
+    """True if *segment* (text before a lone period) ends in an abbreviation
+    or a single-letter initial, so that period isn't a sentence end."""
+    words = segment.split()
+    if not words:
+        return False
+    last = words[-1].lstrip("([\"'").lower()
+    if last in _ABBREVIATIONS:
+        return True
+    return len(last) == 1 and last.isalpha()
+
+
+def split_speakable(buffer: str) -> tuple[list[str], str]:
+    """Split streamed *buffer* into (complete sentences, unfinished remainder).
+
+    Boundaries are sentence-ending punctuation followed by whitespace
+    (skipping abbreviations and initials) and line breaks. The remainder is
+    the trailing text that isn't safe to speak yet, except that an over-long
+    remainder is cut at its last clause break so speech can begin.
+    """
+    sentences: list[str] = []
+    start = 0
+    for m in _BOUNDARY_RE.finditer(buffer):
+        if m.group(1) is not None:
+            if m.group(1) == "." and _is_abbreviation(buffer[start:m.start(1)]):
+                continue
+        piece = buffer[start:m.end()].strip()
+        if piece:
+            sentences.append(piece)
+        start = m.end()
+
+    rest = buffer[start:]
+    while len(rest) > CLAUSE_FLUSH_CHARS:
+        cut = None
+        for cm in _CLAUSE_BREAK_RE.finditer(rest):
+            if cm.start() >= _CLAUSE_MIN_CHARS:
+                cut = cm.end()
+        if cut is None:
+            break
+        piece = rest[:cut].strip()
+        if piece:
+            sentences.append(piece)
+        rest = rest[cut:].lstrip()
+    return sentences, rest
 
 
 class HestiaTTS:
@@ -26,9 +101,12 @@ class HestiaTTS:
         stop():
             Immediately cancel queued/current speech where possible.
             Intended for barge-in/interruption handling.
-    """
 
-    _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+    Both speak() and speak_stream() accept an optional ``voice=`` naming one
+    of the configured voice profiles (backlog #170), so health replies, money
+    replies and casual chat can sound different. An unknown or missing name
+    just uses the base voice.
+    """
 
     def __init__(
         self,
@@ -36,6 +114,8 @@ class HestiaTTS:
         rate: int = 175,
         volume: float = 1.0,
         piper_model_path: str = None,
+        voices: Optional[dict] = None,
+        echo_reference=None,
     ):
         """
         Initialize TTS engine.
@@ -45,10 +125,22 @@ class HestiaTTS:
             rate: Speech rate in words per minute (pyttsx3)
             volume: Volume level from 0.0 to 1.0
             piper_model_path: Path to Piper TTS model
+            voices: Optional named voice profiles, e.g.
+                {"health": {"voice_name": "Hazel", "rate": 165,
+                            "piper_model_path": "models/piper/x.onnx"}}.
+                Every field is optional; a profile only overrides what it sets.
+            echo_reference: Optional core.echo_cancel.EchoReference. When given
+                (Piper only), every chunk played is also pushed to it so
+                barge-in can cancel Hestia's own voice out of the mic (#175).
         """
 
         self.rate = rate
         self.volume = max(0.0, min(volume, 1.0))
+
+        # Keep the profile config under its own name: the pyttsx3 voice
+        # detection below reuses the local name `voices` for the installed
+        # system voices, which would otherwise shadow this argument.
+        profiles_cfg = voices
 
         # Speech queue
         self._queue = queue.Queue()
@@ -65,6 +157,8 @@ class HestiaTTS:
         self._engine = "pyttsx3"
         self._voice_id = None
         self._piper_model_path = None
+        self._pyttsx3_voices: list = []
+        self._echo_reference = echo_reference
 
         # --------------------------------------------------------------
         # Detect pyttsx3 voice
@@ -73,6 +167,7 @@ class HestiaTTS:
         try:
             temp_engine = pyttsx3.init()
             voices = temp_engine.getProperty("voices")
+            self._pyttsx3_voices = list(voices or [])
 
             selected_voice = None
 
@@ -133,6 +228,12 @@ class HestiaTTS:
             print("TTS engine: pyttsx3")
 
         # --------------------------------------------------------------
+        # Named voice profiles (#170)
+        # --------------------------------------------------------------
+
+        self._profiles: dict = self._build_profiles(profiles_cfg)
+
+        # --------------------------------------------------------------
         # Start worker
         # --------------------------------------------------------------
 
@@ -148,9 +249,83 @@ class HestiaTTS:
     # PUBLIC API
     # ==================================================================
 
-    def speak(self, text: str) -> None:
+    available = True
+
+    @property
+    def engine(self) -> str:
+        """The active engine: "piper" or "pyttsx3"."""
+        return self._engine
+
+    @property
+    def voice_profiles(self) -> list:
+        """Names of the configured voice profiles."""
+        return sorted(self._profiles)
+
+    def has_voice(self, name: Optional[str]) -> bool:
+        return bool(name) and name in self._profiles
+
+    def _build_profiles(self, voices: Optional[dict]) -> dict:
+        """Resolve the ``voices`` config into ready-to-use profile dicts.
+
+        A profile that names a pyttsx3 voice we can't find, or a Piper model
+        file that doesn't exist, keeps the rest of its settings and falls back
+        to the base voice for the missing part (with a warning) rather than
+        failing startup over a cosmetic feature.
         """
-        Queue text for speech.
+        profiles: dict = {}
+        for name, spec in (voices or {}).items():
+            if not isinstance(spec, dict):
+                continue
+
+            voice_id = None
+            wanted = spec.get("voice_name")
+            if wanted:
+                wanted_l = str(wanted).lower()
+                for v in self._pyttsx3_voices:
+                    if wanted_l in str(getattr(v, "name", "")).lower():
+                        voice_id = v.id
+                        break
+                if voice_id is None:
+                    print(
+                        f"TTS voice profile {name!r}: no pyttsx3 voice matching "
+                        f"{wanted!r}; using the base voice.",
+                        file=sys.stderr,
+                    )
+
+            piper_path = None
+            model = spec.get("piper_model_path")
+            if model:
+                if os.path.exists(model):
+                    piper_path = model
+                else:
+                    print(
+                        f"TTS voice profile {name!r}: Piper model {model!r} not "
+                        f"found; using the base model.",
+                        file=sys.stderr,
+                    )
+
+            rate = spec.get("rate")
+            volume = spec.get("volume")
+            profiles[str(name)] = {
+                "voice_id": voice_id,
+                "piper_model_path": piper_path,
+                "rate": int(rate) if isinstance(rate, (int, float)) else None,
+                "volume": (
+                    max(0.0, min(float(volume), 1.0))
+                    if isinstance(volume, (int, float)) else None
+                ),
+            }
+        return profiles
+
+    def _profile(self, voice: Optional[str]) -> dict:
+        """Settings for *voice*, or {} (= base voice) if unknown/None."""
+        if voice and voice in self._profiles:
+            return self._profiles[voice]
+        return {}
+
+    def speak(self, text: str, voice: Optional[str] = None) -> None:
+        """
+        Queue text for speech, optionally in a named voice profile.
 
         This starts a new speech generation, cancelling anything from
         the previous generation.
@@ -163,9 +338,9 @@ class HestiaTTS:
 
         self._drain_queue()
 
-        self._queue.put((gen, text))
+        self._queue.put((gen, text, voice))
 
-    def speak_stream(self, chunks) -> None:
+    def speak_stream(self, chunks, voice: Optional[str] = None) -> None:
         """
         Speak streamed text as sentences become available.
 
@@ -204,24 +379,19 @@ class HestiaTTS:
 
             buffer += str(chunk)
 
-            parts = self._SENTENCE_END_RE.split(buffer)
+            # Complete sentences (abbreviation-aware, line-break-aware, with
+            # an early clause flush for very long sentences) go to the
+            # speech queue immediately; the unfinished tail stays buffered.
+            ready, buffer = split_speakable(buffer)
 
-            # All except the final element are complete sentences.
-            for sentence in parts[:-1]:
-
-                sentence = sentence.strip()
-
-                if sentence:
-                    self._queue.put((gen, sentence))
-
-            # Keep incomplete sentence.
-            buffer = parts[-1]
+            for sentence in ready:
+                self._queue.put((gen, sentence, voice))
 
         # Speak remaining text.
         buffer = buffer.strip()
 
         if buffer and gen == self._current_generation():
-            self._queue.put((gen, buffer))
+            self._queue.put((gen, buffer, voice))
 
     def stop(self) -> None:
         """
@@ -283,7 +453,7 @@ class HestiaTTS:
 
         self.volume = max(0.0, min(volume, 1.0))
 
-    def synthesize_wav_bytes(self, text: str) -> bytes:
+    def synthesize_wav_bytes(self, text: str, voice: Optional[str] = None) -> bytes:
         """
         Render `text` to a standalone WAV byte string and return it,
         instead of speaking it through local speakers.
@@ -302,16 +472,16 @@ class HestiaTTS:
 
         if self._engine == "piper":
             try:
-                return self._synthesize_piper_wav(text)
+                return self._synthesize_piper_wav(text, voice)
             except Exception as e:
                 print(
                     f"Piper synth failed: {e}, falling back to pyttsx3",
                     file=sys.stderr,
                 )
 
-        return self._synthesize_pyttsx3_wav(text)
+        return self._synthesize_pyttsx3_wav(text, voice)
 
-    def _synthesize_pyttsx3_wav(self, text: str) -> bytes:
+    def _synthesize_pyttsx3_wav(self, text: str, voice: Optional[str] = None) -> bytes:
         """Render via a throwaway pyttsx3 engine using save_to_file(),
         which writes audio to disk instead of playing it — unlike
         say()/runAndWait(), used everywhere else in this class."""
@@ -321,13 +491,19 @@ class HestiaTTS:
         fd, path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
 
+        prof = self._profile(voice)
+
         try:
             engine = pyttsx3.init()
-            engine.setProperty("rate", self.rate)
-            engine.setProperty("volume", self.volume)
+            engine.setProperty("rate", prof.get("rate") or self.rate)
+            engine.setProperty(
+                "volume",
+                prof["volume"] if prof.get("volume") is not None else self.volume,
+            )
 
-            if self._voice_id:
-                engine.setProperty("voice", self._voice_id)
+            voice_id = prof.get("voice_id") or self._voice_id
+            if voice_id:
+                engine.setProperty("voice", voice_id)
 
             engine.save_to_file(text, path)
             engine.runAndWait()
@@ -340,7 +516,7 @@ class HestiaTTS:
             except OSError:
                 pass
 
-    def _synthesize_piper_wav(self, text: str) -> bytes:
+    def _synthesize_piper_wav(self, text: str, voice: Optional[str] = None) -> bytes:
         """Run Piper once, synchronously, and wrap its headerless raw PCM
         output in a WAV container (Piper's --output-raw is 16-bit mono
         PCM at 22050Hz, same as _speak_piper's playback stream)."""
@@ -348,8 +524,10 @@ class HestiaTTS:
         import io
         import wave
 
+        model = self._profile(voice).get("piper_model_path") or self._piper_model_path
+
         proc = subprocess.run(
-            ["piper", "--model", self._piper_model_path, "--output-raw"],
+            ["piper", "--model", model, "--output-raw"],
             input=text.encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -410,13 +588,29 @@ class HestiaTTS:
 
         while True:
 
-            gen, text = self._queue.get()
+            item = self._queue.get()
 
             try:
 
-                # Only speak current generation.
+                # (gen, text) or (gen, text, voice) — tolerate both shapes.
+                gen, text = item[0], item[1]
+                voice = item[2] if len(item) > 2 else None
+
+                # Only speak current generation. `voice` is only passed
+                # along when one was requested, so the default path keeps
+                # the original (text, gen) call shape.
                 if gen == self._current_generation():
-                    self._speak_blocking(text, gen)
+                    if voice:
+                        self._speak_blocking(text, gen, voice)
+                    else:
+                        self._speak_blocking(text, gen)
+
+            except Exception as e:
+
+                # A failure speaking one utterance must never kill the
+                # worker thread: it would leave the queue undrained and
+                # wait_until_done() would block forever.
+                print(f"TTS worker error: {e}", file=sys.stderr)
 
             finally:
 
@@ -426,7 +620,7 @@ class HestiaTTS:
     # SPEECH DISPATCH
     # ==================================================================
 
-    def _speak_blocking(self, text: str, gen: int) -> None:
+    def _speak_blocking(self, text: str, gen: int, voice: Optional[str] = None) -> None:
         """
         Execute speech using the selected engine.
         """
@@ -435,7 +629,10 @@ class HestiaTTS:
 
             try:
 
-                self._speak_piper(text, gen)
+                if voice:
+                    self._speak_piper(text, gen, voice)
+                else:
+                    self._speak_piper(text, gen)
 
                 return
 
@@ -447,13 +644,16 @@ class HestiaTTS:
                     file=sys.stderr,
                 )
 
-        self._speak_pyttsx3(text, gen)
+        if voice:
+            self._speak_pyttsx3(text, gen, voice)
+        else:
+            self._speak_pyttsx3(text, gen)
 
     # ==================================================================
     # PYTTSX3
     # ==================================================================
 
-    def _speak_pyttsx3(self, text: str, gen: int) -> None:
+    def _speak_pyttsx3(self, text: str, gen: int, voice: Optional[str] = None) -> None:
         """
         Speak using pyttsx3.
 
@@ -470,13 +670,20 @@ class HestiaTTS:
 
             engine = pyttsx3.init()
 
-            engine.setProperty("rate", self.rate)
-            engine.setProperty("volume", self.volume)
+            prof = self._profile(voice)
 
-            if self._voice_id:
+            engine.setProperty("rate", prof.get("rate") or self.rate)
+            engine.setProperty(
+                "volume",
+                prof["volume"] if prof.get("volume") is not None else self.volume,
+            )
+
+            voice_id = prof.get("voice_id") or self._voice_id
+
+            if voice_id:
                 engine.setProperty(
                     "voice",
-                    self._voice_id,
+                    voice_id,
                 )
 
             # Check cancellation again after initialization.
@@ -520,7 +727,7 @@ class HestiaTTS:
     # PIPER
     # ==================================================================
 
-    def _speak_piper(self, text: str, gen: int) -> None:
+    def _speak_piper(self, text: str, gen: int, voice: Optional[str] = None) -> None:
         """
         Speak using Piper TTS.
 
@@ -531,11 +738,13 @@ class HestiaTTS:
         if gen != self._current_generation():
             return
 
+        model = self._profile(voice).get("piper_model_path") or self._piper_model_path
+
         proc = subprocess.Popen(
             [
                 "piper",
                 "--model",
-                self._piper_model_path,
+                model,
                 "--output-raw",
             ],
             stdin=subprocess.PIPE,
@@ -585,6 +794,13 @@ class HestiaTTS:
 
                 stream.write(chunk)
 
+                # Tell the echo canceller what just went to the speakers (#175).
+                if self._echo_reference is not None:
+                    try:
+                        self._echo_reference.push(chunk, 22050)
+                    except Exception:
+                        pass
+
         finally:
 
             self._active_piper_proc = None
@@ -619,3 +835,45 @@ class HestiaTTS:
             raise RuntimeError(
                 f"Piper exited with code {proc.returncode}"
             )
+
+
+class NullTTS:
+    """Silent stand-in used when no speech engine could be started
+    (backlog #179), so the rest of Hestia can keep calling ``self.tts``
+    without None-checks and a broken audio stack never takes the assistant
+    down with it. Replies are still logged by the pipeline, so typed use
+    sees everything; nothing is spoken.
+
+    ``available`` is False so callers that care (e.g. the web UI's /api/tts)
+    can tell this apart from a working engine.
+    """
+
+    available = False
+    voice_profiles: list = []
+
+    def speak(self, text: str, voice: Optional[str] = None) -> None:
+        return None
+
+    def speak_stream(self, chunks, voice: Optional[str] = None) -> None:
+        # Must still drain the iterator: callers (main._speak_streaming) tap
+        # it to collect the full response text as a side effect.
+        for _ in chunks:
+            pass
+
+    def stop(self) -> None:
+        return None
+
+    def wait_until_done(self) -> None:
+        return None
+
+    def set_rate(self, rate: int) -> None:
+        return None
+
+    def set_volume(self, volume: float) -> None:
+        return None
+
+    def has_voice(self, name: Optional[str]) -> bool:
+        return False
+
+    def synthesize_wav_bytes(self, text: str, voice: Optional[str] = None) -> bytes:
+        return b""

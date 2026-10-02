@@ -243,7 +243,13 @@ python web_ui.py
 **Voice Mode**
 ```bash
 python main.py --voice
+python main.py --calibrate-mic   # one-off: tune barge-in / VAD / wake word for this mic
 ```
+
+Voice commands handled before NLU: "repeat that", "do not disturb [for 30
+minutes]" / "resume notifications", "I'm in a noisy room" / "quiet room". If
+the microphone or speech model can't load, voice mode drops to typed input
+instead of crashing. The web UI shows a live listening indicator.
 
 **Telegram Bot (optional)**
 ```bash
