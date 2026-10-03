@@ -23,6 +23,23 @@ google:
   credentials_path: "config/google_credentials.json"
   token_path: "data/google_token.json"
 
+# Hermes (Gmail + Calendar) — every key is optional
+hermes:
+  # "email John" resolves to an address without you saying it. Names are
+  # matched case-insensitively; anything not listed is asked for.
+  contacts: {}
+  #   john: "john@example.com"
+  # Senders (address or name fragments) always ranked high in the email
+  # digest / inbox-zero plan.
+  vip_senders: []
+  # Window "find a time" offers, as [start_hour, end_hour].
+  work_hours: [9, 18]
+  # "Any back-to-back meetings?" flags gaps shorter than buffer_minutes, plus
+  # a flat travel_minutes allowance when consecutive events are in different
+  # places. travel_minutes is an estimate, not a route lookup.
+  buffer_minutes: 10
+  travel_minutes: 30
+
 # General
 database:
   path: "data/hestia.db"

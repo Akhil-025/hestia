@@ -306,6 +306,8 @@ class HestiaBuilder:
             "iris": None,
             "google_agent": None,
             "browser_agent": None,
+            # Handed through so HermesEngine can word email drafts (#93).
+            "llm": llm,
         }
 
         if self.config.get("athena", {}).get("enabled", False):
@@ -437,7 +439,20 @@ class HestiaBuilder:
             # offset by the difference between UTC and the user's real
             # timezone (e.g. "3pm" becomes "8:30pm" for Asia/Kolkata).
             hermes_tz = chronos_cfg.get("timezone", "Asia/Kolkata")
-            hermes = HermesEngine(google_agent, timezone_name=hermes_tz)
+            # Hermes options (backlog #92-#100). Every key is optional; see
+            # config/laptop_config.example.yaml.
+            hermes_cfg = self.config.get("hermes", {}) or {}
+            work_hours = hermes_cfg.get("work_hours")
+            hermes = HermesEngine(
+                google_agent,
+                timezone_name=hermes_tz,
+                llm=optional_modules.get("llm"),
+                contacts=hermes_cfg.get("contacts") or {},
+                vip_senders=hermes_cfg.get("vip_senders") or [],
+                work_hours=tuple(work_hours) if work_hours else None,
+                buffer_minutes=hermes_cfg.get("buffer_minutes", 10),
+                travel_minutes=hermes_cfg.get("travel_minutes", 30),
+            )
             orchestrator.register(hermes)
 
         orchestrator.register(

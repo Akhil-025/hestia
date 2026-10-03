@@ -259,10 +259,26 @@ class HestiaGoogleAgent:
             Empty list on error or when not authenticated.
         """
         self._require_auth()
-        max_results = _clamp(max_results, 1, _MAX_EMAIL_RESULTS)
+        query = "is:unread in:inbox" if unread_only else "in:inbox"
+        return self._fetch_emails(query, max_results)
 
+    def search_emails(self, query: str, max_results: int = 10) -> list[Email]:
+        """
+        Search the whole mailbox with a Gmail search expression (backlog #94).
+
+        *query* uses Gmail's own operators (``from:``, ``subject:``,
+        ``after:``, ``before:``...). Unlike :meth:`read_emails` this is not
+        limited to unread inbox mail. Returns an empty list on error or for
+        a blank query.
+        """
+        self._require_auth()
+        if not query or not query.strip():
+            return []
+        return self._fetch_emails(query.strip(), max_results)
+
+    def _fetch_emails(self, query: str, max_results: int) -> list[Email]:
+        max_results = _clamp(max_results, 1, _MAX_EMAIL_RESULTS)
         try:
-            query = "is:unread in:inbox" if unread_only else "in:inbox"
             result: dict = (
                 self._gmail.users()
                 .messages()
@@ -398,6 +414,7 @@ class HestiaGoogleAgent:
         end_dt: Optional[datetime] = None,
         location: str = "",
         description: str = "",
+        recurrence: Optional[list[str]] = None,
     ) -> bool:
         """
         Create a new calendar event.
@@ -414,6 +431,9 @@ class HestiaGoogleAgent:
             Optional venue string.
         description:
             Optional event description.
+        recurrence:
+            Optional list of RFC 5545 lines (e.g. ``["RRULE:FREQ=WEEKLY"]``)
+            that makes the event repeat (backlog #98).
 
         Returns
         -------
@@ -444,6 +464,8 @@ class HestiaGoogleAgent:
             "start": {"dateTime": start_dt.isoformat(), "timeZone": self._timezone},
             "end": {"dateTime": effective_end.isoformat(), "timeZone": self._timezone},
         }
+        if recurrence:
+            body["recurrence"] = list(recurrence)
 
         try:
             self._calendar.events().insert(
@@ -460,6 +482,105 @@ class HestiaGoogleAgent:
         except Exception:
             logger.exception("create_event %r failed.", title)
             return False
+
+    def list_events_between(
+        self,
+        start_dt: datetime,
+        end_dt: datetime,
+        max_results: int = 50,
+    ) -> list[CalendarEvent]:
+        """
+        Fetch events overlapping an explicit window (backlog #95-#97).
+
+        :meth:`list_events` can only look "from now, N days ahead"; conflict
+        checks and slot finding need an arbitrary window. Naive datetimes
+        are read as the agent's configured timezone.
+        """
+        self._require_auth()
+        max_results = _clamp(max_results, 1, _MAX_EVENT_RESULTS)
+        try:
+            result: dict = (
+                self._calendar.events()
+                .list(
+                    calendarId="primary",
+                    timeMin=self._aware_iso(start_dt),
+                    timeMax=self._aware_iso(end_dt),
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy="startTime",
+                )
+                .execute()
+            )
+            return [CalendarEvent.from_api(e) for e in result.get("items") or []]
+        except Exception:
+            logger.exception("list_events_between failed.")
+            return []
+
+    def free_busy(
+        self,
+        start_dt: datetime,
+        end_dt: datetime,
+        emails: Optional[list[str]] = None,
+    ) -> dict[str, Optional[list[tuple[datetime, datetime]]]]:
+        """
+        Busy intervals for the user (key ``"primary"``) and any *emails*
+        (backlog #96).
+
+        Each value is a list of aware ``(start, end)`` datetimes, or
+        ``None`` when that calendar could not be read (e.g. the attendee
+        doesn't share free/busy with you) — callers must treat ``None`` as
+        "unknown", never as "free". On a total API failure every key is
+        ``None``.
+        """
+        self._require_auth()
+        ids = ["primary"] + [e for e in (emails or []) if e and e != "primary"]
+        try:
+            result: dict = (
+                self._calendar.freebusy()
+                .query(
+                    body={
+                        "timeMin": self._aware_iso(start_dt),
+                        "timeMax": self._aware_iso(end_dt),
+                        "timeZone": self._timezone,
+                        "items": [{"id": i} for i in ids],
+                    }
+                )
+                .execute()
+            )
+        except Exception:
+            logger.exception("free_busy failed.")
+            return {i: None for i in ids}
+
+        calendars = result.get("calendars") or {}
+        out: dict[str, Optional[list[tuple[datetime, datetime]]]] = {}
+        for cal_id in ids:
+            entry = calendars.get(cal_id)
+            if not entry or entry.get("errors"):
+                out[cal_id] = None
+                continue
+            intervals: list[tuple[datetime, datetime]] = []
+            for busy in entry.get("busy") or []:
+                try:
+                    intervals.append(
+                        (
+                            datetime.fromisoformat(busy["start"].replace("Z", "+00:00")),
+                            datetime.fromisoformat(busy["end"].replace("Z", "+00:00")),
+                        )
+                    )
+                except (KeyError, ValueError):
+                    logger.warning("free_busy: skipped malformed interval %r.", busy)
+            out[cal_id] = intervals
+        return out
+
+    def _aware_iso(self, dt: datetime) -> str:
+        """RFC 3339 string; naive datetimes are taken as the agent timezone."""
+        if dt.tzinfo is None:
+            try:
+                from zoneinfo import ZoneInfo
+                dt = dt.replace(tzinfo=ZoneInfo(self._timezone))
+            except Exception:
+                dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
 
     def delete_event(self, event_id: str) -> bool:
         """

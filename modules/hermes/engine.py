@@ -15,9 +15,16 @@ Design notes
   top-level auth guard.
 - All response dicts conform to the BaseModule contract:
   {response: str, data: dict, confidence: float}.
+- Anything that sends mail or writes to the calendar in a way the user might
+  not expect (a send, an overlapping event) is held behind the orchestrator's
+  confirmation mechanism and only executes on the second, ``_confirmed`` call.
+- Triage, inbox-zero and schedule-gap analysis are pure functions over the
+  agent's results (no extra Google scopes, no LLM needed); the LLM, if one is
+  injected, is used only to word email drafts.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import date, datetime, time, timedelta
@@ -39,6 +46,19 @@ _DEFAULT_EVENT_TIME = "09:00"
 _MAX_EMAIL_COUNT = 50
 _MAX_DAYS_AHEAD = 90
 _MAX_EVENT_DELETE = 50
+_DEFAULT_SEARCH_COUNT = 10
+_DEFAULT_DIGEST_COUNT = 20
+_DEFAULT_INBOX_ZERO_COUNT = 10
+_MAX_INBOX_ZERO_COUNT = 25
+_DEFAULT_BUFFER_MINUTES = 10
+_DEFAULT_TRAVEL_MINUTES = 30
+_DEFAULT_MEETING_MINUTES = 30
+_DEFAULT_SLOT_DAYS = 3
+_MAX_SLOT_DAYS = 14
+_SLOT_STEP_MINUTES = 30
+_MAX_SLOTS_OFFERED = 3
+_DEFAULT_WORK_START = 9
+_DEFAULT_WORK_END = 18
 
 _NOT_CONNECTED = "Communication services are not connected. Ask me to reconnect Google."
 _UNHANDLED = "I can't handle that communication request."
@@ -80,6 +100,13 @@ class HermesEngine(BaseModule):
             "list_events",
             "create_event",
             "delete_events",
+            # backlog #92-#99
+            "email_digest",
+            "draft_email",
+            "search_email",
+            "check_schedule_gaps",
+            "find_meeting_slot",
+            "inbox_zero",
         }
     )
 
@@ -113,10 +140,76 @@ class HermesEngine(BaseModule):
         "cancel_events": "delete_events",
         "cancel_event": "delete_events",
         "remove_events": "delete_events",
+        "email_triage": "email_digest",
+        "triage_email": "email_digest",
+        "triage_inbox": "email_digest",
+        "inbox_digest": "email_digest",
+        "daily_digest": "email_digest",
+        "compose_email": "draft_email",
+        "write_email": "draft_email",
+        "reply_email": "draft_email",
+        "email_reply": "draft_email",
+        "find_email": "search_email",
+        "search_emails": "search_email",
+        "search_mail": "search_email",
+        "check_buffers": "check_schedule_gaps",
+        "schedule_gaps": "check_schedule_gaps",
+        "back_to_back": "check_schedule_gaps",
+        "suggest_meeting_time": "find_meeting_slot",
+        "find_meeting_time": "find_meeting_slot",
+        "find_free_slot": "find_meeting_slot",
+        "schedule_meeting": "find_meeting_slot",
+        "inbox_zero_mode": "inbox_zero",
+        "clean_inbox": "inbox_zero",
+        "process_inbox": "inbox_zero",
     }
 
-    def __init__(self, google_agent: Any = None, timezone_name: str = "UTC") -> None:
+    def __init__(
+        self,
+        google_agent: Any = None,
+        timezone_name: str = "UTC",
+        *,
+        llm: Any = None,
+        contacts: Optional[dict[str, str]] = None,
+        vip_senders: Optional[list[str]] = None,
+        work_hours: Optional[tuple[int, int]] = None,
+        buffer_minutes: int = _DEFAULT_BUFFER_MINUTES,
+        travel_minutes: int = _DEFAULT_TRAVEL_MINUTES,
+    ) -> None:
+        """
+        Optional keyword settings (all default to the previous behaviour):
+
+        llm            object with ``generate(prompt, fmt=None)``; only used to
+                       word ``draft_email`` — a template draft is used when
+                       absent or when it fails.
+        contacts       ``{"john": "john@example.com"}``; lets "email John" work
+                       without the address (names are matched case-insensitively).
+        vip_senders    substrings of sender addresses/names always ranked high
+                       in triage (#92).
+        work_hours     ``(9, 18)``; the window ``find_meeting_slot`` offers (#96).
+        buffer_minutes minimum gap between back-to-back events before
+                       ``check_schedule_gaps`` flags them (#95).
+        travel_minutes flat estimate added when consecutive events have
+                       different locations (#95). There is no maps lookup.
+        """
         self._google = google_agent
+        self._llm = llm
+        self._contacts = {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in (contacts or {}).items()
+            if k and v
+        }
+        self._vips = [str(v).strip().lower() for v in (vip_senders or []) if str(v).strip()]
+        wh = work_hours or (_DEFAULT_WORK_START, _DEFAULT_WORK_END)
+        try:
+            ws, we = int(wh[0]), int(wh[1])
+        except (TypeError, ValueError, IndexError):
+            ws, we = _DEFAULT_WORK_START, _DEFAULT_WORK_END
+        if not (0 <= ws < we <= 24):
+            ws, we = _DEFAULT_WORK_START, _DEFAULT_WORK_END
+        self._work_hours = (ws, we)
+        self._buffer_minutes = _clamp_int(buffer_minutes, 0, 240)
+        self._travel_minutes = _clamp_int(travel_minutes, 0, 480)
         # The user's local IANA timezone (e.g. "Asia/Kolkata"). Used to
         # resolve "today"/"tomorrow" against local wall-clock time and to
         # build naive local datetimes for create_event — see _parse_datetime
@@ -191,6 +284,18 @@ class HermesEngine(BaseModule):
             return self._create_event(entities)
         if intent == "delete_events":
             return self._delete_events(entities)
+        if intent == "email_digest":
+            return self._email_digest(entities)
+        if intent == "draft_email":
+            return self._draft_email(entities)
+        if intent == "search_email":
+            return self._search_email(entities)
+        if intent == "check_schedule_gaps":
+            return self._check_schedule_gaps(entities)
+        if intent == "find_meeting_slot":
+            return self._find_meeting_slot(entities)
+        if intent == "inbox_zero":
+            return self._inbox_zero(entities)
         return _err(_UNHANDLED)
 
     # ------------------------------------------------------------------
@@ -240,11 +345,22 @@ class HermesEngine(BaseModule):
                 "What should the email say?", slot="body", entities=entities
             )
 
+        # A misheard or half-said recipient ("John") must never reach
+        # Google as an address. Resolve it against the configured contacts,
+        # otherwise ask for the actual address (backlog #100).
+        address = self._resolve_recipient(to)
+        if address is None:
+            return _clarify(
+                f"What's the email address for {to}?", slot="to", entities=entities
+            )
+        to_label = to if address.lower() == to.lower() else f"{to} ({address})"
+        to = address
+
         if not entities.get("_confirmed"):
             preview = _truncate(body, 120)
             return {
                 "response": (
-                    f'Send an email to {to}, subject "{subject}", saying '
+                    f'Send an email to {to_label}, subject "{subject}", saying '
                     f'"{preview}"? Say yes to send it.'
                 ),
                 "data": {"to": to, "subject": subject, "body": body},
@@ -321,8 +437,60 @@ class HermesEngine(BaseModule):
                 "differently? (e.g. 'tomorrow at 3pm' or '2024-12-25 at 09:00')"
             )
 
+        # Recurrence (#98). An unreadable repeat rule is a question, never a
+        # silently-created one-off event.
+        recurrence_text = _recurrence_text(entities)
+        recurrence: Optional[list[str]] = None
+        repeat_label = ""
+        if recurrence_text:
+            recurrence = _build_rrule(
+                recurrence_text,
+                count=entities.get("count"),
+                until=entities.get("until"),
+                start=start_dt,
+                tz=self._tz,
+            )
+            if recurrence is None:
+                return _clarify(
+                    "I couldn't understand how that event repeats. Try "
+                    "'every weekday', 'weekly', 'every Monday' or 'monthly'."
+                )
+            repeat_label = f", repeating {recurrence_text.strip().lower()}"
+
+        # Conflict detection (#97): held behind the same confirm-then-execute
+        # path as send_email, so an overlap is reported before it is created.
+        duration = _parse_duration_minutes(
+            entities.get("duration"), default=60
+        )
+        if not entities.get("_confirmed"):
+            clashes = self._conflicts_for(start_dt, start_dt + timedelta(minutes=duration))
+            if clashes:
+                names = ", ".join(
+                    f"{c.title!r} at {_clock(c.start, self._tz)}" for c in clashes[:3]
+                )
+                more = f" and {len(clashes) - 3} more" if len(clashes) > 3 else ""
+                keep = {k: v for k, v in entities.items() if k != "_confirmed"}
+                return {
+                    "response": (
+                        f"That overlaps with {names}{more}. "
+                        f"Add {title!r} anyway? Say yes to add it."
+                    ),
+                    "data": {"conflicts": [_event_to_dict(c) for c in clashes]},
+                    "confidence": 0.9,
+                    "needs_confirmation": True,
+                    "confirm_intent": "create_event",
+                    "confirm_entities": keep,
+                    "confirm_label": f"add {title} despite the overlap",
+                }
+
+        create_kwargs: dict[str, Any] = {"title": title, "start_dt": start_dt}
+        if "duration" in entities and entities.get("duration") not in (None, ""):
+            create_kwargs["end_dt"] = start_dt + timedelta(minutes=duration)
+        if recurrence:
+            create_kwargs["recurrence"] = recurrence
+
         try:
-            success = self._google.create_event(title=title, start_dt=start_dt)
+            success = self._google.create_event(**create_kwargs)
         except Exception:
             logger.exception("create_event() raised for title=%r.", title)
             return _err("I couldn't create that event due to an unexpected error.")
@@ -335,7 +503,7 @@ class HermesEngine(BaseModule):
             readable = f"{start_dt:%A} {start_dt.day} {start_dt:%B} at {start_dt:%H:%M}"
             logger.info("create_event: %r created at %s.", title, start_dt.isoformat())
             return _ok(
-                f"Done. {title!r} added to your calendar for {readable}.",
+                f"Done. {title!r} added to your calendar for {readable}{repeat_label}.",
                 confidence=0.9,
             )
 
@@ -414,6 +582,507 @@ class HermesEngine(BaseModule):
             f"Cleared {deleted} event(s) from your calendar.",
             data={"deleted": deleted, "found": len(events)},
             confidence=0.9,
+        )
+
+    # ------------------------------------------------------------------
+    # Private – recipients, conflicts (backlog #97, #100)
+    # ------------------------------------------------------------------
+
+    def _resolve_recipient(self, to: str) -> Optional[str]:
+        """Return a real address for *to* (an address or a configured
+        contact name), or None if it can't be resolved safely."""
+        to = (to or "").strip()
+        if _EMAIL_RE.match(to):
+            return to
+        found = self._contacts.get(to.lower())
+        if found and _EMAIL_RE.match(found):
+            return found
+        # "email John Smith" where the contact is stored as "john"
+        first = to.lower().split(" ")[0] if to else ""
+        found = self._contacts.get(first)
+        if found and _EMAIL_RE.match(found):
+            return found
+        return None
+
+    def _events_in_window(self, start: datetime, end: datetime) -> list[Any]:
+        """Events overlapping [start, end). Uses the agent's explicit-window
+        call when it has one, otherwise a days-ahead fetch (which can only
+        look forward from now)."""
+        start, end = _aware(start, self._tz), _aware(end, self._tz)
+        fn = getattr(self._google, "list_events_between", None)
+        if callable(fn):
+            return list(fn(start, end, max_results=_MAX_EVENT_DELETE) or [])
+        today = datetime.now(self._tz).date()
+        days = _clamp_int((end.date() - today).days + 2, 1, _MAX_DAYS_AHEAD)
+        return list(
+            self._google.list_events(max_results=_MAX_EVENT_DELETE, days_ahead=days) or []
+        )
+
+    def _conflicts_for(self, start: datetime, end: datetime) -> list[Any]:
+        """Timed events that overlap [start, end). All-day events are not
+        treated as conflicts. A failed lookup returns [] (never blocks)."""
+        try:
+            events = self._events_in_window(start, end)
+        except Exception:
+            logger.exception("conflict check failed; creating without it.")
+            return []
+        s, e = _aware(start, self._tz), _aware(end, self._tz)
+        clashes = []
+        for ev in events:
+            bounds = _event_bounds(ev, self._tz)
+            if bounds and bounds[0] < e and bounds[1] > s:
+                clashes.append(ev)
+        return clashes
+
+    # ------------------------------------------------------------------
+    # Private – email triage / digest / inbox zero (backlog #92, #99)
+    # ------------------------------------------------------------------
+
+    def _fetch_unread(self, count: int) -> Optional[list[Any]]:
+        try:
+            return list(self._google.read_emails(max_results=count) or [])
+        except Exception:
+            logger.exception("read_emails() failed.")
+            return None
+
+    def _triage(self, emails: list[Any]) -> list[dict[str, Any]]:
+        items = []
+        for e in emails:
+            t = _triage_email(e, self._vips)
+            t["email"] = _email_to_dict(e)
+            items.append(t)
+        # Stable sort keeps the inbox's own newest-first order within a tier.
+        items.sort(key=lambda i: -i["score"])
+        return items
+
+    def _email_digest(self, entities: dict) -> dict:
+        """Rank unread mail by urgency and speak a short digest."""
+        count = _clamp_int(
+            entities.get("count", _DEFAULT_DIGEST_COUNT), 1, _MAX_EMAIL_COUNT
+        )
+        emails = self._fetch_unread(count)
+        if emails is None:
+            return _err("I couldn't fetch your emails right now.")
+        if not emails:
+            return _ok("Your inbox is clear — no unread emails.", data={"items": []})
+
+        items = self._triage(emails)
+        counts = {p: sum(1 for i in items if i["priority"] == p) for p in ("high", "normal", "low")}
+        total = len(items)
+        parts = [f"You have {total} unread {'email' if total == 1 else 'emails'}."]
+        bits = []
+        if counts["high"]:
+            bits.append(f"{counts['high']} need attention")
+        if counts["normal"]:
+            bits.append(f"{counts['normal']} look routine")
+        if counts["low"]:
+            bits.append(f"{counts['low']} look like newsletters or notifications")
+        parts.append(", ".join(bits).capitalize() + ".")
+        lead = [i for i in items if i["priority"] == "high"] or items
+        label = "Most urgent" if counts["high"] else "Newest"
+        spoken = [
+            f"{n}. From {_sender_name(i['email']['sender'])}: {i['email']['subject']}."
+            for n, i in enumerate(lead[:3], start=1)
+        ]
+        parts.append(f"{label}: " + " ".join(spoken))
+        logger.info("email_digest: %d email(s) triaged (%s).", total, counts)
+        return _ok(" ".join(parts), data={"items": items, "counts": counts})
+
+    def _inbox_zero(self, entities: dict) -> dict:
+        """
+        Batch plan for unread mail: a suggested action per message.
+
+        Suggestion only — archiving needs Gmail's modify scope, which this
+        connection deliberately doesn't request, so nothing in the mailbox
+        is changed.
+        """
+        count = _clamp_int(
+            entities.get("count", _DEFAULT_INBOX_ZERO_COUNT), 1, _MAX_INBOX_ZERO_COUNT
+        )
+        emails = self._fetch_unread(count)
+        if emails is None:
+            return _err("I couldn't fetch your emails right now.")
+        if not emails:
+            return _ok("Inbox zero already — nothing unread.", data={"items": []})
+
+        items = self._triage(emails)
+        by_action: dict[str, int] = {}
+        for i in items:
+            by_action[i["action"]] = by_action.get(i["action"], 0) + 1
+
+        order = ("read", "reply", "snooze", "archive")
+        summary = ", ".join(
+            f"{by_action[a]} to {a}" for a in order if by_action.get(a)
+        )
+        lines = [
+            f"Here's a plan for your {len(items)} unread: {summary}."
+        ]
+        for n, i in enumerate([x for x in items if x["action"] in ("read", "reply")][:3], 1):
+            lines.append(
+                f"{n}. From {_sender_name(i['email']['sender'])}: "
+                f"{i['email']['subject']} — {i['action']}."
+            )
+        lines.append("I haven't changed anything in your mailbox.")
+        return _ok(" ".join(lines), data={"items": items, "by_action": by_action})
+
+    # ------------------------------------------------------------------
+    # Private – drafting (backlog #93)
+    # ------------------------------------------------------------------
+
+    def _draft_email(self, entities: dict) -> dict:
+        """
+        Turn a short instruction into a draft and hand it to the normal
+        send flow, so a draft can never go out without a spoken "yes".
+        """
+        to = (entities.get("to") or "").strip()
+        greet = (entities.get("_greet") or to or "").strip()
+
+        if entities.get("_drafted") and entities.get("body"):
+            subject = (entities.get("subject") or _DEFAULT_SUBJECT).strip()
+            body = str(entities["body"]).strip()
+        else:
+            instruction = (
+                entities.get("instruction")
+                or entities.get("body")
+                or entities.get("message")
+                or entities.get("raw_query")
+                or ""
+            ).strip()
+            if not instruction:
+                return _clarify(
+                    "What should the email say?", slot="instruction", entities=entities
+                )
+            name = "" if _EMAIL_RE.match(greet) else greet
+            subject, body = self._compose(
+                instruction, name, (entities.get("subject") or "").strip(),
+                (entities.get("tone") or "").strip(),
+            )
+
+        preview = _truncate(body, 120)
+        keep = dict(entities)
+        keep.update({"subject": subject, "body": body, "_drafted": True, "_greet": greet})
+
+        if not to:
+            return _clarify(
+                f'Here\'s a draft with subject "{subject}": "{preview}" '
+                "Who should I send it to?",
+                slot="to", entities=keep,
+            )
+        if self._resolve_recipient(to) is None:
+            return _clarify(
+                f'Here\'s a draft with subject "{subject}": "{preview}" '
+                f"What's the email address for {to}?",
+                slot="to", entities=keep,
+            )
+
+        result = self._send_email({"to": to, "subject": subject, "body": body})
+        result["response"] = "Here's my draft. " + result["response"]
+        result.setdefault("data", {})["draft"] = {"subject": subject, "body": body}
+        return result
+
+    def _compose(self, instruction: str, name: str, subject: str, tone: str) -> tuple[str, str]:
+        """LLM wording when available and valid, otherwise a template."""
+        if self._llm is not None:
+            try:
+                prompt = (
+                    "Write a short, polite email for the user based on this "
+                    f"instruction: {instruction!r}.\n"
+                    + (f"Recipient first name: {name}.\n" if name else "")
+                    + (f"Tone: {tone}.\n" if tone else "")
+                    + "Do not invent facts, dates or names that are not in the "
+                    "instruction. Reply ONLY with JSON: "
+                    '{"subject": "...", "body": "..."}'
+                )
+                raw = self._llm.generate(prompt, fmt="json")
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                body = str(data.get("body") or "").strip()
+                if body:
+                    return (str(data.get("subject") or subject or _DEFAULT_SUBJECT).strip(), body)
+            except Exception:
+                logger.warning("LLM draft failed; using the template.", exc_info=True)
+        return _template_draft(instruction, name, subject)
+
+    # ------------------------------------------------------------------
+    # Private – email search (backlog #94)
+    # ------------------------------------------------------------------
+
+    def _search_email(self, entities: dict) -> dict:
+        """Search by sender / subject / date range, not just 'unread'."""
+        search = getattr(self._google, "search_emails", None)
+        if not callable(search):
+            return _err("Email search isn't available with this Google connection.")
+
+        parts: list[str] = []
+        desc: list[str] = []
+
+        sender = (entities.get("sender") or entities.get("from") or "").strip()
+        if sender:
+            resolved = self._resolve_recipient(sender) or sender
+            parts.append(f"from:{_gmail_quote(resolved)}")
+            desc.append(f"from {sender}")
+
+        subject = (entities.get("subject") or "").strip()
+        if subject:
+            parts.append(f"subject:{_gmail_quote(subject)}")
+            desc.append(f'about "{subject}"')
+
+        try:
+            after, before = _search_date_range(entities, self._tz)
+        except DateTimeParseError:
+            return _clarify(
+                "I couldn't understand that date range. Try 'yesterday', "
+                "'last week', or a date like 2026-03-01."
+            )
+        if after:
+            parts.append(f"after:{after:%Y/%m/%d}")
+            desc.append(f"since {after.day} {after:%B}")
+        if before:
+            parts.append(f"before:{before:%Y/%m/%d}")
+            desc.append(f"before {before.day} {before:%B}")
+
+        free = (entities.get("query") or entities.get("keywords") or "").strip()
+        if free:
+            parts.append(free)
+            desc.append(f'containing "{free}"')
+
+        if not parts:
+            return _clarify(
+                "What should I search for? You can give a sender, a subject "
+                "or a date range.",
+                slot="query", entities=entities,
+            )
+
+        count = _clamp_int(entities.get("count", _DEFAULT_SEARCH_COUNT), 1, _MAX_EMAIL_COUNT)
+        query = " ".join(parts)
+        try:
+            emails = list(search(query, max_results=count) or [])
+        except Exception:
+            logger.exception("search_emails() failed.")
+            return _err("I couldn't search your emails right now.")
+
+        what = " ".join(desc)
+        if not emails:
+            return _ok(
+                f"I didn't find any emails {what}.",
+                data={"emails": [], "query": query}, confidence=0.9,
+            )
+        n = len(emails)
+        lines = [f"I found {n} {'email' if n == 1 else 'emails'} {what}."]
+        for i, e in enumerate(emails[:3], start=1):
+            d = _email_to_dict(e)
+            when = _short_date(d.get("date", ""))
+            lines.append(
+                f"{i}. From {_sender_name(d.get('sender', ''))}: {d.get('subject', '')}"
+                + (f" ({when})." if when else ".")
+            )
+        if n > 3:
+            lines.append(f"And {n - 3} more.")
+        return _ok(" ".join(lines), data={"emails": [_email_to_dict(e) for e in emails], "query": query})
+
+    # ------------------------------------------------------------------
+    # Private – schedule gaps (backlog #95)
+    # ------------------------------------------------------------------
+
+    def _check_schedule_gaps(self, entities: dict) -> dict:
+        """
+        Flag overlapping and back-to-back events on one day.
+
+        When two consecutive events have different locations a flat
+        ``travel_minutes`` allowance is added to the buffer. That is an
+        estimate, not a route lookup — the reply says so.
+        """
+        date_str = (entities.get("date") or "today").strip()
+        try:
+            day = _resolve_date(date_str, self._tz)
+        except DateTimeParseError:
+            return _clarify(
+                "I couldn't understand that date. Try 'today', 'tomorrow' or '2026-12-25'."
+            )
+        buffer_min = _parse_duration_minutes(
+            entities.get("buffer"), default=self._buffer_minutes, lo=0, hi=240
+        )
+        start = datetime.combine(day, time(0, 0))
+        try:
+            events = self._events_in_window(start, start + timedelta(days=1))
+        except Exception:
+            logger.exception("check_schedule_gaps: event fetch failed.")
+            return _err("I couldn't fetch your calendar right now.")
+
+        timed = []
+        for ev in events:
+            b = _event_bounds(ev, self._tz)
+            if b and b[0].date() == day:
+                timed.append((b[0], b[1], ev))
+        timed.sort(key=lambda t: t[0])
+        label = _day_label(day, self._tz)
+
+        if len(timed) < 2:
+            return _ok(
+                f"You have {len(timed)} timed {'event' if len(timed) == 1 else 'events'} "
+                f"{label}, so there's nothing back-to-back.",
+                data={"flags": [], "events": len(timed)}, confidence=0.9,
+            )
+
+        flags = []
+        for (_, a_end, a), (b_start, _, b) in zip(timed, timed[1:]):
+            gap = int((b_start - a_end).total_seconds() // 60)
+            a_loc = (getattr(a, "location", "") or "").strip().lower()
+            b_loc = (getattr(b, "location", "") or "").strip().lower()
+            travel = bool(a_loc and b_loc and a_loc != b_loc)
+            needed = buffer_min + (self._travel_minutes if travel else 0)
+            if gap >= needed:
+                continue
+            if gap < 0:
+                kind = "overlap"
+            elif travel:
+                kind = "travel"
+            else:
+                kind = "back-to-back"
+            flags.append({
+                "first": a.title, "second": b.title, "gap_minutes": gap,
+                "needed_minutes": needed, "kind": kind,
+            })
+
+        if not flags:
+            return _ok(
+                f"Your {len(timed)} events {label} all have enough breathing room.",
+                data={"flags": [], "events": len(timed)}, confidence=0.9,
+            )
+
+        def _sentence(f: dict) -> str:
+            if f["kind"] == "overlap":
+                return f"{f['first']!r} and {f['second']!r} overlap by {-f['gap_minutes']} minutes"
+            if f["kind"] == "travel":
+                return (
+                    f"only {f['gap_minutes']} minutes between {f['first']!r} and "
+                    f"{f['second']!r}, which are in different places"
+                )
+            return f"only {f['gap_minutes']} minutes between {f['first']!r} and {f['second']!r}"
+
+        n = len(flags)
+        lines = [f"{n} tight {'spot' if n == 1 else 'spots'} {label}."]
+        for i, f in enumerate(flags[:3], start=1):
+            lines.append(f"{i}. {_sentence(f).capitalize()}.")
+        if n > 3:
+            lines.append(f"And {n - 3} more.")
+        if any(f["kind"] == "travel" for f in flags):
+            lines.append(
+                f"Travel is a flat {self._travel_minutes}-minute estimate, not a route lookup."
+            )
+        return _ok(" ".join(lines), data={"flags": flags, "events": len(timed)})
+
+    # ------------------------------------------------------------------
+    # Private – meeting slots (backlog #96)
+    # ------------------------------------------------------------------
+
+    def _find_meeting_slot(self, entities: dict) -> dict:
+        """Propose up to three free slots inside working hours, using free/busy
+        for you and any attendees whose calendars are visible to you."""
+        duration = _parse_duration_minutes(
+            entities.get("duration"), default=_DEFAULT_MEETING_MINUTES, lo=5, hi=480
+        )
+
+        names = _split_attendees(
+            entities.get("attendees") or entities.get("attendee") or entities.get("with")
+        )
+        emails: list[str] = []
+        unresolved: list[str] = []
+        for n in names:
+            addr = self._resolve_recipient(n)
+            (emails if addr else unresolved).append(addr or n)
+
+        explicit_date = (entities.get("date") or "").strip()
+        try:
+            first_day = _resolve_date(explicit_date, self._tz) if explicit_date else datetime.now(self._tz).date()
+        except DateTimeParseError:
+            return _clarify(
+                "I couldn't understand that date. Try 'tomorrow' or '2026-12-25'."
+            )
+        if "days" in entities and entities.get("days") not in (None, ""):
+            days = _clamp_int(entities["days"], 1, _MAX_SLOT_DAYS)
+        else:
+            days = 1 if explicit_date else _DEFAULT_SLOT_DAYS
+
+        win_start = datetime.combine(first_day, time(0, 0))
+        win_end = win_start + timedelta(days=days)
+
+        busy: list[tuple[datetime, datetime]] = []
+        unknown: list[str] = []
+        fb = getattr(self._google, "free_busy", None)
+        result = None
+        if callable(fb):
+            try:
+                result = fb(_aware(win_start, self._tz), _aware(win_end, self._tz), emails)
+            except Exception:
+                logger.exception("free_busy() failed.")
+        if result and result.get("primary") is not None:
+            busy.extend(result["primary"])
+            for addr in emails:
+                got = result.get(addr)
+                if got is None:
+                    unknown.append(addr)
+                else:
+                    busy.extend(got)
+        else:
+            # No free/busy (or it failed): fall back to your own events only.
+            unknown = list(emails)
+            try:
+                for ev in self._events_in_window(win_start, win_end):
+                    b = _event_bounds(ev, self._tz)
+                    if b:
+                        busy.append(b)
+            except Exception:
+                logger.exception("find_meeting_slot: event fetch failed.")
+                return _err("I couldn't read your calendar right now.")
+
+        busy = [(_aware(s, self._tz), _aware(e, self._tz)) for s, e in busy]
+        now = datetime.now(self._tz)
+        ws, we = self._work_hours
+        slots: list[datetime] = []
+        for offset in range(days):
+            d = first_day + timedelta(days=offset)
+            if d.weekday() >= 5 and not explicit_date:
+                continue
+            t = datetime.combine(d, time(ws, 0), tzinfo=self._tz)
+            day_end = datetime.combine(d, time(0, 0), tzinfo=self._tz) + timedelta(hours=we)
+            while t + timedelta(minutes=duration) <= day_end and len(slots) < _MAX_SLOTS_OFFERED:
+                end = t + timedelta(minutes=duration)
+                if t >= now and not any(s < end and e > t for s, e in busy):
+                    slots.append(t)
+                    t = end  # offer non-overlapping options
+                else:
+                    t += timedelta(minutes=_SLOT_STEP_MINUTES)
+            if len(slots) >= _MAX_SLOTS_OFFERED:
+                break
+
+        notes = []
+        if unknown:
+            notes.append(
+                "I couldn't see the calendar for " + ", ".join(unknown)
+                + ", so those times only account for yours."
+            )
+        if unresolved:
+            notes.append(
+                "I don't have an email address for " + ", ".join(unresolved)
+                + ", so I didn't check them."
+            )
+
+        who = "you" if not emails else "you and " + ", ".join(emails)
+        if not slots:
+            msg = (
+                f"I couldn't find a {duration}-minute slot between {ws}:00 and "
+                f"{we}:00 over {'that day' if days == 1 else f'the next {days} days'}."
+            )
+            return _ok(" ".join([msg] + notes), data={"slots": []}, confidence=0.8)
+
+        lines = [f"Here are {len(slots)} {duration}-minute times that work for {who}."]
+        for i, t in enumerate(slots, start=1):
+            lines.append(f"{i}. {t:%A} {t.day} {t:%B} at {t:%H:%M}.")
+        lines.extend(notes)
+        return _ok(
+            " ".join(lines),
+            data={"slots": [t.isoformat() for t in slots], "duration_minutes": duration,
+                  "unchecked": unknown + unresolved},
         )
 
 
@@ -659,3 +1328,388 @@ def _clarify(
         data["missing_slot"] = slot
         data["slot_entities"] = dict(entities or {})
     return {"response": question, "data": data, "confidence": 0.5}
+
+
+# ---------------------------------------------------------------------------
+# Module-level pure helpers — drafting, triage, recurrence, durations
+# (backlog #92-#99)
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[A-Za-z]{2,}$")
+
+
+def _aware(dt: datetime, tz: "ZoneInfo") -> datetime:
+    """Naive datetimes are read as wall-clock time in *tz*."""
+    return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt
+
+
+def _parse_iso(value: str, tz: "ZoneInfo") -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return dt.astimezone(tz) if dt.tzinfo else dt.replace(tzinfo=tz)
+
+
+def _event_bounds(event: Any, tz: "ZoneInfo") -> Optional[tuple[datetime, datetime]]:
+    """Aware (start, end) of a *timed* event; None for all-day or malformed
+    events. A missing end is taken as one hour after the start."""
+    start = getattr(event, "start", None)
+    end = getattr(event, "end", None)
+    if isinstance(event, dict):
+        start = event.get("start", start)
+        end = event.get("end", end)
+    if not start or len(start) <= 10:
+        return None
+    s = _parse_iso(start, tz)
+    if s is None:
+        return None
+    e = _parse_iso(end, tz) if end and len(end) > 10 else None
+    if e is None or e <= s:
+        e = s + timedelta(hours=1)
+    return s, e
+
+
+def _clock(iso: str, tz: "ZoneInfo") -> str:
+    dt = _parse_iso(iso, tz)
+    return f"{dt:%H:%M}" if dt else "an unknown time"
+
+
+def _day_label(day: date, tz: "ZoneInfo") -> str:
+    today = datetime.now(tz).date()
+    if day == today:
+        return "today"
+    if day == today + timedelta(days=1):
+        return "tomorrow"
+    return f"on {day:%A} {day.day} {day:%B}"
+
+
+def _sender_name(sender: str) -> str:
+    name = (sender or "").split("<")[0].strip().strip('"')
+    return name or (sender or "Unknown").strip("<> ")
+
+
+def _short_date(header: str) -> str:
+    if not header:
+        return ""
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(header)
+        return f"{dt.day} {dt:%b}"
+    except Exception:
+        return ""
+
+
+def _gmail_quote(value: str) -> str:
+    value = value.replace('"', "").strip()
+    return f'"{value}"' if re.search(r"\s", value) else value
+
+
+def _split_attendees(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        items = [str(v) for v in value]
+    else:
+        items = re.split(r"[,;]|\band\b|&", str(value), flags=re.IGNORECASE)
+    return [i.strip() for i in items if i and i.strip()]
+
+
+# -- durations --------------------------------------------------------------
+
+def _parse_duration_minutes(
+    value: Any, *, default: int, lo: int = 5, hi: int = 720
+) -> int:
+    """'30', '45 minutes', '1 hour', '1h30', 'half an hour', 'an hour' → minutes.
+    Unreadable or out-of-range values give *default*."""
+    if value is None or value == "":
+        return default
+    minutes: Optional[float] = None
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        minutes = float(value)
+    else:
+        t = str(value).strip().lower()
+        if "half an hour" in t or "half hour" in t:
+            minutes = 30
+        elif re.fullmatch(r"(an|1|one)\s*(hour|hr)", t):
+            minutes = 60
+        else:
+            h = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b", t)
+            m = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes)\b", t)
+            h_compact = re.fullmatch(r"(\d+)h(\d{1,2})", t)
+            if h_compact:
+                minutes = int(h_compact.group(1)) * 60 + int(h_compact.group(2))
+            elif h or m:
+                minutes = (float(h.group(1)) * 60 if h else 0) + (int(m.group(1)) if m else 0)
+            elif re.fullmatch(r"\d+(?:\.\d+)?", t):
+                minutes = float(t)
+    if minutes is None or not (lo <= minutes <= hi):
+        return default
+    return int(round(minutes))
+
+
+# -- search date range (#94) ------------------------------------------------
+
+def _search_date_range(
+    entities: dict, tz: "ZoneInfo"
+) -> tuple[Optional[date], Optional[date]]:
+    """(after, before) as dates; *before* is exclusive, as in Gmail's
+    ``before:``. Raises DateTimeParseError for text it can't read."""
+    today = datetime.now(tz).date()
+    after = before = None
+
+    when = (entities.get("date") or entities.get("when") or "").strip().lower()
+    if when:
+        monday = today - timedelta(days=today.weekday())
+        if when == "today":
+            after, before = today, today + timedelta(days=1)
+        elif when == "yesterday":
+            after, before = today - timedelta(days=1), today
+        elif when in ("this week",):
+            after, before = monday, monday + timedelta(days=7)
+        elif when in ("last week", "past week"):
+            after, before = monday - timedelta(days=7), monday
+        elif when == "this month":
+            after = today.replace(day=1)
+            before = (after + timedelta(days=32)).replace(day=1)
+        elif when == "last month":
+            before = today.replace(day=1)
+            after = (before - timedelta(days=1)).replace(day=1)
+        else:
+            d = _resolve_date(when, tz)  # raises DateTimeParseError
+            after, before = d, d + timedelta(days=1)
+
+    for key, is_after in (("after", True), ("since", True), ("before", False), ("until", False)):
+        raw = (entities.get(key) or "").strip()
+        if not raw:
+            continue
+        low = raw.lower()
+        d = (
+            today - timedelta(days=1) if low == "yesterday" else _resolve_date(raw, tz)
+        )
+        if is_after:
+            after = d
+        else:
+            before = d
+    if after and before and before <= after:
+        raise DateTimeParseError("'before' is not later than 'after'.")
+    return after, before
+
+
+# -- drafting (#93) ---------------------------------------------------------
+
+def _sentence(text: str) -> str:
+    text = text.strip().strip("\"'").rstrip(".!? ")
+    return (text[:1].upper() + text[1:] + ".") if text else ""
+
+
+def _template_draft(instruction: str, name: str, subject: str = "") -> tuple[str, str]:
+    """Deterministic fallback draft. Recognises a few common intents and
+    otherwise restates the instruction politely; it never invents details."""
+    low = instruction.lower()
+    first = name.strip().split(" ")[0].capitalize() if name.strip() else ""
+    greeting = f"Hi {first}," if first else "Hi,"
+
+    alt = None
+    m = re.search(r"\bsuggest(?:ing)?\s+(.+)$", low) or re.search(
+        r"\b(?:reschedul\w*\s+(?:to|for)|how about|instead on|instead)\s+(.+)$", low
+    )
+    if m:
+        alt = re.sub(r"\s+instead$", "", m.group(1).strip(" .!?"))
+        alt = alt[:1].upper() + alt[1:]
+
+    if re.search(r"\b(can'?t|cannot|won'?t be able to|unable to|not able to)\s+(?:make|attend|come|join|do)\b", low):
+        lines = ["Unfortunately I can't make it."]
+        if alt:
+            lines.append(f"Would {alt} work for you instead?")
+        else:
+            lines.append("Sorry for the inconvenience.")
+        return (subject or "Can't make it", _assemble(greeting, lines))
+    if re.search(r"\b(running late|be late|will be late|i'?m late)\b", low):
+        return (subject or "Running late", _assemble(greeting, ["I'm running a little late. Sorry about that — I'll be there as soon as I can."]))
+    if re.search(r"\bthank", low):
+        return (subject or "Thank you", _assemble(greeting, ["Thank you — I really appreciate it."]))
+    if re.search(r"\b(follow(?:ing)? up|checking in|any update)\b", low):
+        return (subject or "Following up", _assemble(greeting, ["I wanted to follow up and see if there's any update. Thanks!"]))
+
+    # Unrecognised: drop a leading "reply/email/tell/say(ing)" so we keep the message.
+    core = re.sub(
+        r"^(?:please\s+)?(?:(?:reply|respond|write|send|email|draft)(?:\s+an?\s+email)?"
+        r"(?:\s+to\s+\S+)?|tell(?:\s+\S+)?)\s*(?:saying|that|and say|to say)?\s*",
+        "", instruction.strip(), flags=re.IGNORECASE,
+    ) or instruction.strip()
+    return (subject or _DEFAULT_SUBJECT, _assemble(greeting, [_sentence(core)]))
+
+
+def _assemble(greeting: str, lines: list[str]) -> str:
+    return f"{greeting}\n\n" + " ".join(lines) + "\n\nBest regards"
+
+
+# -- triage (#92, #99) ------------------------------------------------------
+
+_STRONG_RE = re.compile(
+    r"\b(urgent|asap|immediately|action required|deadline|due (?:today|tomorrow|soon)|"
+    r"overdue|final notice|expires? (?:today|tomorrow|soon)|expiring|interview|"
+    r"offer letter|response needed|please respond|payment (?:due|failed)|"
+    r"security alert|suspicious (?:activity|sign))\b"
+)
+_MILD_RE = re.compile(
+    r"\b(reminder|invoice|payment|meeting|rsvp|approval|approve|review|request(?:ed)?|"
+    r"follow(?:ing)? up|question|schedule|confirm)\b"
+)
+_AUTOMATED_RE = re.compile(
+    r"(no-?reply|do-?not-?reply|notifications?@|newsletter|mailer|marketing|promo|"
+    r"offers?@|updates?@|news@|digest)"
+)
+_PROMO_RE = re.compile(
+    r"(\d+% off|\bsale\b|discount|\bdeals?\b|coupon|unsubscribe|newsletter|webinar|"
+    r"weekly digest|new arrivals|limited time|free shipping|offer ends)"
+)
+_TRANSACTIONAL_RE = re.compile(
+    r"\b(receipt|order (?:confirmed|shipped|#\w+)|shipped|delivered|verification code|"
+    r"one[- ]time (?:password|code)|your otp)\b"
+)
+
+
+def _triage_email(email: Any, vips: Optional[list[str]] = None) -> dict[str, Any]:
+    """
+    Score one email for urgency from its sender, subject and snippet.
+
+    A transparent keyword heuristic (no model, no network): ``priority`` is
+    ``high`` / ``normal`` / ``low``, ``reasons`` says why, and ``action`` is
+    the suggested next step — ``read``, ``reply``, ``snooze`` or ``archive``.
+    """
+    d = _email_to_dict(email)
+    sender = (d.get("sender") or "").lower()
+    text = f"{d.get('subject', '')} {d.get('snippet', '')}".lower()
+    score = 0
+    reasons: list[str] = []
+
+    if any(v and v in sender for v in (vips or [])):
+        score += 4
+        reasons.append("VIP sender")
+    if _STRONG_RE.search(text):
+        score += 3
+        reasons.append("urgent wording")
+    elif _MILD_RE.search(text):
+        score += 1
+        reasons.append("action-related wording")
+    asks = "?" in text
+    if asks:
+        score += 1
+        reasons.append("asks a question")
+    automated = bool(_AUTOMATED_RE.search(sender))
+    if automated:
+        score -= 2
+        reasons.append("automated sender")
+    promo = bool(_PROMO_RE.search(text))
+    if promo:
+        score -= 2
+        reasons.append("promotional")
+    transactional = bool(_TRANSACTIONAL_RE.search(text))
+    if transactional:
+        score -= 1
+        reasons.append("transactional")
+
+    if score >= 3:
+        priority = "high"
+    elif score <= -2:
+        priority = "low"
+    else:
+        priority = "normal"
+
+    if priority == "low" or (transactional and not asks and priority != "high"):
+        action = "archive"
+    elif priority == "high":
+        action = "reply" if asks else "read"
+    else:
+        action = "reply" if asks else "snooze"
+    return {"score": score, "priority": priority, "reasons": reasons, "action": action}
+
+
+# -- recurrence (#98) -------------------------------------------------------
+
+_REPEAT_RE = re.compile(
+    r"\b(every\s+(?:other\s+)?(?:day|weekday|week|month|year|monday|tuesday|wednesday|"
+    r"thursday|friday|saturday|sunday)|daily|weekly|monthly|yearly|annually|weekdays|"
+    r"biweekly|fortnightly)\b",
+    re.IGNORECASE,
+)
+_NO_REPEAT = {"", "none", "no", "once", "false", "never", "no repeat", "one time", "one-off"}
+_DAY_CODES = {
+    "mon": "MO", "tue": "TU", "wed": "WE", "thu": "TH",
+    "fri": "FR", "sat": "SA", "sun": "SU",
+}
+_WEEKDAY_RE = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"mon|tues?|wed|thu(?:rs?)?|fri|sat|sun)s?\b"
+)
+
+
+def _recurrence_text(entities: dict) -> str:
+    """The user's repeat phrase, from an entity or (fallback) the raw query."""
+    for key in ("recurrence", "repeat", "repeats", "frequency"):
+        val = entities.get(key)
+        if val is not None and not isinstance(val, bool):
+            val = str(val).strip()
+            if val.lower() not in _NO_REPEAT:
+                return val
+    m = _REPEAT_RE.search(str(entities.get("raw_query") or ""))
+    return m.group(1) if m else ""
+
+
+def _build_rrule(
+    text: str,
+    *,
+    count: Any = None,
+    until: Any = None,
+    start: Optional[datetime] = None,
+    tz: Optional["ZoneInfo"] = None,
+) -> Optional[list[str]]:
+    """Translate a phrase like 'every weekday' into ``["RRULE:..."]``, or None
+    when it can't be understood. ``count`` wins over ``until`` (RFC 5545 forbids both)."""
+    t = text.lower().strip()
+    interval = 2 if re.search(r"every other|biweekly|fortnight|every (?:two|2) weeks", t) else 1
+    byday: list[str] = []
+
+    if re.search(r"\bweekdays?\b", t):
+        freq, byday = "WEEKLY", ["MO", "TU", "WE", "TH", "FR"]
+    elif _WEEKDAY_RE.search(t):
+        freq = "WEEKLY"
+        for m in _WEEKDAY_RE.finditer(t):
+            code = _DAY_CODES[m.group(1)[:3]]
+            if code not in byday:
+                byday.append(code)
+    elif re.search(r"\b(daily|every day|each day|everyday|day)\b", t):
+        freq = "DAILY"
+    elif re.search(r"\b(weekly|biweekly|fortnightly|fortnight|weeks?)\b", t):
+        freq = "WEEKLY"
+    elif re.search(r"\b(monthly|months?)\b", t):
+        freq = "MONTHLY"
+    elif re.search(r"\b(yearly|annually|annual|years?)\b", t):
+        freq = "YEARLY"
+    else:
+        return None
+
+    parts = [f"FREQ={freq}"]
+    if interval > 1:
+        parts.append(f"INTERVAL={interval}")
+    if byday:
+        parts.append("BYDAY=" + ",".join(byday))
+
+    if count not in (None, "", 0, "0"):
+        try:
+            parts.append(f"COUNT={max(1, min(730, int(count)))}")
+        except (TypeError, ValueError):
+            pass
+    elif until not in (None, "") and tz is not None:
+        try:
+            end_day = _resolve_date(str(until), tz)
+            end_local = datetime.combine(end_day, time(23, 59, 59), tzinfo=tz)
+            from datetime import timezone as _tz
+            parts.append("UNTIL=" + end_local.astimezone(_tz.utc).strftime("%Y%m%dT%H%M%SZ"))
+        except DateTimeParseError:
+            logger.warning("Ignoring unreadable repeat end date %r.", until)
+    return ["RRULE:" + ";".join(parts)]

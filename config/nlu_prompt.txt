@@ -85,6 +85,7 @@ pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, plut
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
 hephaestus_scrape_page, hephaestus_open_app,
 read_email, send_email, list_events, create_event, delete_events,
+email_digest, draft_email, search_email, check_schedule_gaps, find_meeting_slot, inbox_zero,
 modules_status, explain_routing, report_mistake, clarify_intent
 
 ---
@@ -1290,6 +1291,43 @@ User: clear todays schedule
 User: cancel all my meetings tomorrow
 {"intent": "delete_events", "entities": {"date": "tomorrow"}, "response": "Clearing your calendar.", "confidence": 0.93}
 
+# Repeating events: pass the user's own words through in "recurrence".
+User: add a standup every weekday at 9am called Standup
+{"intent": "create_event", "entities": {"title": "Standup", "time": "9am", "recurrence": "every weekday"}, "response": "Creating your repeating event.", "confidence": 0.92}
+
+User: set up a weekly team sync on monday at 11am for 10 weeks
+{"intent": "create_event", "entities": {"title": "team sync", "time": "11am", "date": "monday", "recurrence": "weekly", "count": 10}, "response": "Creating your repeating event.", "confidence": 0.9}
+
+User: how urgent is my inbox
+{"intent": "email_digest", "entities": {}, "response": "Triaging your inbox.", "confidence": 0.92}
+
+User: give me my email digest
+{"intent": "email_digest", "entities": {}, "response": "Triaging your inbox.", "confidence": 0.93}
+
+User: draft an email to priya@example.com saying I can't make it, suggest Thursday instead
+{"intent": "draft_email", "entities": {"to": "priya@example.com", "instruction": "I can't make it, suggest Thursday instead"}, "response": "Drafting that email.", "confidence": 0.92}
+
+User: write a reply thanking Sam for the report
+{"intent": "draft_email", "entities": {"to": "Sam", "instruction": "thank Sam for the report"}, "response": "Drafting that email.", "confidence": 0.9}
+
+User: find emails from Raj about the invoice
+{"intent": "search_email", "entities": {"sender": "Raj", "subject": "invoice"}, "response": "Searching your email.", "confidence": 0.93}
+
+User: search my email for anything from the bank last week
+{"intent": "search_email", "entities": {"sender": "bank", "date": "last week"}, "response": "Searching your email.", "confidence": 0.9}
+
+User: do I have any back to back meetings tomorrow
+{"intent": "check_schedule_gaps", "entities": {"date": "tomorrow"}, "response": "Checking your schedule for tight spots.", "confidence": 0.92}
+
+User: find a time for a 45 minute meeting with sam@example.com tomorrow
+{"intent": "find_meeting_slot", "entities": {"duration": "45 minutes", "attendees": "sam@example.com", "date": "tomorrow"}, "response": "Looking for a free slot.", "confidence": 0.92}
+
+User: when am I free this week for an hour
+{"intent": "find_meeting_slot", "entities": {"duration": "1 hour", "days": 5}, "response": "Looking for a free slot.", "confidence": 0.88}
+
+User: help me get to inbox zero
+{"intent": "inbox_zero", "entities": {}, "response": "Building your inbox plan.", "confidence": 0.93}
+
 ---
 
 IMPORTANT:
@@ -1312,6 +1350,11 @@ STRICT RULES:
 - read_email / send_email / list_events / create_event / delete_events → Gmail or Calendar ONLY (mail, inbox, email, meetings, calendar, schedule)
 - "clear my schedule" / "clear today's schedule" / "cancel my events" MUST map to delete_events, NOT list_events
 - NEVER use iris_search or athena_search for email or calendar requests
+- email_digest → "how urgent is my inbox", "email digest", "what needs attention in my email" (ranked summary). read_email is the plain "read my new mail".
+- search_email → looking for mail by sender, subject or date, including read mail. NOT read_email.
+- draft_email → the user wants wording written for them; send_email is for a message they already dictated.
+- check_schedule_gaps → "back to back", "do I have time between", "any tight spots"; find_meeting_slot → "find a time", "when am I free"; neither creates an event.
+- inbox_zero → "inbox zero", "clean up my inbox", "go through my unread" (a plan, nothing is deleted).
 
 - hephaestus_browser_action → browser automation only: opening a URL, or a
   named browser action. Does NOT launch desktop applications.

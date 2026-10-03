@@ -12,6 +12,78 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Hermes: email digest, drafting, search, schedule gaps, meeting slots, conflicts, recurring events, inbox-zero plan (#92–#100)
+
+Registry version 2.19.0 (minor: 6 intents added). New tests:
+`tests/test_hermes_backlog.py`. All new settings are optional (`hermes:` in
+the config); an existing config behaves as before. Not done: #91 (Todoist).
+Everything below was tested against a fake Google agent only, not the live
+Gmail/Calendar APIs.
+
+### Added
+
+- **Email digest (#92, partial).** "How urgent is my inbox", "email digest"
+  (`email_digest`). Unread mail is scored from sender, subject and snippet
+  (urgent wording, questions, newsletters/no-reply senders, promotions,
+  receipts, plus an optional `hermes.vip_senders` list) and summarised as
+  "N need attention, M routine, K newsletters", leading with the most urgent.
+  It's a keyword heuristic and it runs on request; it isn't scheduled into the
+  heartbeat.
+- **Draft from an instruction (#93).** "Draft an email to Priya saying I can't
+  make it, suggest Thursday instead" (`draft_email`). Wording comes from the
+  LLM when one is available (now passed to Hermes from `main.py`), otherwise a
+  template that handles decline, running late, thanks and follow-up and
+  otherwise restates your instruction. The draft goes through the normal
+  send confirmation, so nothing is sent without a "yes". With no recipient it
+  shows the draft and asks who to send it to, keeping the same draft.
+- **Email search (#94).** "Find emails from Raj about the invoice last week"
+  (`search_email`): sender, subject, date (`yesterday`, `last week`, a date) or
+  keywords, over the whole mailbox rather than just unread. Backed by a new
+  `HestiaGoogleAgent.search_emails`.
+- **Schedule gaps (#95, partial).** "Any back-to-back meetings tomorrow?"
+  (`check_schedule_gaps`) flags overlaps and gaps under `hermes.buffer_minutes`
+  (default 10). When consecutive events have different locations it adds a flat
+  `hermes.travel_minutes` (default 30) — an estimate, not a maps lookup, and
+  the reply says so. All-day events are ignored.
+- **Meeting slots (#96, partial).** "Find a time for a 45 minute meeting with
+  sam@example.com tomorrow" (`find_meeting_slot`) offers up to three
+  non-overlapping slots inside `hermes.work_hours` (default 9–18, weekdays
+  unless you name a day) using Google free/busy. If an attendee's calendar
+  isn't visible, or a name has no configured address, it says so rather than
+  treating them as free. It proposes times; it doesn't create the event or
+  send invites. New `HestiaGoogleAgent.free_busy` and `list_events_between`.
+- **Conflict check on create (#97).** Creating an event that overlaps a timed
+  event now says what it clashes with and asks before adding it (same
+  confirm-then-execute path as `send_email`). A failed lookup never blocks the
+  create. Adjacent events and all-day events aren't conflicts.
+- **Recurring events (#98).** `create_event` accepts a repeat phrase —
+  "every weekday", "weekly", "every Monday and Wednesday", "every other week",
+  monthly, yearly — with optional `count` or end date, and reads it from the
+  raw query if the NLU doesn't pass it. A phrase it can't read is a question,
+  not a silently-created one-off. Also accepts `duration`. Only the first
+  occurrence is checked for conflicts.
+- **Inbox-zero plan (#99, partial).** "Help me get to inbox zero"
+  (`inbox_zero`) suggests read / reply / snooze / archive for each unread
+  message. It suggests only: archiving would need Gmail's modify scope, which
+  isn't requested, so nothing in the mailbox changes.
+- **Recipient check before send (#100).** The confirm-before-send step already
+  existed. `send_email` now also refuses a recipient that is neither an address
+  nor a name in `hermes.contacts` (e.g. a misheard "John") and asks for the
+  address, which slot-fills back into the send.
+
+### Changed
+
+- `HermesEngine` takes optional keyword arguments (`llm`, `contacts`,
+  `vip_senders`, `work_hours`, `buffer_minutes`, `travel_minutes`); the
+  positional signature is unchanged.
+- `HestiaGoogleAgent.create_event` takes an optional `recurrence` list.
+  `read_emails` shares its fetch code with the new search; behaviour is unchanged.
+- `config/nlu_prompt.txt` lists the six new intents with examples and routing
+  rules. `config/laptop_config.example.yaml` documents the `hermes:` section;
+  your live `config/laptop_config.yaml` was not changed.
+
+---
+
 ## [Unreleased] — Voice pipeline: voices per module, repeat that, do-not-disturb, mic calibration, wake-word sensitivity, listening indicator, graceful fallback (#170, #171, #172, #173, #174, #175 partial, #176, #178, #179)
 
 New tests: `tests/test_voice_pipeline.py`. All new settings are optional; an

@@ -4,7 +4,7 @@ Hecate — the router. Not user-facing; decides which god handles each query. No
 
 Mnemosyne — long-term memory: remember/recall facts, get_facts, learn_fact, forget_fact, get_user_info. Also runs summarisation and semantic (vector) search over past interactions.
 
-Hermes — Gmail & Google Calendar: read_email, send_email, list_events, create_event.
+Hermes — Gmail & Google Calendar: read_email, send_email, list_events, create_event, delete_events, email_digest, draft_email, search_email, check_schedule_gaps, find_meeting_slot, inbox_zero.
 
 Hephaestus — browser automation: browser_action (open a URL), search_web, check_flight status. Runs a real headless browser, can't launch desktop apps.
 
