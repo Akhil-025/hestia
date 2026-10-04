@@ -6,7 +6,7 @@ Mnemosyne — long-term memory: remember/recall facts, get_facts, learn_fact, fo
 
 Hermes — Gmail & Google Calendar: read_email, send_email, list_events, create_event, delete_events, email_digest, draft_email, search_email, check_schedule_gaps, find_meeting_slot, inbox_zero.
 
-Hephaestus — browser automation: browser_action (open a URL), search_web, check_flight status. Runs a real headless browser, can't launch desktop apps.
+Hephaestus — browser automation and web watching: browser_action (open a URL), search_web, check_flight, scrape_page (reads a page, or uses a saved site scraper), open_app (launches a desktop app), watch_page / list_watches / stop_watching / check_watches (re-checks a web page on a schedule and speaks up only on meaningful changes, e.g. a price drop or a keyword appearing), fill_form (fills a form saved in config, after a yes), summarize_repo (structure and health summary of a local code folder).
 
 Chronos — time-related: get_time, get_date, get_weather, set_reminder.
 

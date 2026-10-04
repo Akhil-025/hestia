@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 134 ✅ + 12 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
+**Tally: 140 ✅ + 15 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -21,6 +21,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 5. Iris | 6 of 10 |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
 | 7. Hermes | 5 done (`#93`, `#94`, `#97`, `#98`, `#100`), 4 partial (`#92`, `#95`, `#96`, `#99`), of 10 (`#91` Todoist not done) |
+| 8. Hephaestus | 6 done (`#101`, `#103`, `#105`, `#106`, `#108`, `#109`), 3 partial (`#102`, `#107`, `#110`), of 10 (`#104` not done) |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
 | 12. Dionysus | 4 done (`#146`, `#147`, `#150`, `#152`), 1 partial (`#151`), of 7 (`#149` is counted under Apollo cross-module; `#148` needs multi-user and is not done) |
 | 13. Ares | 5 of 5 |
@@ -158,16 +159,16 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 8. Hephaestus — Automation & (Currently) Browser
 
-101. `[M]` Add scheduled/recurring browser tasks (check a site daily and alert on change — price drop, application portal update).
-102. `[M]` Add form-filling automation for repetitive tasks (application forms, recurring submissions).
-103. `[Q]` Add a screenshot-on-failure debug mode for browser automation so failed scrapes are diagnosable.
+101. ✅ `[M]` Add scheduled/recurring browser tasks (check a site daily and alert on change — price drop, application portal update). *(monitors are stored in SQLite and re-checked from the heartbeat, each on its own interval (minimum 30 minutes); alerts are held during quiet hours and survive a restart. "Watch <url> for a price drop / for <keyword>", plus list, stop and check-now intents.)*
+102. 🟡 `[M]` Add form-filling automation for repetitive tasks (application forms, recurring submissions). *(partial: forms are saved by name under `hephaestus.forms` (selectors and values in config, `{placeholders}` filled from what you say) and filled behind a "say yes" confirmation; it won't submit if any field failed to fill. You can't define a new form by voice, and it's untested on real sites.)*
+103. ✅ `[Q]` Add a screenshot-on-failure debug mode for browser automation so failed scrapes are diagnosable. *(set `browser.screenshot_dir` and a failed page action saves a full-page screenshot there (newest 20 kept). Off by default because a screenshot can capture personal pages.)*
 104. `[L]` If you ever revisit HEARTH.txt's original hardware-debugging vision, scope it small: a "photo of a breadboard, tell me if anything looks obviously wrong" using a vision-LLM prompt rather than full PCB fault classification.
-105. `[M]` Add site-specific scrapers as pluggable modules (job boards, GATE result pages, application portals) rather than generic scraping only.
-106. `[Q]` Add rate-limiting/politeness delays to `_scrape_page` to avoid hammering sites and getting blocked.
-107. `[M]` Add a headless-browser session pool so repeated automation tasks don't pay full browser-launch cost each time.
-108. `[Q]` Add a `--headed` debug override for browser automation so you can watch what it's doing when something breaks.
-109. `[M]` Add change-detection diffing for monitored pages (store last snapshot, alert only on meaningful diffs, not every whitespace change).
-110. `[L]` Add a code-analysis/automation-engine feature (mentioned in HEARTH.txt under Hephaestus): point it at a repo, get a summary of structure/issues — you could reuse the same LLM stack that just did this audit.
+105. ✅ `[M]` Add site-specific scrapers as pluggable modules (job boards, GATE result pages, application portals) rather than generic scraping only. *(`ScraperRegistry` with config-only selector scrapers (`hephaestus.scrapers`) and an optional folder of Python scrapers (`hephaestus.scraper_dir`). No site-specific scrapers are bundled; add your own.)*
+106. ✅ `[Q]` Add rate-limiting/politeness delays to `_scrape_page` to avoid hammering sites and getting blocked. *(`hephaestus.min_request_interval_seconds` (default 1.0 as wired from config) spaces requests to the same site, for `scrape_url`, search-result scraping, monitors and form fills. Applied in the engine; the old `_scrape_page` name no longer exists.)*
+107. 🟡 `[M]` Add a headless-browser session pool so repeated automation tasks don't pay full browser-launch cost each time. *(partial: one browser is launched once and every page now shares one context (it used to create a new context per page and never close it), and `browser.idle_timeout_seconds` closes an idle browser. It is one reused session, not a pool of concurrent browsers.)*
+108. ✅ `[Q]` Add a `--headed` debug override for browser automation so you can watch what it's doing when something breaks. *(`python main.py --headed` shows the window and adds 250 ms between actions (`browser.slow_mo_ms` overrides). `browser.headless` and `browser.enabled` in the config are now actually read; they were ignored before. Page monitors always run headless.)*
+109. ✅ `[M]` Add change-detection diffing for monitored pages (store last snapshot, alert only on meaningful diffs, not every whitespace change). *(a monitor stores its last snapshot and alerts only on a meaningful change: a keyword newly appearing, a price falling or reaching a target, or at least 3 alphabetic words added or removed. Whitespace, digit-only churn (counters, clocks) and re-ordering are ignored.)*
+110. 🟡 `[L]` Add a code-analysis/automation-engine feature (mentioned in HEARTH.txt under Hephaestus): point it at a repo, get a summary of structure/issues — you could reuse the same LLM stack that just did this audit. *(partial: "summarize the code in <folder>" gives a deterministic scan (languages and size, entry points, manifests, test ratio, very long functions and files, TODO/FIXME counts, unparsable Python, bare `except`). It is not an LLM review, and only reads Python in depth.)*
 
 ## 9. Apollo — Health & Wellness
 

@@ -360,6 +360,13 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "hephaestus_check_flight": "hephaestus",
     "hephaestus_scrape_page": "hephaestus",
     "hephaestus_open_app": "hephaestus",
+    # backlog #101/#109 page monitoring, #102 form filling, #110 repo summary
+    "hephaestus_watch_page": "hephaestus",
+    "hephaestus_list_watches": "hephaestus",
+    "hephaestus_stop_watching": "hephaestus",
+    "hephaestus_check_watches": "hephaestus",
+    "hephaestus_fill_form": "hephaestus",
+    "hephaestus_summarize_repo": "hephaestus",
 }
 
 # Every canonical intent name. This is what core/nlu.py uses both as the
@@ -395,7 +402,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.19.0"
+REGISTRY_VERSION: str = "2.20.0"
 
 
 def registry_fingerprint() -> str:

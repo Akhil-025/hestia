@@ -12,6 +12,94 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Hephaestus: page watching, form filling, site scrapers, repo summary, browser session (#101–#103, #105–#110)
+
+Registry version 2.20.0 (minor: 6 intents added). New tests:
+`tests/test_hephaestus_backlog.py`. Not done: #104 (breadboard photo check,
+which belongs with Iris's vision stack). Everything below was tested against
+fake browsers only; none of it has run against a real Playwright/Chromium or a
+real website, so try the first watch and the first form on a page you control.
+
+### Added
+
+- **Page watching (#101, #109).** "Watch https://… and tell me if the price
+  drops", "keep an eye on … for admit card, check every hour"
+  (`watch_page`), plus `list_watches`, `stop_watching` and `check_watches`
+  (check now). The page is read once when you ask, and a watch is only created
+  if that works (and, for prices, if a price is found), so a typo can't become
+  a watch that never fires. The heartbeat then re-checks each watch on its own
+  interval (default daily, minimum 30 minutes, so effectively the 30-minute
+  tick) and speaks only about meaningful changes: a keyword newly appearing, a
+  price falling or reaching `target_price`, or, with neither set, at least
+  three alphabetic words added or removed. Whitespace, digit-only churn and
+  re-ordering never alert. Three failed checks in a row produce one "I
+  couldn't read X" alert, not one per retry. Alerts raised between
+  `hephaestus.monitors.quiet_hours` (default 22–7) are held and spoken
+  afterwards. Watches and alerts live in `data/hephaestus.db`, so they survive
+  restarts. Up to 20 watches; at most 10 pages are fetched per tick.
+- **URL guard.** Watch and form URLs must be http(s) to a public-looking host:
+  localhost, private/link-local addresses, `.local`/`.lan`/`.internal` names and
+  URLs with a login embedded are refused. It checks the address as written and
+  does not resolve DNS.
+- **Form filling (#102, partial).** "Fill in my scholarship form"
+  (`fill_form`) completes a form saved under `hephaestus.forms`. Selectors and
+  values live in config; `{placeholders}` are filled from what you say or
+  asked for. It always asks "say yes" first, naming the site and field count
+  but never the values, and only submits if the saved form has a
+  `submit_selector`. The browser agent no longer submits if any field failed to
+  fill. You can't create a form by voice.
+- **Site scrapers (#105).** `hephaestus.scrapers` (a URL pattern plus a CSS
+  selector) and an optional `hephaestus.scraper_dir` of Python files that
+  define `SCRAPERS`. `scrape_page` and watches use a matching scraper first and
+  fall back to generic scraping. None are bundled. The scraper directory is
+  executed as code, like `skills/`.
+- **Politeness delay (#106).** `hephaestus.min_request_interval_seconds`
+  (default 1.0 from config) spaces requests to the same site, capped at 10 s
+  per request.
+- **Failure screenshots (#103).** `browser.screenshot_dir` saves a full-page
+  screenshot when a page action fails; newest 20 kept. Off by default.
+- **Browser session (#107, partial).** One browser, one shared context for all
+  pages (previously a new context per page was created and never closed), and
+  `browser.idle_timeout_seconds` to close an idle browser. Cookies and consent
+  choices now persist between tasks until it closes. Not a pool.
+- **`--headed` (#108).** Shows the browser and adds 250 ms between actions.
+- **Repo summary (#110, partial).** "Summarize the code in C:\projects\hestia"
+  (`summarize_repo`): size by language, where the code lives, entry points,
+  manifests, test-file ratio, very long functions and files, TODO/FIXME
+  counts, Python files that don't parse, bare `except`. Deterministic, no LLM,
+  names and counts only, never file contents; skips dependency and build
+  folders, doesn't follow symlinks, and caps what it reads.
+  `hephaestus.repo_roots` can restrict which folders it may scan.
+
+### Changed
+
+- **`browser.enabled` and `browser.headless` are now honoured.** They were in
+  the example config but never read, so the browser was always headless and
+  always on. A config with `browser.enabled: false` now really disables it.
+- `HestiaBrowserAgent` gained keyword-only options (`screenshot_dir`,
+  `slow_mo_ms`, `idle_timeout_seconds`) and `fetch_text`, `fetch_elements`
+  (return `None` on failure so a monitor can't mistake an error message for the
+  page changing) and `close_if_idle`. Existing calls are unchanged.
+- `HephaestusEngine` takes optional keyword arguments (`monitor_store`,
+  `monitor_browser`, `scrapers`, `forms`, `repo_roots`, `min_host_interval`,
+  `quiet_hours`); the positional signature is unchanged, and an engine built
+  without them behaves as before. `list_watches`, `stop_watching` and
+  `summarize_repo` work even if the browser is unavailable.
+- Monitors use a **separate headless browser** and one dedicated worker thread.
+  Playwright's sync API is tied to the thread that started it, and the
+  heartbeat runs on its own thread, so sharing the chat browser would have
+  failed on whichever thread didn't launch it. The monitor browser is closed
+  after each batch. This follows from how Playwright is documented to work and
+  is untested against real Playwright.
+- `HestiaHeartbeat` takes an optional `hephaestus` and calls its
+  `check_web_monitors()` every tick. `Hestia._shutdown` now closes the browsers.
+- Config validation knows the new `browser.*` and `hephaestus.*` keys. See
+  `config/laptop_config.example.yaml`; every key is optional.
+- `god_function.md`'s Hephaestus line was out of date (it said it couldn't
+  launch desktop apps) and now lists every intent.
+
+---
+
 ## [Unreleased] — Hermes: email digest, drafting, search, schedule gaps, meeting slots, conflicts, recurring events, inbox-zero plan (#92–#100)
 
 Registry version 2.19.0 (minor: 6 intents added). New tests:

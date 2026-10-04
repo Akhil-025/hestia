@@ -163,6 +163,8 @@ from modules.hecate.intent_registry import (
     strip_module_prefix,
 )
 from modules.hephaestus.engine import HephaestusEngine
+from modules.hephaestus.monitor import MonitorStore
+from modules.hephaestus.scrapers import ScraperRegistry
 from modules.hermes.engine import HermesEngine
 from modules.hestia.core_module import CoreModule
 from modules.hestia.orchestrator import HestiaOrchestrator
@@ -306,6 +308,9 @@ class HestiaBuilder:
             "iris": None,
             "google_agent": None,
             "browser_agent": None,
+            # Separate headless agent for scheduled page monitors (#101); see
+            # HephaestusEngine's docstring for why it isn't shared.
+            "monitor_browser": None,
             # Handed through so HermesEngine can word email drafts (#93).
             "llm": llm,
         }
@@ -346,10 +351,25 @@ class HestiaBuilder:
             except Exception:
                 logger.exception("Google agent failed to initialise; disabling.")
 
-        try:
-            modules["browser_agent"] = HestiaBrowserAgent()
-        except Exception:
-            logger.exception("Browser agent failed to initialise; disabling.")
+        # `browser:` options. `enabled` and `headless` were documented in the
+        # example config but never read; they are now (#108). `--headed`
+        # overrides headless from the command line.
+        browser_cfg = self.config.get("browser", {}) or {}
+        if browser_cfg.get("enabled", True):
+            try:
+                modules["browser_agent"] = HestiaBrowserAgent(
+                    headless=bool(browser_cfg.get("headless", True)),
+                    screenshot_dir=browser_cfg.get("screenshot_dir") or None,
+                    slow_mo_ms=browser_cfg.get("slow_mo_ms", 0),
+                    idle_timeout_seconds=browser_cfg.get("idle_timeout_seconds", 0),
+                )
+                if ((self.config.get("hephaestus", {}) or {}).get("monitors") or {}).get("enabled", True):
+                    modules["monitor_browser"] = HestiaBrowserAgent(
+                        headless=True,
+                        screenshot_dir=browser_cfg.get("screenshot_dir") or None,
+                    )
+            except Exception:
+                logger.exception("Browser agent failed to initialise; disabling.")
 
         return modules
 
@@ -455,10 +475,35 @@ class HestiaBuilder:
             )
             orchestrator.register(hermes)
 
+        # Hephaestus options (backlog #101-#110). Every key is optional; see
+        # config/laptop_config.example.yaml.
+        heph_cfg = self.config.get("hephaestus", {}) or {}
+        mon_cfg = heph_cfg.get("monitors", {}) or {}
+        monitor_store = None
+        if browser_agent is not None and mon_cfg.get("enabled", True):
+            try:
+                db_path = str(mon_cfg.get("db_path", "data/hephaestus.db"))
+                if db_path != ":memory:":
+                    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+                monitor_store = MonitorStore(
+                    db_path, max_monitors=int(mon_cfg.get("max_monitors", 20)),
+                )
+            except Exception:
+                logger.exception("Hephaestus monitor store failed to open; page watching disabled.")
+        scrapers = ScraperRegistry()
+        scrapers.load_config(heph_cfg.get("scrapers"))
+        scrapers.load_plugins(heph_cfg.get("scraper_dir"))
         orchestrator.register(
             HephaestusEngine(
                 browser_agent,
-                app_map=self.config.get("hephaestus", {}).get("app_map"),
+                app_map=heph_cfg.get("app_map"),
+                monitor_store=monitor_store,
+                monitor_browser=optional_modules.get("monitor_browser"),
+                scrapers=scrapers,
+                forms=heph_cfg.get("forms") or {},
+                repo_roots=heph_cfg.get("repo_roots") or [],
+                min_host_interval=heph_cfg.get("min_request_interval_seconds", 1.0),
+                quiet_hours=mon_cfg.get("quiet_hours", (22, 7)),
             )
         )
 
@@ -738,7 +783,7 @@ class HestiaBuilder:
 
     def build_heartbeat(
         self, mnemosyne: MnemosyneEngine, diagnostics: Any = None,
-        apollo: Any = None, artemis: Any = None,
+        apollo: Any = None, artemis: Any = None, hephaestus: Any = None,
     ) -> HestiaHeartbeat:
         # diagnostics powers the nightly low-confidence review (backlog
         # #6); optional, so a heartbeat built without one just never runs
@@ -754,6 +799,7 @@ class HestiaBuilder:
         return HestiaHeartbeat(
             interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics,
             apollo=apollo, maintenance=maintenance, artemis=artemis,
+            hephaestus=hephaestus,
         )
 
     def build_web_ui(
@@ -935,10 +981,16 @@ class Hestia:
             self.__dict__["_voice_state"] = vs
         return vs
 
-    def __init__(self, config_path: str | Path = _DEFAULT_CONFIG) -> None:
+    def __init__(self, config_path: str | Path = _DEFAULT_CONFIG, headed: bool = False) -> None:
         logger.info("Initialising Hestia…")
         self._config_path = Path(config_path)
         self.config = _load_config(self._config_path)
+        if headed:
+            # --headed (#108): show the browser and slow it down so you can
+            # follow what it's doing. An explicit slow_mo_ms in the config wins.
+            browser_cfg = self.config.setdefault("browser", {})
+            browser_cfg["headless"] = False
+            browser_cfg.setdefault("slow_mo_ms", 250)
         builder = HestiaBuilder(self.config)
 
         # Derived config sections (read-only after __init__)
@@ -1004,9 +1056,10 @@ class Hestia:
         # -- Wiring: connect already-built subsystems together -------------
         self._init_event_bus()
 
+        self.hephaestus = getattr(self.orchestrator, "_modules", {}).get("hephaestus")
         self.heartbeat = builder.build_heartbeat(
             self.mnemosyne, diagnostics=self.diagnostics, apollo=self.apollo,
-            artemis=self.artemis,
+            artemis=self.artemis, hephaestus=self.hephaestus,
         )
         # Chronos owns reminder delivery (recurring, snooze, location and the
         # missed-reminder catch-up on startup - backlog #81-#89). When its
@@ -2089,6 +2142,21 @@ class Hestia:
         except Exception:
             logger.debug("heartbeat.stop() raised; ignoring.")
 
+        # Close the browsers (and the monitor worker thread) so no Chromium
+        # process outlives Hestia.
+        try:
+            hephaestus = getattr(self, "hephaestus", None)
+            if hephaestus is not None and callable(getattr(hephaestus, "close", None)):
+                hephaestus.close()
+        except Exception:
+            logger.debug("hephaestus.close() raised; ignoring.")
+        try:
+            browser_agent = getattr(self, "browser_agent", None)
+            if browser_agent is not None:
+                browser_agent.close()
+        except Exception:
+            logger.debug("browser_agent.close() raised; ignoring.")
+
         try:
             stop_sched = getattr(self.chronos, "stop_scheduler", None)
             if callable(stop_sched):
@@ -2195,6 +2263,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             '  python main.py --dry-run "log my sleep"     # show routing, run nothing\n'
             "  python main.py --check-config               # validate config and exit\n"
             "  python main.py --calibrate-mic              # tune barge-in / VAD for this mic\n"
+            "  python main.py --headed                     # watch the browser automation work\n"
             "  python main.py --quiet                      # warnings only\n"
             "  python main.py --verbose                    # full debug trace\n"
         ),
@@ -2238,6 +2307,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Measure this microphone/speaker pair (quiet room, your voice, "
             "Hestia's own echo) and save recommended barge-in / VAD / "
             "wake-word settings to data/mic_calibration.json, then exit."
+        ),
+    )
+    # Backlog #108.
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help=(
+            "Show the browser window (and slow it slightly) so you can watch "
+            "what browser automation is doing. Page monitors stay headless."
         ),
     )
     # Backlog #275.
@@ -2348,7 +2426,7 @@ def main(argv: list[str] | None = None) -> int:
         return _run_calibrate_mic(args.config)
 
     try:
-        hestia = Hestia(config_path=args.config)
+        hestia = Hestia(config_path=args.config, headed=args.headed)
     except ConfigError as exc:
         # Already fully formatted by the validator; a traceback here would
         # bury the one thing the user needs to read.

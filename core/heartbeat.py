@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class HestiaHeartbeat:
     def __init__(self, interval: int = 1800, mnemosyne=None, diagnostics=None,
-                 apollo=None, maintenance=None, artemis=None):
+                 apollo=None, maintenance=None, artemis=None, hephaestus=None):
         self.interval = interval
         self.mnemosyne = mnemosyne
         # Backlog #6. Optional: a heartbeat built without one (as in the
@@ -27,6 +27,9 @@ class HestiaHeartbeat:
         self.apollo = apollo
         # Backlog #129: ArtemisEngine supplies smart habit nudges. Optional, like apollo.
         self.artemis = artemis
+        # Backlog #101: HephaestusEngine re-checks watched web pages. Optional,
+        # like artemis: a heartbeat built without it never runs the check.
+        self.hephaestus = hephaestus
         # Backlog #233: core.db_maintenance.DBMaintenance (optional).
         self.maintenance = maintenance
         self._last_maintenance_date = None
@@ -73,6 +76,7 @@ class HestiaHeartbeat:
         self._maybe_run_artemis_checkins()
         self._maybe_run_db_maintenance()
         self._maybe_run_mnemosyne_jobs()
+        self._maybe_run_hephaestus_checks()
 
         try:
             root = os.path.dirname(os.path.abspath(__file__))
@@ -118,6 +122,24 @@ class HestiaHeartbeat:
             text = hook()
         except Exception:
             logging.getLogger(__name__).exception("Artemis habit nudge check failed.")
+            return
+        if isinstance(text, str) and text.strip():
+            bus.emit("speak", {"text": text})
+
+    def _maybe_run_hephaestus_checks(self) -> None:
+        """Backlog #101: re-check watched web pages and speak any alerts.
+
+        Each watch has its own interval and HephaestusEngine decides what is
+        due, so this is safe to call on every tick. Alerts raised in the
+        engine's quiet hours are held there and come out on a later tick.
+        """
+        hook = getattr(self.hephaestus, "check_web_monitors", None)
+        if not callable(hook):
+            return
+        try:
+            text = hook()
+        except Exception:
+            logging.getLogger(__name__).exception("Hephaestus page check failed.")
             return
         if isinstance(text, str) and text.strip():
             bus.emit("speak", {"text": text})

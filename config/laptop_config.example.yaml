@@ -9,7 +9,52 @@
 # Browser automation
 browser:
   enabled: true
-  headless: true
+  headless: true            # `python main.py --headed` overrides this for one run
+  # Pause (ms) between browser actions. Handy with headless: false.
+  slow_mo_ms: 0
+  # Save a full-page screenshot here when a page action fails. Off by default
+  # because a screenshot can capture personal pages; the newest 20 are kept.
+  # screenshot_dir: "data/browser_failures"
+  # Close the browser after this many idle seconds (it relaunches on demand).
+  # 0 keeps it open until Hestia exits.
+  idle_timeout_seconds: 0
+
+# Hephaestus (browser automation) — every key is optional
+hephaestus:
+  # Seconds between two requests to the same website, so repeated scraping
+  # doesn't hammer a site. 0 turns the delay off.
+  min_request_interval_seconds: 1.0
+  # "Watch this page" jobs, re-checked from the heartbeat (every 30 min tick).
+  monitors:
+    enabled: true
+    db_path: "data/hephaestus.db"
+    max_monitors: 20
+    # Alerts raised between these hours are held and spoken afterwards.
+    # Use [] to disable.
+    quiet_hours: [22, 7]
+  # Site-specific scrapers: just the part of a page that matters.
+  # scrapers:
+  #   - name: results-table
+  #     url_contains: "example.org/results"     # or url_regex: "..."
+  #     selector: "table.results tr"
+  #     max_items: 20
+  # Folder of .py files that define SCRAPERS = [...]. These are run as code,
+  # so only point this at a folder you control.
+  # scraper_dir: "skills/hephaestus_scrapers"
+  # Forms "fill in my <name> form" can complete. Selectors and values live
+  # here, not in what you say. {placeholders} are asked for or taken from what
+  # you said. Nothing is submitted unless submit_selector is set, and Hestia
+  # always asks "say yes" first.
+  # forms:
+  #   scholarship:
+  #     url: "https://example.org/apply"
+  #     fields:
+  #       "#full-name": "Your Name"
+  #       "#email": "you@example.com"
+  #       "#position": "{position}"
+  #     submit_selector: "button[type=submit]"
+  # Folders "summarize the code in <path>" may scan. Empty = any folder.
+  repo_roots: []
 
 # Web UI dashboard
 webui:

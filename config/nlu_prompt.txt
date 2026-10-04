@@ -84,6 +84,8 @@ pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spend
 pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, pluto_financial_advisor_chat,
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
 hephaestus_scrape_page, hephaestus_open_app,
+hephaestus_watch_page, hephaestus_list_watches, hephaestus_stop_watching, hephaestus_check_watches,
+hephaestus_fill_form, hephaestus_summarize_repo,
 read_email, send_email, list_events, create_event, delete_events,
 email_digest, draft_email, search_email, check_schedule_gaps, find_meeting_slot, inbox_zero,
 modules_status, explain_routing, report_mistake, clarify_intent
@@ -1108,6 +1110,41 @@ User: scrape wikipedia for Alan Turing
 
 User: read me the content of https://example.com/article
 {"intent": "hephaestus_scrape_page", "entities": {"url": "https://example.com/article"}, "response": "Reading that page.", "confidence": 0.92}
+
+# hephaestus_watch_page starts a standing check of a web page that Hestia
+# re-reads on a schedule and speaks up about only when something meaningful
+# changes. Use it for "tell me when ..." / "keep an eye on ..." / "watch ..."
+# about a PAGE. (Reminders about a time are chronos, not this.) Entities:
+# url (required), keywords (list), track_price (true for price drops),
+# target_price, interval ("hourly", "daily", "every 6 hours"), name.
+
+User: watch https://shop.example.com/phone and tell me if the price drops
+{"intent": "hephaestus_watch_page", "entities": {"url": "https://shop.example.com/phone", "track_price": true}, "response": "Watching that page for a price drop.", "confidence": 0.92}
+
+User: keep an eye on example.org/admissions and tell me when it says admit card, check every hour
+{"intent": "hephaestus_watch_page", "entities": {"url": "example.org/admissions", "keywords": ["admit card"], "interval": "hourly"}, "response": "Watching that page for admit card.", "confidence": 0.9}
+
+User: what pages am I watching
+{"intent": "hephaestus_list_watches", "entities": {}, "response": "Here's what I'm watching.", "confidence": 0.93}
+
+User: stop watching the phone page
+{"intent": "hephaestus_stop_watching", "entities": {"name": "phone page"}, "response": "Stopping that watch.", "confidence": 0.9}
+
+User: check my watched pages now
+{"intent": "hephaestus_check_watches", "entities": {}, "response": "Checking your watched pages.", "confidence": 0.92}
+
+# hephaestus_fill_form fills a form the user has SAVED by name in config; it
+# never invents fields. entities.form is the saved name; entities.values
+# carries any details the user spoke for the form's {placeholders}.
+
+User: fill in my scholarship form
+{"intent": "hephaestus_fill_form", "entities": {"form": "scholarship"}, "response": "Getting the scholarship form ready.", "confidence": 0.9}
+
+# hephaestus_summarize_repo summarises a LOCAL code folder (structure, size,
+# tests, things worth a look). entities.path is a folder on this computer.
+
+User: summarize the code in C:\projects\hestia
+{"intent": "hephaestus_summarize_repo", "entities": {"path": "C:\\projects\\hestia"}, "response": "Looking through that project.", "confidence": 0.9}
 
 # ---- CORE ----
 
