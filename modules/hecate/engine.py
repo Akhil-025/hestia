@@ -133,7 +133,14 @@ class HecateEngine(BaseModule):
         """
         q          = query.lower().strip()
         intent     = nlu_result.get("intent", "chat")
-        confidence = float(nlu_result.get("confidence", 0.5))
+        # A missing, None, non-numeric or NaN confidence all mean "unknown", the
+        # same 0.5 the key's absence has always meant, rather than a crash.
+        try:
+            confidence = float(nlu_result.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        if confidence != confidence:
+            confidence = 0.5
 
         # Normalise case defensively — the NLU has been observed to emit
         # intents in unexpected casing (e.g. "PLATFORM_ACTION") which would

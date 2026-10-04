@@ -69,3 +69,9 @@ Thumbs.db
 config/google_credentials.json
 
 hestia_test_prompts.md
+
+# ========================
+# QA tooling
+# ========================
+*.mutbak
+data/latency_baseline.json

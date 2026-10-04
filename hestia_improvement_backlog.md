@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 140 ✅ + 15 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
+**Tally: 148 ✅ + 16 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -28,6 +28,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 15. Metis & Orpheus | 6 of 6 |
 | 10. Artemis | 8 done (`#122`–`#125`, `#127`–`#130`), 1 partial (`#121`), of 10 (`#126` is counted under Apollo cross-module) |
 | Apollo cross-module | 5 done (`#126`, `#149`, `#159`, `#161`, `#233`), 1 partial (`#183`) |
+| 20. Testing & QA | 8 done (`#207`–`#210`, `#212`–`#215`), 1 partial (`#211`), of 9 |
 | 26. Docs | 2 of 6 (`#245`, `#249`) |
 | 29. Judgment testing | 1 of 3 (`#259`) |
 | 30. Outside ideas | 2 done (`#270`, `#275`), 1 partial (`#269`), of 20 |
@@ -301,15 +302,15 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 20. Testing & QA
 
-207. `[Q]` Add a coverage report to `run_tests.py`'s output and track it over time.
-208. `[M]` Add property-based tests (Hypothesis) for the parsing-heavy functions (`_parse_weight`, `_parse_duration`, `_parse_water`, date parsing) — these are exactly the kind of code that breaks on edge-case input.
-209. `[M]` Add integration tests that exercise the full NLU → Hecate → module path, not just unit tests per module.
-210. `[Q]` Add a test that fails if any module's declared `_INTENTS` set contains an intent missing from `intent_registry.py` (codify the invariant you already benefit from).
-211. `[M]` Add load/latency tests for the voice pipeline (STT + NLU + TTS round-trip time) with a regression budget.
-212. `[Q]` Add a smoke-test script that boots `main.py`, sends 10 canonical queries, and checks for non-error responses — good as a pre-deploy gate.
-213. `[M]` Add fixture-based tests for each ingestible file format in Athena (one small real pdf/docx/pptx/epub per format).
-214. `[Q]` Add mutation testing on at least the critical routing logic to catch tests that pass but don't actually assert anything meaningful.
-215. `[M]` Add a test harness that replays real (anonymized) past queries against the NLU to catch classification regressions when you tweak the prompt.
+207. ✅ `[Q]` Add a coverage report to `run_tests.py`'s output and track it over time.
+208. ✅ `[M]` Add property-based tests (Hypothesis) for the parsing-heavy functions (`_parse_weight`, `_parse_duration`, `_parse_water`, date parsing) — these are exactly the kind of code that breaks on edge-case input.
+209. ✅ `[M]` Add integration tests that exercise the full NLU → Hecate → module path, not just unit tests per module.
+210. ✅ `[Q]` Add a test that fails if any module's declared `_INTENTS` set contains an intent missing from `intent_registry.py` (codify the invariant you already benefit from).
+211. 🟡 `[M]` Add load/latency tests for the voice pipeline (STT + NLU + TTS round-trip time) with a regression budget. *Partial: Hestia's own overhead per turn is pinned on every test run, and `scripts/voice_latency.py` measures STT/NLU/dispatch/TTS against `config/latency_budget.json`, but that script has never been run against real models, STT needs a `--wav` file, and the starting budget numbers are guesses to edit.*
+212. ✅ `[Q]` Add a smoke-test script that boots `main.py`, sends 10 canonical queries, and checks for non-error responses — good as a pre-deploy gate. *`scripts/smoke_test.py`; logic tested with fakes, not yet run against a booted install.*
+213. ✅ `[M]` Add fixture-based tests for each ingestible file format in Athena (one small real pdf/docx/pptx/epub per format). *Already covered by #67's per-format fixtures (`tests/test_athena_file_type_coverage.py`).*
+214. ✅ `[Q]` Add mutation testing on at least the critical routing logic to catch tests that pass but don't actually assert anything meaningful. *`scripts/mutation_check.py`; applied to `modules/hecate/engine.py` (40% of mutants caught → 99%).*
+215. ✅ `[M]` Add a test harness that replays real (anonymized) past queries against the NLU to catch classification regressions when you tweak the prompt. *`scripts/replay_queries.py`; logic tested with a fake classifier, not yet run against your model or log.*
 
 ## 21. Observability & Ops
 

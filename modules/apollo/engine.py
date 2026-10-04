@@ -1277,7 +1277,7 @@ class ApolloEngine(BaseModule):
 
         if not area:
             return _clarify("Which part of your body is it, and how bad is it from 0 to 10?")
-        sev = _extract_number(raw_sev) if raw_sev is not None else None
+        sev = _extract_number(raw_sev, signed=True) if raw_sev is not None else None
         if sev is None:
             return _clarify(f"How bad is the {area} pain, from 0 (none) to 10 (worst)?")
         if not (0 <= sev <= 10):
@@ -2495,25 +2495,39 @@ class ApolloEngine(BaseModule):
 # ---------------------------------------------------------------------------
 
 _LEADING_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
+# A minus sign that belongs to the number: at the start, or after whitespace
+# or an opening bracket/colon. "7-8 hours" is a range, not "7, minus 8".
+_NEGATIVE_PREFIX_RE = re.compile(r"(?:^|[\s(:=])[-\u2212]$")
 
 
-def _extract_number(raw: Any) -> Optional[float]:
+def _extract_number(raw: Any, signed: bool = False) -> Optional[float]:
     """
     Pull the first number out of a string that may carry extra words the
     NLU left in (e.g. "30 min run", "7 hours"). ``float(str(raw))`` chokes
     on anything but a bare number, which is why these fields kept
     round-tripping back to the user as "I didn't catch that" even when the
     NLU had, in fact, caught it.
+
+    By default the sign is ignored. Pass ``signed=True`` where a negative
+    number must be seen as negative: without it "-30 min" was logged as a
+    30-minute workout. Returns ``None`` for anything non-finite (a 400-digit
+    string parses to ``inf``, which then crashed ``int()``).
     """
     if raw is None:
         return None
-    match = _LEADING_NUMBER_RE.search(str(raw))
+    text = str(raw)
+    match = _LEADING_NUMBER_RE.search(text)
     if not match:
         return None
     try:
-        return float(match.group(1))
+        value = float(match.group(1))
     except ValueError:
         return None
+    if value in (float("inf"), float("-inf")) or value != value:
+        return None
+    if signed and _NEGATIVE_PREFIX_RE.search(text[: match.start()][-2:]):
+        value = -value
+    return value
 
 
 def _parse_duration(raw: Any) -> tuple[int, Optional[str]]:
@@ -2525,7 +2539,7 @@ def _parse_duration(raw: Any) -> tuple[int, Optional[str]]:
     """
     if raw is None:
         return _DEFAULT_WORKOUT_DURATION, None
-    value_f = _extract_number(raw)
+    value_f = _extract_number(raw, signed=True)
     if value_f is None:
         return 0, "I didn't catch the workout duration. How many minutes?"
     value = int(value_f)
@@ -2544,7 +2558,7 @@ def _parse_hours(raw: Any) -> tuple[float, Optional[str]]:
     Returns ``(hours_float, None)`` on success or ``(0.0, error_message)``
     on failure.
     """
-    value = _extract_number(raw)
+    value = _extract_number(raw, signed=True)
     if value is None:
         return 0.0, "I didn't catch the sleep duration. How many hours?"
     if not (_MIN_SLEEP_HOURS <= value <= _MAX_SLEEP_HOURS):
@@ -2823,7 +2837,7 @@ def _fmt_water(ml: float, unit: str) -> str:
 
 
 def _parse_rating(raw: Any) -> Optional[int]:
-    num = _extract_number(raw) if raw is not None else None
+    num = _extract_number(raw, signed=True) if raw is not None else None
     if num is None or not (1 <= num <= 5):
         return None
     return int(round(num))

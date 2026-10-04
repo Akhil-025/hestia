@@ -25,7 +25,12 @@ import sounddevice as sd
 #   * a very long first sentence delays the first word of speech, which is
 #     exactly the latency streaming exists to remove.
 
-_BOUNDARY_RE = re.compile(r"""([.!?]+["')\]]*)(\s+)|(\n+)""")
+# The lookbehind makes a match start only at the beginning of a run of
+# punctuation. Without it the regex retried from every position inside the run,
+# so n punctuation characters with no space after them cost O(n^2) (20,000 of
+# "?!" took 6.5 s, on the path every spoken reply goes through). A run that
+# fails from its start fails from anywhere inside it, so results are unchanged.
+_BOUNDARY_RE = re.compile(r"""(?<![.!?])([.!?]+["')\]]*)(\s+)|(\n+)""")
 
 _ABBREVIATIONS = frozenset({
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g",

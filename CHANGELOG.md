@@ -12,6 +12,86 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Testing & QA: coverage, property tests, pipeline tests, contract test, mutation testing, smoke test, latency budget, replay (#207–#215)
+
+Test suite 3317 -> 3558 passing (241 new). The 11 failures in this sandbox
+(`test_iris_embeddings`, one Athena and one Mnemosyne test) are identical with
+and without these changes: they come from stubbed `chromadb`. Not done: nothing
+in section 20 is skipped, but #211 is partial (see below).
+
+### Fixed (found by the new tests)
+
+- **Negative numbers were logged as positive (Apollo).** "-30 min" became a
+  30-minute workout, "-3 hours" a sleep of 3, "-5" a rating of 5 and a pain
+  score of 5, because `_extract_number` dropped the sign. It now keeps the sign
+  where it matters (`signed=True`) and still reads "7-8 hours" as a range.
+- **A 400-digit number crashed `_parse_duration`** with `OverflowError` (it
+  parsed to infinity). `_extract_number` now returns `None` for anything
+  non-finite.
+- **A `None` or non-numeric NLU confidence crashed `HecateEngine.decide()`.**
+  It now means "unknown", the same 0.5 a missing key always meant.
+- **Streaming TTS could stall on runs of punctuation (`core/tts.py`).** The
+  sentence-boundary regex was quadratic: 20,000 characters of `?!` took 6.5 s
+  to split. A lookbehind makes it linear; a Hypothesis test proves it matches
+  exactly what the old pattern did.
+
+### Added
+
+- **Coverage with history (#207).** `python run_tests.py --coverage` prints
+  total line coverage, the change since the last recorded run (a drop of more
+  than one point is called out) and the least-covered files, and appends the run
+  to `tests/coverage_history.csv` (commit it to keep the trend).
+  `--cov-fail-under N` fails below N%; `--no-record` skips the log. Files no
+  test imports count as 0% instead of vanishing. Needs `pip install coverage`.
+  `scripts/coverage_history.py`.
+- **Property-based tests (#208).** `tests/test_parsers_property.py`: Hypothesis
+  tests over Apollo's duration, sleep, weight, water, goal, rating, date and step
+  parsers (never raise, always in range, kg/lb limits agree, negatives rejected,
+  every supported date format round-trips). Needs `hypothesis`; skipped without it.
+- **Full-path integration tests (#209).** `tests/test_pipeline_integration.py`
+  runs the real NLU, orchestrator and Hecate with only the model call scripted,
+  and the real Apollo engine on a temporary database: stored values, retry on an
+  invalid intent, parse failures, low-confidence clarification, a crashing
+  module, circuit breaker, concurrent turns.
+- **Registry/module contract test (#210).** `tests/test_intent_contract.py`
+  reads every module's `*_INTENTS` set with `ast`, fails if one declares an
+  intent the registry doesn't route to it, if the registry sends a module an
+  intent its `can_handle()` rejects, or if the registry names a module that
+  doesn't exist. Nine deliberate exceptions (legacy spellings, Mnemosyne's
+  internal intents, two intents registered to core by design) are listed with
+  reasons in `DOCUMENTED_ALIASES`; an entry that stops being true fails the test.
+- **Mutation testing (#214).** `scripts/mutation_check.py FILE --tests ...`
+  breaks a file one change at a time and reports which breakages no test
+  noticed. Run on `modules/hecate/engine.py`, the existing tests caught 40% of
+  93 mutants; the new `tests/test_hecate_routing_tiers.py` (71 tests, one per
+  tier and boundary) brings that to 99%. The one survivor is provably
+  unreachable. The file is always restored (backup, `finally`, and recovery
+  after a killed run), and stale bytecode is cleared per mutant.
+- **Smoke test (#212).** `python scripts/smoke_test.py` boots the real Hestia,
+  sends ten read-only canonical queries and exits 1 if any reply is empty, an
+  error message, a leaked traceback or too slow (2 if Hestia won't start).
+  `--routing-only` resolves routing without running any handler; `--queries
+  FILE` and `--json` are available.
+- **Latency budget (#211, partial).** `tests/test_voice_latency.py` pins
+  Hestia's own per-turn overhead (p95 budget, no slowdown over a long session,
+  concurrent turns, a slow module not blocking others, sentence-splitting
+  speed). `python scripts/voice_latency.py` times STT (with `--wav`), NLU,
+  dispatch, TTS and the whole turn on a real install against
+  `config/latency_budget.json` (created with starting values) and a recorded
+  baseline (`--update-baseline`). Not done: it has never been run against real
+  models, and the starting budgets are guesses.
+- **NLU replay harness (#215).** `python scripts/replay_queries.py extract`
+  builds an anonymised corpus from `logs/routing.jsonl` (emails, URLs, phone
+  and long numbers, IPs, user folders and any `--name`); `run --save` /
+  `run --against` compares two runs and exits 1 on any query that was right and
+  is now wrong. Rows from the log are marked unverified: they hold the model's
+  own past answers, so they detect change until you correct and verify them.
+- **Athena format fixtures (#213).** Already satisfied by #67; recorded only.
+- `requirements-dev.txt` (pytest, hypothesis, coverage); `.gitignore` entries
+  for mutation backups and the machine-specific latency baseline.
+
+---
+
 ## [Unreleased] — Hephaestus: page watching, form filling, site scrapers, repo summary, browser session (#101–#103, #105–#110)
 
 Registry version 2.20.0 (minor: 6 intents added). New tests:

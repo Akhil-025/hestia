@@ -1,0 +1,4 @@
+# Test and QA tooling. Install the runtime requirements first (requirements.txt).
+pytest
+hypothesis        # tests/test_parsers_property.py, tests/test_voice_latency.py (skipped without it)
+coverage          # python run_tests.py --coverage
