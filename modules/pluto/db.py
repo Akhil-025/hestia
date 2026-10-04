@@ -156,6 +156,24 @@ class PlutoDB:
 
                 CREATE INDEX IF NOT EXISTS idx_investments_name
                     ON investments(name);
+
+                -- Planning (modules/pluto/planning.py). Added with CREATE ... IF NOT
+                -- EXISTS only, so an existing database upgrades in place.
+                CREATE TABLE IF NOT EXISTS budgets (
+                    category      TEXT PRIMARY KEY COLLATE NOCASE,
+                    monthly_limit REAL NOT NULL,
+                    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS alerts_sent (
+                    key     TEXT PRIMARY KEY,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
 
@@ -176,16 +194,88 @@ class PlutoDB:
 
     # ---- Expenses ----
 
-    def log_expense(self, amount: float, description: str, category: str) -> int:
+    def log_expense(self, amount: float, description: str, category: str,
+                    logged_at: Optional[str] = None) -> int:
+        """``logged_at`` ("YYYY-MM-DD HH:MM:SS", UTC) is for imports and tests;
+        normally the database stamps the time itself."""
+        with self.transaction() as cur:
+            if logged_at is None:
+                cur.execute(
+                    """
+                    INSERT INTO expenses (amount, description, category)
+                    VALUES (?, ?, ?)
+                    """,
+                    (amount, description, category),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO expenses (amount, description, category, logged_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (amount, description, category, logged_at),
+                )
+            return cur.lastrowid
+
+    def get_expenses_between(self, start: str, end: str) -> list[dict]:
+        """Expenses with ``start <= logged_at < end`` (ISO dates), oldest first."""
+        cur = self._conn.execute(
+            "SELECT * FROM expenses WHERE logged_at >= ? AND logged_at < ? ORDER BY logged_at",
+            (start, end),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def get_totals_between(self, start: str, end: str) -> list[dict]:
+        cur = self._conn.execute(
+            """
+            SELECT category, SUM(amount) AS total, COUNT(*) AS count
+            FROM expenses WHERE logged_at >= ? AND logged_at < ?
+            GROUP BY category ORDER BY total DESC
+            """,
+            (start, end),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    # ---- Budgets, settings, alert markers ----
+
+    def set_budget(self, category: str, monthly_limit: float) -> None:
         with self.transaction() as cur:
             cur.execute(
                 """
-                INSERT INTO expenses (amount, description, category)
-                VALUES (?, ?, ?)
+                INSERT INTO budgets (category, monthly_limit) VALUES (?, ?)
+                ON CONFLICT(category) DO UPDATE
+                    SET monthly_limit = excluded.monthly_limit, updated_at = CURRENT_TIMESTAMP
                 """,
-                (amount, description, category),
+                (category, monthly_limit),
             )
-            return cur.lastrowid
+
+    def get_budgets(self) -> dict[str, float]:
+        cur = self._conn.execute("SELECT category, monthly_limit FROM budgets ORDER BY category")
+        return {r["category"]: float(r["monthly_limit"]) for r in cur.fetchall()}
+
+    def delete_budget(self, category: str) -> bool:
+        with self.transaction() as cur:
+            cur.execute("DELETE FROM budgets WHERE category = ?", (category,))
+            return cur.rowcount > 0
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.transaction() as cur:
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+    def get_setting(self, key: str) -> Optional[str]:
+        row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def alert_already_sent(self, key: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM alerts_sent WHERE key = ?", (key,)).fetchone() is not None
+
+    def mark_alert_sent(self, key: str) -> None:
+        with self.transaction() as cur:
+            cur.execute("INSERT OR IGNORE INTO alerts_sent (key) VALUES (?)", (key,))
 
     def get_expenses(self, limit: int = 100) -> list[dict]:
         cur = self._conn.execute(

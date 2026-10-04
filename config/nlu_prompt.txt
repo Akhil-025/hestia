@@ -82,6 +82,8 @@ dionysus_find_events, dionysus_surprise_me, dionysus_schedule_recharge,
 dionysus_more_like_this, dionysus_less_like_this,
 pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spending_report,
 pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, pluto_financial_advisor_chat,
+pluto_set_budget, pluto_budget_status, pluto_recurring_expenses, pluto_safe_to_spend,
+pluto_set_income, pluto_financial_health, pluto_scenario_plan, pluto_export_tax,
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
 hephaestus_scrape_page, hephaestus_open_app,
 hephaestus_watch_page, hephaestus_list_watches, hephaestus_stop_watching, hephaestus_check_watches,
@@ -1072,6 +1074,39 @@ User: track my investment in index funds
 User: show me my spending report
 {"intent": "pluto_spending_report", "entities": {}, "response": "Generating spending report.", "confidence": 0.92}
 
+User: set a food budget of 8000 a month
+{"intent": "pluto_set_budget", "entities": {"category": "food", "amount": "8000"}, "response": "Setting your budget.", "confidence": 0.94}
+
+User: remove my shopping budget
+{"intent": "pluto_set_budget", "entities": {"category": "shopping"}, "response": "Removing that budget.", "confidence": 0.9}
+
+User: am I over budget this month
+{"intent": "pluto_budget_status", "entities": {}, "response": "Checking your budgets.", "confidence": 0.93}
+
+User: how is my transport budget doing
+{"intent": "pluto_budget_status", "entities": {"category": "transport"}, "response": "Checking that budget.", "confidence": 0.92}
+
+User: what subscriptions am I paying for
+{"intent": "pluto_recurring_expenses", "entities": {}, "response": "Looking for regular charges.", "confidence": 0.93}
+
+User: how much can I spend today
+{"intent": "pluto_safe_to_spend", "entities": {}, "response": "Working that out.", "confidence": 0.93}
+
+User: my monthly income is 85000
+{"intent": "pluto_set_income", "entities": {"amount": "85000"}, "response": "Noting your income.", "confidence": 0.94}
+
+User: how healthy are my finances
+{"intent": "pluto_financial_health", "entities": {}, "response": "Scoring your finances.", "confidence": 0.92}
+
+User: what if I invest 10000 a month for 15 years at 12 percent
+{"intent": "pluto_scenario_plan", "entities": {"amount": "10000", "years": "15", "rate": "12"}, "response": "Running that scenario.", "confidence": 0.94}
+
+User: export my expenses for tax filing
+{"intent": "pluto_export_tax", "entities": {}, "response": "Preparing your tax export.", "confidence": 0.92}
+
+User: export my 2024-25 tax data
+{"intent": "pluto_export_tax", "entities": {"year": "2024-25"}, "response": "Preparing your tax export.", "confidence": 0.92}
+
 ---
 
 # ---- HEPHAESTUS (BROWSER) ----
@@ -1496,3 +1531,10 @@ STRICT RULES:
 - A budget ("under 1500", "cheap", "mid-range") goes in the "budget" entity
   of dionysus_plan_outing or dionysus_find_restaurant. Do not turn it into a
   pluto_ intent unless the user is logging or asking about their own spending.
+- pluto_get_budget_summary is "where did my money go" (totals by category).
+  pluto_budget_status is "am I within my limits" (spending against budgets the
+  user set). pluto_set_budget CREATES or removes a limit ("set a food budget of
+  8000"). pluto_safe_to_spend is "how much can I spend today/left per day".
+- pluto_scenario_plan is a what-if about investing over years; it is not
+  pluto_forecast_spending (which predicts future spending) and not
+  pluto_track_investment (which records a holding the user already bought).

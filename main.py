@@ -784,6 +784,7 @@ class HestiaBuilder:
     def build_heartbeat(
         self, mnemosyne: MnemosyneEngine, diagnostics: Any = None,
         apollo: Any = None, artemis: Any = None, hephaestus: Any = None,
+        pluto: Any = None,
     ) -> HestiaHeartbeat:
         # diagnostics powers the nightly low-confidence review (backlog
         # #6); optional, so a heartbeat built without one just never runs
@@ -799,7 +800,7 @@ class HestiaBuilder:
         return HestiaHeartbeat(
             interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics,
             apollo=apollo, maintenance=maintenance, artemis=artemis,
-            hephaestus=hephaestus,
+            hephaestus=hephaestus, pluto=pluto,
         )
 
     def build_web_ui(
@@ -1059,7 +1060,7 @@ class Hestia:
         self.hephaestus = getattr(self.orchestrator, "_modules", {}).get("hephaestus")
         self.heartbeat = builder.build_heartbeat(
             self.mnemosyne, diagnostics=self.diagnostics, apollo=self.apollo,
-            artemis=self.artemis, hephaestus=self.hephaestus,
+            artemis=self.artemis, hephaestus=self.hephaestus, pluto=self.pluto,
         )
         # Chronos owns reminder delivery (recurring, snooze, location and the
         # missed-reminder catch-up on startup - backlog #81-#89). When its

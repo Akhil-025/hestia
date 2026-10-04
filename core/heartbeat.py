@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 class HestiaHeartbeat:
     def __init__(self, interval: int = 1800, mnemosyne=None, diagnostics=None,
-                 apollo=None, maintenance=None, artemis=None, hephaestus=None):
+                 apollo=None, maintenance=None, artemis=None, hephaestus=None,
+                 pluto=None):
         self.interval = interval
         self.mnemosyne = mnemosyne
         # Backlog #6. Optional: a heartbeat built without one (as in the
@@ -30,6 +31,8 @@ class HestiaHeartbeat:
         # Backlog #101: HephaestusEngine re-checks watched web pages. Optional,
         # like artemis: a heartbeat built without it never runs the check.
         self.hephaestus = hephaestus
+        # Backlog #134: PlutoEngine raises budget alerts (80% / over). Optional, like artemis.
+        self.pluto = pluto
         # Backlog #233: core.db_maintenance.DBMaintenance (optional).
         self.maintenance = maintenance
         self._last_maintenance_date = None
@@ -77,6 +80,7 @@ class HestiaHeartbeat:
         self._maybe_run_db_maintenance()
         self._maybe_run_mnemosyne_jobs()
         self._maybe_run_hephaestus_checks()
+        self._maybe_run_pluto_budget_alerts()
 
         try:
             root = os.path.dirname(os.path.abspath(__file__))
@@ -122,6 +126,23 @@ class HestiaHeartbeat:
             text = hook()
         except Exception:
             logging.getLogger(__name__).exception("Artemis habit nudge check failed.")
+            return
+        if isinstance(text, str) and text.strip():
+            bus.emit("speak", {"text": text})
+
+    def _maybe_run_pluto_budget_alerts(self) -> None:
+        """Backlog #134: speak a budget alert when a category newly crosses 80% or its limit.
+
+        PlutoEngine remembers what it has already announced (per month and
+        category) and holds alerts during its quiet hours, so this is safe on every tick.
+        """
+        hook = getattr(self.pluto, "check_budget_alerts", None)
+        if not callable(hook):
+            return
+        try:
+            text = hook()
+        except Exception:
+            logging.getLogger(__name__).exception("Pluto budget alert check failed.")
             return
         if isinstance(text, str) and text.strip():
             bus.emit("speak", {"text": text})

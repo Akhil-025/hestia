@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from .llm_client import LLMClient, OutputFormat
 from .retry import retry
 from .logging_config import get_logger
 from .metrics import MetricsCollector
+from .planning import MAX_AMOUNT, parse_amount
 from core.free_apis import (
     FreeAPIError,
     convert_currency as _fa_convert_currency,
@@ -201,13 +203,22 @@ class PersonalFinanceManager:
         if raw_amount is None:
             return self._ok("How much was it, and what was it for?", confidence=0.5)
 
-        try:
-            amount = float(raw_amount)
-        except (ValueError, TypeError):
+        # parse_amount accepts "₹1,500", "5k", "2 lakh" and rejects zero,
+        # negatives, nan/inf and absurd values. float(nan) used to pass the
+        # `<= 0` check below and be saved as an expense of "nan".
+        amount = parse_amount(raw_amount)
+        if amount is None:
+            try:
+                plain = float(str(raw_amount).replace(",", "").strip())
+            except (ValueError, TypeError):
+                plain = None
+            if plain is not None and math.isfinite(plain):
+                if plain <= 0:
+                    return self._ok("The amount should be greater than zero.", confidence=0.4)
+                if plain > MAX_AMOUNT:
+                    return self._ok("That's more than I can log as a single expense. "
+                                    "Could you check the amount?", confidence=0.4)
             return self._ok("I didn't catch the amount — could you repeat it?", confidence=0.4)
-
-        if amount <= 0:
-            return self._ok("The amount should be greater than zero.", confidence=0.4)
 
         category = self._infer_category(description, amount)
 
@@ -270,6 +281,10 @@ class PersonalFinanceManager:
             buy_price = float(entities.get("buy_price") or entities.get("price") or 0.0)
         except (ValueError, TypeError):
             return self._ok("I couldn't parse the quantity or price — please try again.", confidence=0.4)
+        # nan/inf parse as floats; a negative holding or price is never right.
+        if not all(math.isfinite(v) and 0 <= v <= MAX_AMOUNT for v in (quantity, buy_price)):
+            return self._ok("The quantity and price need to be positive numbers — please try again.",
+                            confidence=0.4)
 
         try:
             self.db.log_investment(name, asset_type, quantity, buy_price)
@@ -343,9 +358,8 @@ class PersonalFinanceManager:
         (or 'to'); to_currency defaults to the module's configured
         currency symbol's ISO code when not supplied and inferable.
         """
-        try:
-            amount = float(entities.get("amount"))
-        except (TypeError, ValueError):
+        amount = parse_amount(entities.get("amount"))
+        if amount is None:
             return self._ok("How much, and in which currency?", confidence=0.5)
 
         from_ccy = (entities.get("from_currency") or entities.get("from") or "").strip()

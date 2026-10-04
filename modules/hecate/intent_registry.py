@@ -353,6 +353,15 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "pluto_backtest_strategy": "pluto",
     "pluto_forecast_spending": "pluto",
     "pluto_financial_advisor_chat": "pluto",
+    # Planning features (modules/pluto/planning.py).
+    "pluto_set_budget": "pluto",
+    "pluto_budget_status": "pluto",
+    "pluto_recurring_expenses": "pluto",
+    "pluto_safe_to_spend": "pluto",
+    "pluto_set_income": "pluto",
+    "pluto_financial_health": "pluto",
+    "pluto_scenario_plan": "pluto",
+    "pluto_export_tax": "pluto",
 
     # --- Hephaestus (browser automation) ---
     "hephaestus_browser_action": "hephaestus",
@@ -402,7 +411,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.20.0"
+REGISTRY_VERSION: str = "2.21.0"
 
 
 def registry_fingerprint() -> str:

@@ -26,6 +26,7 @@ from .llm_client import LLMClient
 from .health import HealthChecker
 from .metrics import MetricsCollector, track_metrics
 from .logging_config import get_logger, correlation_id_var
+from .planning import PlanningManager
 
 logger = get_logger(__name__)
 
@@ -88,6 +89,20 @@ class PlutoEngine(BaseModule):
         "financial_advisor_chat",
     })
 
+    # Planning features (modules/pluto/planning.py): budgets, subscriptions,
+    # safe-to-spend, health score, scenarios, tax export. They read the same
+    # local SQLite tables as pf_manager, through self.planner.
+    _PLAN_INTENTS: frozenset[str] = frozenset({
+        "set_budget",
+        "budget_status",
+        "recurring_expenses",
+        "safe_to_spend",
+        "set_income",
+        "financial_health",
+        "scenario_plan",
+        "export_tax",
+    })
+
     _QUANT_INTENT_ALIASES: dict[str, str] = {
         "optimise_portfolio": "optimize_portfolio",
         "portfolio_optimization": "optimize_portfolio",
@@ -116,6 +131,7 @@ class PlutoEngine(BaseModule):
         backtester: Optional[Any] = None,
         forecaster: Optional[Any] = None,
         advisor: Optional[Any] = None,
+        planner: Optional[Any] = None,
     ) -> None:
         """
         `ollama_cfg` mirrors the `{host, port, model}` dict every other
@@ -161,7 +177,32 @@ class PlutoEngine(BaseModule):
             pf_manager=self.pf_manager, llm_client=self.llm_client
         )
 
+        # getattr: an injected pf_manager stand-in need not have a database.
+        db = getattr(self.pf_manager, "db", None)
+        self.planner = planner or PlanningManager(
+            db=db,
+            currency=self.config.currency,
+            export_dir=self._export_dir(db),
+        )
+
         logger.info("PlutoEngine coordinator initialized.")
+
+    @staticmethod
+    def _export_dir(db: Any) -> Optional[Path]:
+        """``<folder of pluto.db>/exports``, or None when the db has no real path."""
+        raw = getattr(db, "_db_path", None)
+        return Path(raw).parent / "exports" if isinstance(raw, (str, Path)) else None
+
+    def check_budget_alerts(self) -> Optional[str]:
+        """Heartbeat hook: a sentence about budgets that just crossed 80% or their limit, else None.
+
+        Never raises; a failure here must not disturb the heartbeat's other jobs.
+        """
+        try:
+            return self.planner.check_budget_alerts()
+        except Exception:
+            logger.exception("check_budget_alerts failed.")
+            return None
 
     @staticmethod
     def _build_config(ollama_cfg: Optional[dict]) -> PlutoConfig:
@@ -183,7 +224,8 @@ class PlutoEngine(BaseModule):
             intent in self._PF_INTENT_ALIASES or
             intent in self._MI_INTENTS or
             intent in self._QUANT_INTENTS or
-            intent in self._QUANT_INTENT_ALIASES
+            intent in self._QUANT_INTENT_ALIASES or
+            intent in self._PLAN_INTENTS
         )
 
     @track_metrics("handle")
@@ -223,6 +265,10 @@ class PlutoEngine(BaseModule):
                 ).strip()
                 return self.advisor.ask(question)
 
+            # Planning Routes
+            if resolved_intent in self._PLAN_INTENTS:
+                return self._handle_planning(resolved_intent, entities)
+
             # Personal Finance Routes
             if resolved_intent == "log_expense":
                 return self.pf_manager.log_expense(entities)
@@ -260,6 +306,24 @@ class PlutoEngine(BaseModule):
         except Exception as e:
             logger.exception("PlutoEngine.handle() raised an exception for intent=%s.", intent)
             return _err("Something went wrong in the Pluto module.")
+
+    def _handle_planning(self, intent: str, entities: dict) -> dict:
+        p = self.planner
+        if intent == "set_budget":
+            return p.set_budget(entities)
+        if intent == "budget_status":
+            return p.budget_status(entities)
+        if intent == "recurring_expenses":
+            return p.recurring_expenses()
+        if intent == "safe_to_spend":
+            return p.safe_to_spend()
+        if intent == "set_income":
+            return p.set_income(entities)
+        if intent == "financial_health":
+            return p.financial_health()
+        if intent == "scenario_plan":
+            return p.scenario_plan(entities)
+        return p.export_tax(entities)
 
     def get_context(self) -> dict:
         """Return a lightweight context snapshot for NLU enrichment."""

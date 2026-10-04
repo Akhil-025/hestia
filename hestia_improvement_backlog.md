@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 148 ✅ + 16 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #269, #270 and #275.
+**Tally: 153 ✅ + 17 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137, #138), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -23,6 +23,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 7. Hermes | 5 done (`#93`, `#94`, `#97`, `#98`, `#100`), 4 partial (`#92`, `#95`, `#96`, `#99`), of 10 (`#91` Todoist not done) |
 | 8. Hephaestus | 6 done (`#101`, `#103`, `#105`, `#106`, `#108`, `#109`), 3 partial (`#102`, `#107`, `#110`), of 10 (`#104` not done) |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
+| 11. Pluto | 4 done (`#133`–`#135`, `#138`), 1 partial (`#137`), of 15 (`#131`, `#132`, `#136`, `#139`–`#145` not done); plus `#266` |
 | 12. Dionysus | 4 done (`#146`, `#147`, `#150`, `#152`), 1 partial (`#151`), of 7 (`#149` is counted under Apollo cross-module; `#148` needs multi-user and is not done) |
 | 13. Ares | 5 of 5 |
 | 15. Metis & Orpheus | 6 of 6 |
@@ -201,12 +202,12 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 131. `[L]` Add Zerodha/Groww/broker API integration for live portfolio sync (explicitly missing per the audit).
 132. `[M]` Add price-movement and news-triggered alerts (HEARTH.txt spec'd, not yet built) using your existing market-data fetchers.
-133. `[Q]` Add recurring-expense detection (subscriptions) from logged expenses.
-134. `[M]` Add budget-vs-actual variance alerts per category, not just a summary report.
-135. `[M]` Add a "financial health score" combining savings rate, spending volatility, and investment diversification.
+133. ✅ `[Q]` Add recurring-expense detection (subscriptions) from logged expenses. *`recurring_expenses`: needs 3+ similar charges at a steady weekly/monthly/quarterly/yearly gap; flags price rises and lapsed subscriptions.*
+134. ✅ `[M]` Add budget-vs-actual variance alerts per category, not just a summary report. *`set_budget` / `budget_status`, plus a heartbeat alert once per month per category at 80% and when over (held in quiet hours).*
+135. ✅ `[M]` Add a "financial health score" combining savings rate, spending volatility, and investment diversification. *`financial_health`: three simple measures shown separately, and the missing ones named; a rule of thumb, not advice. Needs your monthly income (`set_income`).*
 136. `[Q]` Add multi-currency net worth aggregation if you hold assets in more than one currency.
-137. `[M]` Add tax-relevant categorization/export (useful come filing season) for logged expenses/investments.
-138. `[L]` Add scenario planning ("what if I invest ₹X/month for Y years at Z% return") as a distinct forecasting mode from the existing forecast_spending.
+137. 🟡 `[M]` Add tax-relevant categorization/export (useful come filing season) for logged expenses/investments. *Partial: exports expenses and investments for an Indian financial year to CSV with hints for a few categories (health, education, ELSS/PPF/NPS); it does not categorise for tax or decide what is deductible.*
+138. ✅ `[L]` Add scenario planning ("what if I invest ₹X/month for Y years at Z% return") as a distinct forecasting mode from the existing forecast_spending. *`scenario_plan`: constant-return compounding with a ±3 point range and a year-by-year table.*
 139. `[Q]` Add confidence intervals / uncertainty ranges on forecasts instead of point estimates only.
 140. `[M]` Add a "explain this holding" mode that pulls recent news + fundamentals for a specific stock/asset via the existing news/market-intelligence pipeline.
 141. `[Q]` Add expense receipt photo ingestion (pairs naturally with Iris's OCR pipeline) instead of manual text entry only.
@@ -391,7 +392,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 263. `[M]` Borrow from IDEs: add a command palette (fuzzy-searchable list of every intent) in the web UI for power-user access without needing exact phrasing.
 264. `[M]` Borrow from spaced-repetition apps (Anki): apply the same due-card scheduling model to reminders that matter but aren't time-critical ("check on this application status") — not just quiz facts.
 265. `[Q]` Borrow from postmortem culture (SRE): after any bad autonomous action (a wrong reminder, a bad recommendation spree), write a one-paragraph postmortem note into Mnemosyne so the pattern is remembered.
-266. `[M]` Borrow from personal-finance apps: add "safe to spend today" style derived numbers in Pluto instead of raw totals only.
+266. ✅ `[M]` Borrow from personal-finance apps: add "safe to spend today" style derived numbers in Pluto instead of raw totals only. *`safe_to_spend`: budget left per remaining day, after recurring bills still due this month.*
 267. `[M]` Borrow from note-taking tools (Roam/Logseq): add backlinks between Mnemosyne facts and Athena documents that reference the same concept.
 268. `[Q]` Borrow from CLI tool design: add `--help` text and examples to every module's exposed commands, not just the top-level CLI.
 269. 🟡 `[M]` Borrow from recommender systems: add explicit "more like this / less like this" feedback buttons to Dionysus recommendations instead of only binary dismiss. *(partial: done as chat commands that steer later movie/music picks; there are no buttons in the web UI.)*

@@ -12,6 +12,48 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Pluto: budgets, subscriptions, safe-to-spend, health score, scenarios, tax export (#133–#135, #137, #138, #266)
+
+Registry version 2.21.0 (eight new `pluto_` intents, also added to `config/nlu_prompt.txt` with examples and
+disambiguation rules). New tests: 252 in `tests/test_pluto_planning.py` and 15 Hypothesis tests in
+`tests/test_pluto_planning_property.py` (267 total; whole suite 3,906 passing). Mutation testing
+(`scripts/mutation_check.py`) on `planning.py` took the first score from 79% to 95% of 160 sampled mutants;
+the 8 survivors are equivalent changes (ordering constants, a date bound that cannot matter, a last-day
+calculation with the same result).
+
+### Fixed
+
+- **`log_expense` saved "nan" and "inf" as expenses.** `float("nan") <= 0` is False, so the old check let
+  them through. Amounts now go through `parse_amount`, which rejects non-finite, zero, negative and
+  absurd values and reads "₹1,500", "5k", "2 lakh".
+- `track_investment` accepted negative or non-finite quantity and price; `convert_currency` accepted nan.
+- `"1e999"` is refused rather than being read as 1.
+- Found while testing the new code: a scenario return of "-5" was read as +5 and "-3" years as 3 (the
+  number pattern ignored the sign); both now keep it, so a loss scenario shows a loss.
+
+### Added
+
+- **Budgets (#134).** "Set a food budget of 8000", "am I over budget?", "remove my food budget". The
+  heartbeat speaks one alert per category per month at 80% and when over, held during quiet hours.
+- **Subscriptions (#133).** Finds regular weekly, fortnightly, monthly, quarterly and yearly charges
+  (three or more at a steady gap), flags price rises and ones that have stopped.
+- **Safe to spend (#266).** Budget left per remaining day, after recurring bills still due this month.
+- **Financial health (#135).** Savings rate, spending steadiness and diversification, each shown, with
+  missing parts named. Needs "my monthly income is ...".
+- **Scenarios (#138).** "What if I invest 10000 a month for 15 years at 12 percent" with a range.
+- **Tax export (#137, partial).** Expenses and investments for a financial year to CSV, with a few hints.
+- `modules/pluto/README.md`.
+- Database: `budgets`, `settings` and `alerts_sent` tables, created in place (existing data untouched);
+  `PlutoDB.log_expense` takes an optional timestamp; range queries by date.
+
+### Not done
+
+#131 broker sync, #132 price/news alerts, #136 multi-currency net worth, #139 forecast ranges, #140, #141,
+#142 rebalancing, #143, #144, #145. See `modules/pluto/README.md` for known limits. The 5 failures in
+`tests/test_pluto.py` that need vectorbt/pypfopt/a Postgres connection fail identically without these changes.
+
+---
+
 ## [Unreleased] — Testing & QA: coverage, property tests, pipeline tests, contract test, mutation testing, smoke test, latency budget, replay (#207–#215)
 
 Test suite 3317 -> 3558 passing (241 new). The 11 failures in this sandbox
