@@ -586,6 +586,64 @@ class HestiaWebUI:
                 logger.exception("[WebUI] pluto portfolio error")
                 return jsonify({"error": "Failed"}), 500
 
+        # --- backlog #139-#145 -------------------------------------------
+        # Each returns the engine's {response, data, confidence} dict, 503 when
+        # Pluto is off, and a generic 500 (details go to the log, not the page).
+
+        def _pluto_call(label, fn):
+            if not self.pluto:
+                return jsonify({"error": "Pluto disabled"}), 503
+            try:
+                return jsonify(fn())
+            except Exception:
+                logger.exception("[WebUI] pluto %s error", label)
+                return jsonify({"error": "Failed"}), 500
+
+        @app.route("/api/pluto/forecast")
+        def api_pluto_forecast():
+            try:
+                days = max(1, min(int(request.args.get("days", 7)), 60))
+            except ValueError:
+                return jsonify({"error": "days must be a whole number"}), 400
+            return _pluto_call("forecast", lambda: self.pluto.forecaster.forecast(horizon_days=days))
+
+        @app.route("/api/pluto/backtest/sweep")
+        def api_pluto_backtest_sweep():
+            ticker = (request.args.get("ticker") or "").strip()[:30]
+            if not ticker:
+                return jsonify({"error": "ticker is required"}), 400
+            return _pluto_call("sweep", lambda: self.pluto.backtester.sweep_sma_crossover(
+                ticker,
+                (request.args.get("fast") or "5 10 20")[:60],
+                (request.args.get("slow") or "30 50 100")[:60],
+                range_=(request.args.get("range") or "1y")[:4],
+            ))
+
+        @app.route("/api/pluto/data-sources")
+        def api_pluto_data_sources():
+            from modules.pluto.throttle import MONITOR
+            from modules.pluto.market_data import retry_settings
+            return jsonify({"sources": MONITOR.snapshot(), "retry": retry_settings()})
+
+        @app.route("/api/pluto/rebalance")
+        def api_pluto_rebalance():
+            entities = {k: request.args[k][:30] for k in ("threshold", "contribution") if request.args.get(k)}
+            return _pluto_call("rebalance", lambda: self.pluto.rebalancer.suggest(entities))
+
+        @app.route("/api/pluto/quant-score")
+        def api_pluto_quant_score():
+            ticker = (request.args.get("ticker") or "").strip()[:20]
+            if not ticker:
+                return jsonify({"error": "ticker is required"}), 400
+            return _pluto_call("quant-score", lambda: self.pluto.mi_manager.explain_quant_score(ticker))
+
+        @app.route("/api/pluto/explain")
+        def api_pluto_explain():
+            name = (request.args.get("name") or "").strip()[:60]
+            if not name:
+                return jsonify({"error": "name is required"}), 400
+            return _pluto_call("explain", lambda: self.pluto.explainer.explain({"name": name}))
+
     # ── ARTEMIS (habits/goals) ───────────────────────────
 
     def _register_artemis_routes(self) -> None:

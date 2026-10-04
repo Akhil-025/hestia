@@ -12,6 +12,52 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Pluto: forecast ranges, rebalancing, receipts, explain-holding, backtest sweeps, throttle visibility, score breakdown (#139–#145)
+
+Registry version 2.22.0 (seven new `pluto_` intents, also in `config/nlu_prompt.txt` with examples and a
+disambiguation rule, and a few phrases in `config/intent_aliases.yaml`). New tests: 201 in
+`tests/test_pluto_extras.py`. Mutation testing was started on the new modules but not finished (it hit the
+command time limit), so there is no mutation score for this batch.
+
+### Changed
+
+- **`rebalance_portfolio` is no longer an alias of `optimize_portfolio`.** It now compares holdings with
+  targets you set. `optimize_portfolio` (max-Sharpe from past prices) is unchanged.
+- A 429 from Yahoo Finance or CoinGecko is no longer retried; it starts a cooldown. Other failures retry as before.
+- `analyze_asset` data and `generate_quant_score` now carry a `breakdown`.
+
+### Added
+
+- **Forecast ranges (#139).** An 80% range per day and for the total, from a walk-forward backtest. On
+  synthetic data it covered about 90% of outcomes. Falls back to recent spending spread when history is short
+  and says so. A failure computing the range never loses the forecast itself.
+- **Rebalancing (#142).** `set_target_allocation`, `rebalance_portfolio`; by asset class or by holding; sell/buy
+  amounts or a buy-only split of new money; refuses targets that don't add up or leave a held class uncovered.
+- **Receipts (#141, partial).** `log_receipt` from a photo path via pytesseract. Saves only a labelled total.
+- **Explain holding (#140, partial).** Position, price behaviour, headlines, fundamentals, optional model summary
+  that is told to treat headlines as data. Each source fails independently.
+- **Backtest sweep (#143, partial).** `backtest_sweep`, `/api/pluto/backtest/sweep`, and a Portfolio-tab panel
+  with equity curves. Own simulator, not vectorbt.
+- **Throttle visibility (#144).** `modules/pluto/throttle.py`, `data_source_status`, `/api/pluto/data-sources`,
+  a Portfolio-tab line, per-session retry tuning via `market_data.configure_retry`. `retry()` gained
+  `give_up_on` and `on_retry`. The portfolio optimiser stops asking once throttled.
+- **Score breakdown (#145, partial).** `explain_quant_score`, `/api/pluto/quant-score`. The heuristic's parts add
+  up exactly to the score; XGBoost contributions were checked to reproduce the model's output.
+- Web routes: `/api/pluto/forecast`, `/backtest/sweep`, `/data-sources`, `/rebalance`, `/quant-score`, `/explain`.
+- `PlutoDB.delete_setting`.
+
+### Not done / not verified
+
+- Not run against the live Yahoo news and quote-summary endpoints, SEC EDGAR, or real Tesseract; those parsers
+  are tested on fixtures shaped like the documented responses.
+- The sweep simulator has not been compared with a vectorbt run (vectorbt does not install on Python 3.12 here).
+- The Portfolio-tab additions are syntax-checked, not viewed in a browser. No receipt upload button, no
+  quant-score web view.
+- `tests/test_pluto.py` still has the same 5 failures (vectorbt/pypfopt/Postgres) as before; they fail
+  identically without these changes. `tests/test_backlog_gaps.py` has 6 failures from missing optional packages.
+
+---
+
 ## [Unreleased] — Pluto: budgets, subscriptions, safe-to-spend, health score, scenarios, tax export (#133–#135, #137, #138, #266)
 
 Registry version 2.21.0 (eight new `pluto_` intents, also added to `config/nlu_prompt.txt` with examples and

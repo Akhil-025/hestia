@@ -180,6 +180,25 @@ pluto_spending_report:
   - "what did i spend"
   - "how much did i spend"
 
+# --- Pluto: allocation, receipts, data feeds (backlog #141, #142, #144) -----
+pluto_set_target_allocation:
+  - "set my target allocation"
+  - "set target allocation"
+  - "my target allocation"
+pluto_rebalance_portfolio:
+  - "rebalance my portfolio"
+  - "do i need to rebalance"
+  - "rebalance with"
+pluto_log_receipt:
+  - "log this receipt"
+  - "log a receipt"
+  - "scan this receipt"
+  - "scan my receipt"
+pluto_data_source_status:
+  - "is the market data throttled"
+  - "is the price feed throttled"
+  - "are you being rate limited"
+
 # --- Artemis: habits & goals ----------------------------------------------
 complete_habit:
   - "mark done"

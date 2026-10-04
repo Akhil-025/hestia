@@ -270,6 +270,12 @@ class PlutoDB:
         row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
 
+    def delete_setting(self, key: str) -> bool:
+        """Remove a setting; True if it existed."""
+        with self.transaction() as cur:
+            cur.execute("DELETE FROM settings WHERE key = ?", (key,))
+            return cur.rowcount > 0
+
     def alert_already_sent(self, key: str) -> bool:
         return self._conn.execute("SELECT 1 FROM alerts_sent WHERE key = ?", (key,)).fetchone() is not None
 

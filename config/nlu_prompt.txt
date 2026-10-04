@@ -84,6 +84,8 @@ pluto_log_expense, pluto_get_budget_summary, pluto_track_investment, pluto_spend
 pluto_optimize_portfolio, pluto_backtest_strategy, pluto_forecast_spending, pluto_financial_advisor_chat,
 pluto_set_budget, pluto_budget_status, pluto_recurring_expenses, pluto_safe_to_spend,
 pluto_set_income, pluto_financial_health, pluto_scenario_plan, pluto_export_tax,
+pluto_backtest_sweep, pluto_explain_holding, pluto_explain_quant_score,
+pluto_set_target_allocation, pluto_rebalance_portfolio, pluto_log_receipt, pluto_data_source_status,
 hephaestus_browser_action, hephaestus_search_web, hephaestus_check_flight,
 hephaestus_scrape_page, hephaestus_open_app,
 hephaestus_watch_page, hephaestus_list_watches, hephaestus_stop_watching, hephaestus_check_watches,
@@ -1107,6 +1109,30 @@ User: export my expenses for tax filing
 User: export my 2024-25 tax data
 {"intent": "pluto_export_tax", "entities": {"year": "2024-25"}, "response": "Preparing your tax export.", "confidence": 0.92}
 
+User: try different moving average windows on Reliance
+{"intent": "pluto_backtest_sweep", "entities": {"ticker": "RELIANCE"}, "response": "Running the sweep.", "confidence": 0.9}
+
+User: explain my Infosys holding
+{"intent": "pluto_explain_holding", "entities": {"name": "Infosys"}, "response": "Looking into that holding.", "confidence": 0.92}
+
+User: why is the quant score for TCS what it is
+{"intent": "pluto_explain_quant_score", "entities": {"ticker": "TCS"}, "response": "Breaking down the score.", "confidence": 0.9}
+
+User: set my target allocation to 60 stocks, 30 mutual funds, 10 crypto
+{"intent": "pluto_set_target_allocation", "entities": {"targets": "60 stocks, 30 mutual funds, 10 crypto"}, "response": "Saving your targets.", "confidence": 0.94}
+
+User: do I need to rebalance my portfolio
+{"intent": "pluto_rebalance_portfolio", "entities": {}, "response": "Checking your drift.", "confidence": 0.92}
+
+User: rebalance using 20000 of new money
+{"intent": "pluto_rebalance_portfolio", "entities": {"contribution": "20000"}, "response": "Checking your drift.", "confidence": 0.92}
+
+User: log this receipt /home/me/receipts/dinner.jpg
+{"intent": "pluto_log_receipt", "entities": {"image_path": "/home/me/receipts/dinner.jpg"}, "response": "Reading the receipt.", "confidence": 0.92}
+
+User: is the market data being rate limited
+{"intent": "pluto_data_source_status", "entities": {}, "response": "Checking the data sources.", "confidence": 0.9}
+
 ---
 
 # ---- HEPHAESTUS (BROWSER) ----
@@ -1535,6 +1561,13 @@ STRICT RULES:
   pluto_budget_status is "am I within my limits" (spending against budgets the
   user set). pluto_set_budget CREATES or removes a limit ("set a food budget of
   8000"). pluto_safe_to_spend is "how much can I spend today/left per day".
+- pluto_rebalance_portfolio compares holdings with targets the user set
+  (pluto_set_target_allocation); pluto_optimize_portfolio picks a mix from past
+  prices and needs no targets. pluto_explain_holding is about ONE holding;
+  pluto_explain_quant_score is why a ticker got its score;
+  pluto_backtest_sweep tries many window pairs, pluto_backtest_strategy one.
+  pluto_log_receipt needs a photo file path; plain "I spent 500" is
+  pluto_log_expense. pluto_data_source_status is "is the price feed throttled".
 - pluto_scenario_plan is a what-if about investing over years; it is not
   pluto_forecast_spending (which predicts future spending) and not
   pluto_track_investment (which records a holding the user already bought).

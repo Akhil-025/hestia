@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 import polars as pl
 import xgboost as xgb
 
+from .explain import heuristic_breakdown, render_score_breakdown
 from .config import PlutoConfig
 from .db import DatabaseManager
 from .agents import LangGraphOrchestrator
@@ -140,6 +141,8 @@ class MarketIntelligenceManager:
                     history went into the score (row count after feature
                     engineering), not whether the reading is bullish or
                     bearish.
+                "breakdown": dict | None — how the number was built (see
+                    modules/pluto/explain.py); None for "no_data". Backlog #145.
             }
         """
         if df.is_empty():
@@ -194,9 +197,37 @@ class MarketIntelligenceManager:
             X = features.to_numpy()
             dmatrix = xgb.DMatrix(X)
             score = float(model.predict(dmatrix)[0])
-            return {"score": score, "method": "ml_model", "reliability": reliability}
+            return {
+                "score": score, "method": "ml_model", "reliability": reliability,
+                "breakdown": self._ml_breakdown(model, dmatrix, X[0], list(features.columns)),
+            }
 
         return self._technical_heuristic_score(features, reliability)
+
+    @staticmethod
+    def _ml_breakdown(model: Any, dmatrix: Any, row: Any, columns: list) -> Optional[Dict[str, Any]]:
+        """Per-feature contributions for the row the score came from (row 0, the
+        same row ``generate_quant_score`` reads). Best-effort: returns None if the
+        model can't produce contributions, so a score is never lost to this."""
+        try:
+            contribs = model.predict(dmatrix, pred_contribs=True)[0]
+            values = row
+            if len(contribs) != len(columns) + 1:
+                return None
+            return {
+                "base": float(contribs[-1]),
+                "components": [
+                    {"key": name, "label": name, "raw": float(values[i]),
+                     "contribution": float(contribs[i])}
+                    for i, name in enumerate(columns)
+                ],
+                "note": ("Contributions are in the model's raw output units (log-odds for a "
+                         "classifier), so they show direction and relative weight but do not "
+                         "add up to the 0-1 score."),
+            }
+        except Exception as e:
+            logger.warning("Could not compute ML score contributions: %s", e)
+            return None
 
     def _technical_heuristic_score(
         self, features: pl.DataFrame, reliability: float
@@ -239,7 +270,17 @@ class MarketIntelligenceManager:
             + 0.25 * rsi_component
         )
         score = max(0.0, min(1.0, 0.5 + 0.5 * composite))
-        return {"score": score, "method": "technical_heuristic", "reliability": reliability}
+
+        # Raw values for the breakdown (#145): shown as percentages so a reader
+        # sees "+1.2%/day", not a bare 0.012.
+        momentum_pct = (momentum or 0.0) * 100 if recent_returns.len() else None
+        trend_pct = ((close - sma) / sma * 100) if sma else None
+        breakdown = heuristic_breakdown(
+            momentum_pct, momentum_component, trend_pct, trend_component,
+            rsi, rsi_component, (0.40, 0.35, 0.25), score,
+        )
+        return {"score": score, "method": "technical_heuristic",
+                "reliability": reliability, "breakdown": breakdown}
 
     def analyze_asset(self, ticker: str, force_refresh: bool = False) -> dict:
         """
@@ -283,6 +324,7 @@ class MarketIntelligenceManager:
             "quant_score": quant_score,
             "score_method": quant["method"],
             "reliability": quant["reliability"],
+            "score_breakdown": quant.get("breakdown"),
             "explanation": recommendation,
             "timestamp": time.time(),
         }
@@ -297,6 +339,25 @@ class MarketIntelligenceManager:
 
         logger.info("Analysis completed for %s with score %.3f", ticker, quant_score)
         return result
+
+    def explain_quant_score(self, ticker: str) -> dict:
+        """Score ``ticker`` and explain the number (backlog #145).
+
+        Cheap compared with analyze_asset(): one market-data query and the
+        scoring step, no LLM agents, no caching, nothing written to Qdrant.
+        Returns the engine's usual ``{response, data, confidence}`` shape.
+        """
+        ticker = ticker.upper().strip()
+        df = self.fetch_market_data(ticker)
+        quant = self.generate_quant_score(df)
+        text = render_score_breakdown(ticker, quant)
+        return {
+            "response": text,
+            "data": {"ticker": ticker, "quant_score": quant["score"],
+                     "score_method": quant["method"], "reliability": quant["reliability"],
+                     "score_breakdown": quant.get("breakdown")},
+            "confidence": 0.0 if quant["method"] == "no_data" else min(0.9, 0.5 + quant["reliability"] / 2),
+        }
 
     def _get_embedder(self):
         """Lazily load the sentence-transformer used to embed analysis text.

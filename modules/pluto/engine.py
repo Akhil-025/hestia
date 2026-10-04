@@ -27,6 +27,11 @@ from .health import HealthChecker
 from .metrics import MetricsCollector, track_metrics
 from .logging_config import get_logger, correlation_id_var
 from .planning import PlanningManager
+from .rebalance import RebalanceAdvisor
+from .receipts import ReceiptIngestor
+from .holding_explainer import HoldingExplainer
+from .market_data import configure_retry, retry_settings
+from .throttle import MONITOR
 
 logger = get_logger(__name__)
 
@@ -103,10 +108,42 @@ class PlutoEngine(BaseModule):
         "export_tax",
     })
 
+    # Backlog #139-#145 additions. Same split as above: they need their own
+    # helpers (self.rebalancer, self.receipts, self.explainer) or the monitor.
+    _EXTRA_INTENTS: frozenset[str] = frozenset({
+        "backtest_sweep",          # #143
+        "explain_holding",         # #140
+        "explain_quant_score",     # #145
+        "set_target_allocation",   # #142
+        "rebalance_portfolio",     # #142
+        "log_receipt",             # #141
+        "data_source_status",      # #144
+    })
+
+    _EXTRA_INTENT_ALIASES: dict[str, str] = {
+        "sweep_backtest": "backtest_sweep",
+        "parameter_sweep": "backtest_sweep",
+        "backtest_sweeps": "backtest_sweep",
+        "explain_asset": "explain_holding",
+        "explain_position": "explain_holding",
+        "explain_stock": "explain_holding",
+        "quant_score_breakdown": "explain_quant_score",
+        "explain_score": "explain_quant_score",
+        "set_targets": "set_target_allocation",
+        "target_allocation": "set_target_allocation",
+        "rebalance": "rebalance_portfolio",
+        "rebalancing": "rebalance_portfolio",
+        "receipt": "log_receipt",
+        "scan_receipt": "log_receipt",
+        "add_receipt": "log_receipt",
+        "api_status": "data_source_status",
+        "throttle_status": "data_source_status",
+        "market_data_status": "data_source_status",
+    }
+
     _QUANT_INTENT_ALIASES: dict[str, str] = {
         "optimise_portfolio": "optimize_portfolio",
         "portfolio_optimization": "optimize_portfolio",
-        "rebalance_portfolio": "optimize_portfolio",
         "backtest": "backtest_strategy",
         "run_backtest": "backtest_strategy",
         "forecast_expenses": "forecast_spending",
@@ -132,6 +169,9 @@ class PlutoEngine(BaseModule):
         forecaster: Optional[Any] = None,
         advisor: Optional[Any] = None,
         planner: Optional[Any] = None,
+        rebalancer: Optional[Any] = None,
+        receipts: Optional[Any] = None,
+        explainer: Optional[Any] = None,
     ) -> None:
         """
         `ollama_cfg` mirrors the `{host, port, model}` dict every other
@@ -185,7 +225,40 @@ class PlutoEngine(BaseModule):
             export_dir=self._export_dir(db),
         )
 
+        self.rebalancer = rebalancer or RebalanceAdvisor(
+            db=db, currency=self.config.currency, price_fn=self._live_price)
+        self.receipts = receipts or ReceiptIngestor(
+            db=db, currency=self.config.currency,
+            category_fn=self._receipt_category, sanitize_fn=self._receipt_sanitize)
+        self.explainer = explainer or HoldingExplainer(
+            db=db, currency=self.config.currency, price_fn=self._live_price,
+            score_fn=self._indicator_score if self._market_db_connected() else None,
+            llm=self.llm_client)
+
         logger.info("PlutoEngine coordinator initialized.")
+
+    # ---- small adapters over pf_manager / mi_manager (all failure-tolerant) ----
+
+    def _live_price(self, name: str, asset_type: str) -> Optional[float]:
+        """Live price via the personal-finance fetcher; None when unavailable."""
+        try:
+            return self.pf_manager._fetch_live_price(name, asset_type).price
+        except Exception as e:
+            logger.info("live price unavailable for %r: %s", name, e)
+            return None
+
+    def _receipt_category(self, description: str, amount: float) -> str:
+        return self.pf_manager._infer_category(description, amount)
+
+    def _receipt_sanitize(self, text: str) -> str:
+        return self.pf_manager._sanitize_input(text)
+
+    def _market_db_connected(self) -> bool:
+        return bool(getattr(self.db_manager, "_pg_pool", None))
+
+    def _indicator_score(self, name: str) -> Optional[dict]:
+        df = self.mi_manager.fetch_market_data(name.upper().strip())
+        return self.mi_manager.generate_quant_score(df)
 
     @staticmethod
     def _export_dir(db: Any) -> Optional[Path]:
@@ -225,7 +298,9 @@ class PlutoEngine(BaseModule):
             intent in self._MI_INTENTS or
             intent in self._QUANT_INTENTS or
             intent in self._QUANT_INTENT_ALIASES or
-            intent in self._PLAN_INTENTS
+            intent in self._PLAN_INTENTS or
+            intent in self._EXTRA_INTENTS or
+            intent in self._EXTRA_INTENT_ALIASES
         )
 
     @track_metrics("handle")
@@ -237,6 +312,10 @@ class PlutoEngine(BaseModule):
         try:
             resolved_intent = self._PF_INTENT_ALIASES.get(intent, intent)
             resolved_intent = self._QUANT_INTENT_ALIASES.get(resolved_intent, resolved_intent)
+            resolved_intent = self._EXTRA_INTENT_ALIASES.get(resolved_intent, resolved_intent)
+
+            if resolved_intent in self._EXTRA_INTENTS:
+                return self._handle_extra(resolved_intent, entities)
 
             # Quant/ML Routes
             if resolved_intent == "optimize_portfolio":
@@ -306,6 +385,51 @@ class PlutoEngine(BaseModule):
         except Exception as e:
             logger.exception("PlutoEngine.handle() raised an exception for intent=%s.", intent)
             return _err("Something went wrong in the Pluto module.")
+
+    def _handle_extra(self, intent: str, entities: dict) -> dict:
+        """Backlog #139-#145 routes. Each helper returns {response, data, confidence}."""
+        if intent == "backtest_sweep":
+            ticker = (entities.get("ticker") or entities.get("name") or "").strip()
+            if not ticker:
+                return _err("Which ticker should I run the sweep on? e.g. 'sweep SMA windows for RELIANCE'.")
+            return self.backtester.sweep_sma_crossover(
+                ticker,
+                entities.get("fast_windows") or "5 10 20",
+                entities.get("slow_windows") or "30 50 100",
+                range_=str(entities.get("range") or "1y"),
+            )
+        if intent == "explain_holding":
+            return self.explainer.explain(entities)
+        if intent == "explain_quant_score":
+            ticker = (entities.get("ticker") or entities.get("name") or "").strip()
+            if not ticker:
+                return _err("Which ticker's quant score should I explain?")
+            try:
+                return self.mi_manager.explain_quant_score(ticker)
+            except Exception:
+                logger.exception("explain_quant_score failed for %r", ticker)
+                return _err("I couldn't get the price history I need to score that. "
+                            "The market-data database may not be connected.")
+        if intent == "set_target_allocation":
+            return self.rebalancer.set_targets(entities)
+        if intent == "rebalance_portfolio":
+            return self.rebalancer.suggest(entities)
+        if intent == "log_receipt":
+            return self.receipts.ingest(entities)
+        # data_source_status (#144)
+        changes = {k: entities[k] for k in ("max_retries", "delay", "backoff", "jitter")
+                   if entities.get(k) not in (None, "")}
+        note = ""
+        if changes:
+            try:
+                configure_retry(**{k: float(v) for k, v in changes.items()})
+                note = "Retry settings updated for this session (they reset when Pluto restarts).\n"
+            except (ValueError, TypeError) as e:
+                return _err(f"I didn't change the retry settings: {e}")
+        text = note + MONITOR.describe(retry_settings())
+        snap = MONITOR.snapshot()
+        return {"response": text, "data": {"sources": snap, "retry": retry_settings()},
+                "confidence": 0.9}
 
     def _handle_planning(self, intent: str, entities: dict) -> dict:
         p = self.planner

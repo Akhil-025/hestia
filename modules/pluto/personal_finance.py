@@ -22,6 +22,7 @@ from .config import PlutoConfig
 from .db import PlutoDB, DatabaseManager
 from .llm_client import LLMClient, OutputFormat
 from .retry import retry
+from .throttle import MONITOR
 from .logging_config import get_logger
 from .metrics import MetricsCollector
 from .planning import MAX_AMOUNT, parse_amount
@@ -127,6 +128,10 @@ class PlutoError(Exception):
 
 class LivePriceFetchError(PlutoError):
     """Raised when a live price cannot be retrieved."""
+
+
+class LivePriceThrottled(LivePriceFetchError):
+    """The price source answered HTTP 429. Not retried (backlog #144)."""
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +471,9 @@ class PersonalFinanceManager:
             lines.append(f"  {t['category']:15} {self._fmt(t['total']):>12}  ({pct:.1f}%,  {t['count']} transaction(s))")
         return "\n".join(lines)
 
-    @retry(max_retries=3, exceptions=(LivePriceFetchError,), delay=0.5)
+    @retry(max_retries=3, exceptions=(LivePriceFetchError,), delay=0.5,
+           give_up_on=(LivePriceThrottled,),
+           on_retry=lambda n, exc, wait: MONITOR.record_retry("live_price"))
     def _fetch_live_price(self, name: str, asset_type: str) -> LivePriceResult:
         """Fetch live price with retries."""
         if asset_type == "crypto":
@@ -479,10 +486,17 @@ class PersonalFinanceManager:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={slug}&vs_currencies=inr"
         try:
             response = requests.get(url, timeout=10)
+            if MONITOR.note_http("coingecko", getattr(response, "status_code", None),
+                                 getattr(response, "headers", None)):
+                raise LivePriceThrottled("CoinGecko is rate-limiting requests (HTTP 429).")
             response.raise_for_status()
             data = response.json()
+        except LivePriceFetchError:
+            raise
         except Exception as e:
+            MONITOR.record_error("coingecko", str(e))
             raise LivePriceFetchError(f"CoinGecko request failed: {e}") from e
+        MONITOR.record_success("coingecko")
         if slug not in data:
             raise LivePriceFetchError(f"Slug {slug!r} not found.")
         price = float(data[slug]["inr"])
@@ -500,10 +514,17 @@ class PersonalFinanceManager:
         headers = {"User-Agent": "Mozilla/5.0"}
         try:
             response = requests.get(url, headers=headers, timeout=10)
+            if MONITOR.note_http("yahoo_quote", getattr(response, "status_code", None),
+                                 getattr(response, "headers", None)):
+                raise LivePriceThrottled("Yahoo Finance is rate-limiting requests (HTTP 429).")
             response.raise_for_status()
             payload = response.json()
+        except LivePriceFetchError:
+            raise
         except Exception as e:
+            MONITOR.record_error("yahoo_quote", str(e))
             raise LivePriceFetchError(f"Yahoo Finance request failed: {e}") from e
+        MONITOR.record_success("yahoo_quote")
         result = payload.get("chart", {}).get("result") or []
         if not result:
             raise LivePriceFetchError(f"No chart data for {ticker!r}.")

@@ -25,7 +25,7 @@ from pypfopt import EfficientFrontier, expected_returns, risk_models
 from pypfopt.exceptions import OptimizationError
 
 from .db import PlutoDB
-from .market_data import MarketDataError, fetch_price_history
+from .market_data import MarketDataError, MarketDataThrottled, fetch_price_history, throttle_hint
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -81,9 +81,19 @@ class PortfolioOptimizer:
 
         price_by_ticker: dict[str, list[float]] = {}
         skipped: list[str] = []
+        throttled: Optional[MarketDataThrottled] = None
         for name in holdings:
+            if throttled is not None:
+                # The source told us to slow down; don't ask it again for the rest.
+                skipped.append(name)
+                continue
             try:
                 series = fetch_price_history(name, range_="1y")
+            except MarketDataThrottled as e:
+                logger.warning("optimize_portfolio: throttled at %r: %s", name, e)
+                throttled = e
+                skipped.append(name)
+                continue
             except MarketDataError as e:
                 logger.warning("optimize_portfolio: skipping %r: %s", name, e)
                 skipped.append(name)
@@ -99,6 +109,7 @@ class PortfolioOptimizer:
                 f"portfolio (usable: {len(price_by_ticker)}, needed: "
                 f"{MIN_TICKERS_FOR_OPTIMIZATION}). Skipped: "
                 f"{', '.join(skipped) if skipped else 'none'}."
+                + (throttle_hint(throttled) if throttled is not None else "")
             )
 
         try:
@@ -135,7 +146,8 @@ class PortfolioOptimizer:
             f"Annual volatility: {perf_vol * 100:.1f}%  |  Sharpe: {perf_sharpe:.2f}"
         )
         if skipped:
-            lines.append(f"(Skipped, insufficient data: {', '.join(skipped)})")
+            reason = "price source rate-limited" if throttled is not None else "insufficient data"
+            lines.append(f"(Skipped, {reason}: {', '.join(skipped)})")
         lines.append(
             "This is a mean-variance estimate from trailing 1-year prices, not "
             "financial advice — treat it as one input among several."

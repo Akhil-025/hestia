@@ -2040,6 +2040,28 @@
       <div class="notes-grid" id="pluto-investments">
         <div class="empty" style="grid-column:1/-1"><div class="empty-icon spin"><img src="/static/img/motifs/sun.png" alt=""></div><div class="empty-text">Loading…</div></div>
       </div>
+
+      <div class="section-subtitle">Spending forecast <span class="rule"></span></div>
+      <div class="chart-card"><canvas id="plutoForecastChart" height="90" style="display:none"></canvas></div>
+      <div class="health-note" id="pluto-forecast-note">Loading…</div>
+
+      <div class="section-subtitle">Rebalance <span class="rule"></span></div>
+      <pre class="health-note" id="pluto-rebalance" style="white-space:pre-wrap">Loading…</pre>
+
+      <div class="section-subtitle">Backtest sweep <span class="rule"></span></div>
+      <div class="health-note">Tries each fast/slow moving-average pair on one ticker. The best cell is best on the same prices it was tested on, so check the median too.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <input type="text" id="sweep-ticker" placeholder="Ticker, e.g. RELIANCE" aria-label="Ticker" style="flex:1;min-width:140px">
+        <input type="text" id="sweep-fast" value="5 10 20" aria-label="Fast windows" style="width:110px">
+        <input type="text" id="sweep-slow" value="30 50 100" aria-label="Slow windows" style="width:110px">
+        <button class="send-btn" id="sweep-run" type="button">Run sweep</button>
+      </div>
+      <div class="chart-card"><canvas id="plutoSweepChart" height="110" style="display:none"></canvas></div>
+      <div class="health-note" id="sweep-summary"></div>
+      <div style="overflow-x:auto"><div id="sweep-grid"></div></div>
+
+      <div class="section-subtitle">Data feeds <span class="rule"></span></div>
+      <div class="health-note" id="pluto-feeds">Loading…</div>
     </section>
 
     <!-- Habits (Artemis) -->
@@ -2577,6 +2599,68 @@
     }).catch(() => {});
   }
 
+  // ── Pluto extras (backlog #139, #142, #143, #144) ────
+  function loadPlutoExtras() {
+    fetchJSON('/api/pluto/forecast?days=7').then(r => {
+      const d = r.data || {}, note = document.getElementById('pluto-forecast-note');
+      const canvas = document.getElementById('plutoForecastChart');
+      if (!d.daily_predictions) { canvas.style.display = 'none'; note.textContent = r.response || 'No forecast yet.'; return; }
+      canvas.style.display = '';
+      const labels = d.daily_predictions.map((_, i) => 'Day +' + (i + 1));
+      const line = (label, data, extra) => Object.assign({ label, data, fill: false, tension: 0.25 }, extra || {});
+      const sets = [line('Predicted', d.daily_predictions, { borderColor: '#c1502e' })];
+      if (d.daily_upper) {
+        sets.push(line('Upper (80%)', d.daily_upper, { borderColor: '#4a7c8c', borderDash: [5, 4], pointRadius: 0 }));
+        sets.push(line('Lower (80%)', d.daily_lower, { borderColor: '#4a7c8c', borderDash: [5, 4], pointRadius: 0 }));
+      }
+      chartOn('plutoForecastChart', { type: 'line', data: { labels, datasets: sets },
+        options: { plugins: { title: { display: true, text: 'Next 7 days of spending' } } } });
+      note.textContent = r.response;
+    }).catch(() => { document.getElementById('pluto-forecast-note').textContent = 'Forecast unavailable.'; });
+
+    fetchJSON('/api/pluto/rebalance').then(r => { document.getElementById('pluto-rebalance').textContent = r.response; })
+      .catch(() => { document.getElementById('pluto-rebalance').textContent = 'Rebalance check unavailable.'; });
+
+    fetchJSON('/api/pluto/data-sources').then(d => {
+      const names = Object.keys(d.sources || {});
+      const el = document.getElementById('pluto-feeds');
+      if (!names.length) { el.textContent = 'No market-data requests yet this session.'; return; }
+      el.innerHTML = names.sort().map(n => {
+        const s = d.sources[n];
+        const state = s.is_throttled ? `THROTTLED, about ${Math.round(s.cooldown_remaining_s)}s left`
+          : (s.throttled ? 'throttled earlier' : 'ok');
+        return `${esc(n)}: ${s.requests} requests, ${s.throttled} throttled, ${s.errors} errors, ${s.retries} retries (${state})`;
+      }).join('<br>');
+    }).catch(() => { document.getElementById('pluto-feeds').textContent = 'Status unavailable.'; });
+  }
+
+  function runPlutoSweep() {
+    const ticker = document.getElementById('sweep-ticker').value.trim();
+    const summary = document.getElementById('sweep-summary');
+    if (!ticker) { summary.textContent = 'Enter a ticker first.'; return; }
+    summary.textContent = 'Running…';
+    const q = new URLSearchParams({ ticker, fast: document.getElementById('sweep-fast').value, slow: document.getElementById('sweep-slow').value });
+    fetchJSON('/api/pluto/backtest/sweep?' + q).then(r => {
+      summary.textContent = r.response;
+      summary.style.whiteSpace = 'pre-wrap';
+      const d = r.data || {}, c = d.curves;
+      const canvas = document.getElementById('plutoSweepChart');
+      if (!c) { canvas.style.display = 'none'; document.getElementById('sweep-grid').innerHTML = ''; return; }
+      canvas.style.display = '';
+      const sets = [{ label: 'Buy & hold', data: c.buy_and_hold, borderColor: '#7a8a99', pointRadius: 0, fill: false }];
+      if (c.best_by_return) sets.push({ label: `Best return ${c.best_by_return.fast}/${c.best_by_return.slow}`, data: c.best_by_return.equity, borderColor: '#c1502e', pointRadius: 0, fill: false });
+      if (c.best_by_sharpe) sets.push({ label: `Best Sharpe ${c.best_by_sharpe.fast}/${c.best_by_sharpe.slow}`, data: c.best_by_sharpe.equity, borderColor: '#4a7c8c', pointRadius: 0, fill: false });
+      chartOn('plutoSweepChart', { type: 'line', data: { labels: c.dates, datasets: sets },
+        options: { plugins: { title: { display: true, text: 'Equity curves (starting cash = 100,000)' } }, scales: { x: { ticks: { maxTicksLimit: 8 } } } } });
+      const rows = (d.grid || []).slice().sort((a, b) => b.total_return_pct - a.total_return_pct).map(g =>
+        `<tr><td>${g.fast_window}/${g.slow_window}</td><td>${g.total_return_pct.toFixed(1)}%</td><td>${g.max_drawdown_pct.toFixed(1)}%</td><td>${g.sharpe_ratio == null ? 'n/a' : g.sharpe_ratio.toFixed(2)}</td><td>${g.num_trades}</td></tr>`).join('');
+      document.getElementById('sweep-grid').innerHTML = `<table class="health-note" style="border-collapse:collapse;width:100%"><thead><tr><th align="left">Fast/slow</th><th align="left">Return</th><th align="left">Max drawdown</th><th align="left">Sharpe</th><th align="left">Trades</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }).catch(e => { summary.textContent = 'Sweep failed: ' + e.message; });
+  }
+  document.addEventListener('click', e => {
+    if (e.target && e.target.id === 'sweep-run') runPlutoSweep();
+  });
+
   // ── Section loaders ──────────────────────────────────
   // ── Knowledge graph (Mnemosyne, backlog #32) ─────────
   const GRAPH_COLORS = {
@@ -2933,6 +3017,7 @@
     }
 
     if (section === 'portfolio') {
+      loadPlutoExtras();
       fetchJSON('/api/pluto/totals').then(t => {
         const el = document.getElementById('pluto-totals');
         const cats = t.by_category || [];

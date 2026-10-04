@@ -21,8 +21,17 @@ def retry(
     delay: float = 1.0,
     backoff: float = 2.0,
     jitter: float = 0.5,
+    give_up_on: Tuple[Type[Exception], ...] = (),
+    on_retry: Optional[Callable[[int, Exception, float], None]] = None,
 ) -> Callable:
-    """Retry decorator with exponential backoff and jitter."""
+    """Retry decorator with exponential backoff and jitter.
+
+    ``give_up_on``: exception types that propagate at once, without a retry
+    (for example a rate-limit error, where retrying only makes it worse).
+    ``on_retry(attempt, exc, wait_seconds)``: called just before each sleep,
+    so callers can count retries (backlog #144). Both default to the old
+    behaviour.
+    """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> Any:
@@ -30,6 +39,8 @@ def retry(
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
+                except give_up_on:
+                    raise
                 except exceptions as e:
                     if attempt == max_retries - 1:
                         logger.error(
@@ -43,6 +54,11 @@ def retry(
                         f"after {wait_time:.2f}s: {e}",
                         extra={"function": func.__name__, "attempt": attempt + 1}
                     )
+                    if on_retry is not None:
+                        try:
+                            on_retry(attempt + 1, e, wait_time)
+                        except Exception:       # a broken hook must not break the retry
+                            logger.exception("retry on_retry hook failed")
                     time.sleep(wait_time)
                     current_delay *= backoff
             return func(*args, **kwargs)  # fallback

@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 153 ✅ + 17 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137, #138), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
+**Tally: 156 ✅ + 21 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -23,7 +23,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 7. Hermes | 5 done (`#93`, `#94`, `#97`, `#98`, `#100`), 4 partial (`#92`, `#95`, `#96`, `#99`), of 10 (`#91` Todoist not done) |
 | 8. Hephaestus | 6 done (`#101`, `#103`, `#105`, `#106`, `#108`, `#109`), 3 partial (`#102`, `#107`, `#110`), of 10 (`#104` not done) |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
-| 11. Pluto | 4 done (`#133`–`#135`, `#138`), 1 partial (`#137`), of 15 (`#131`, `#132`, `#136`, `#139`–`#145` not done); plus `#266` |
+| 11. Pluto | 7 done (`#133`–`#135`, `#138`, `#139`, `#142`, `#144`), 5 partial (`#137`, `#140`, `#141`, `#143`, `#145`), of 15 (`#131`, `#132`, `#136` not done); plus `#266` |
 | 12. Dionysus | 4 done (`#146`, `#147`, `#150`, `#152`), 1 partial (`#151`), of 7 (`#149` is counted under Apollo cross-module; `#148` needs multi-user and is not done) |
 | 13. Ares | 5 of 5 |
 | 15. Metis & Orpheus | 6 of 6 |
@@ -208,13 +208,13 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 136. `[Q]` Add multi-currency net worth aggregation if you hold assets in more than one currency.
 137. 🟡 `[M]` Add tax-relevant categorization/export (useful come filing season) for logged expenses/investments. *Partial: exports expenses and investments for an Indian financial year to CSV with hints for a few categories (health, education, ELSS/PPF/NPS); it does not categorise for tax or decide what is deductible.*
 138. ✅ `[L]` Add scenario planning ("what if I invest ₹X/month for Y years at Z% return") as a distinct forecasting mode from the existing forecast_spending. *`scenario_plan`: constant-return compounding with a ±3 point range and a year-by-year table.*
-139. `[Q]` Add confidence intervals / uncertainty ranges on forecasts instead of point estimates only.
-140. `[M]` Add a "explain this holding" mode that pulls recent news + fundamentals for a specific stock/asset via the existing news/market-intelligence pipeline.
-141. `[Q]` Add expense receipt photo ingestion (pairs naturally with Iris's OCR pipeline) instead of manual text entry only.
-142. `[M]` Add investment rebalancing suggestions based on drift from target allocation.
-143. `[L]` Add a backtesting UI (you already have `backtest_sma_crossover` — expose parameter sweeps and visualize equity curves in the web UI).
-144. `[Q]` Add rate-limit/retry backoff tuning visibility — surface when a market-data API is being throttled instead of failing silently.
-145. `[M]` Add a "quant score explainability" view — when `generate_quant_score` returns a number, show the feature breakdown that produced it.
+139. ✅ `[Q]` Add confidence intervals / uncertainty ranges on forecasts instead of point estimates only. *`forecast_spending` now gives an 80% range per day and for the total, from a walk-forward backtest of the model's own recent misses, widening 10% a day. On synthetic data it covered about 90% of outcomes, so it errs wide. Shown in the Portfolio tab chart.*
+140. 🟡 `[M]` Add a "explain this holding" mode that pulls recent news + fundamentals for a specific stock/asset via the existing news/market-intelligence pipeline. *Partial: `explain_holding` combines your position, price behaviour, headlines (Yahoo search), fundamentals (Yahoo summary for .NS/.BO, SEC EDGAR for US filers) and an optional model summary; each source can fail alone. The news, Yahoo and SEC parsers are tested on fixtures only, not the live endpoints. Pluto had no news pipeline of its own, so the headline fetcher is new.*
+141. 🟡 `[Q]` Add expense receipt photo ingestion (pairs naturally with Iris's OCR pipeline) instead of manual text entry only. *Partial: `log_receipt` reads a photo by file path with pytesseract (Iris has no OCR step to reuse), finds shop, total and date, and saves only when a line is labelled as the total; otherwise it asks. Duplicate guard included. Parsing is tested on sample text; no real Tesseract run. No upload button in the web UI.*
+142. ✅ `[M]` Add investment rebalancing suggestions based on drift from target allocation. *`set_target_allocation` (by asset class or by holding) and `rebalance_portfolio`: drift table, sell/buy amounts, or a buy-only split of new money. Values at cost when no live price. `rebalance_portfolio` used to be an alias of `optimize_portfolio`; it is now this.*
+143. 🟡 `[L]` Add a backtesting UI (you already have `backtest_sma_crossover` — expose parameter sweeps and visualize equity curves in the web UI). *Partial: `backtest_sweep` and a Portfolio-tab panel (inputs, equity-curve chart, results table). The sweep uses its own small simulator, not vectorbt, and is not cross-checked against a vectorbt run. The panel's script is syntax-checked but not viewed in a browser.*
+144. ✅ `[Q]` Add rate-limit/retry backoff tuning visibility — surface when a market-data API is being throttled instead of failing silently. *HTTP 429 is now recognised, not retried, and starts a cooldown (Retry-After or 60s) during which calls fail fast. `data_source_status` and `/api/pluto/data-sources` show counts, cooldowns and retry settings, which can be changed per session.*
+145. 🟡 `[M]` Add a "quant score explainability" view — when `generate_quant_score` returns a number, show the feature breakdown that produced it. *Partial: the score now carries a breakdown (heuristic: three parts that add up exactly; XGBoost: per-feature contributions, checked to reproduce the score). Shown by `explain_quant_score`, `/api/pluto/quant-score` and in `analyze_asset` data; no web view yet.*
 
 ## 12. Dionysus — Social & Leisure
 
