@@ -317,6 +317,31 @@ telegram:
   # rationale.
   allowed_chat_ids: [123456789]  # your Telegram chat id — message @userinfobot to get yours
 
+  # Everything below is optional. Leave it out and every allowed chat can do
+  # everything, exactly as before.
+
+  # Per-chat roles (backlog #194). A chat with no entry here is "owner"
+  # (unrestricted). Chats listed in `roles` may talk to the bot even if they
+  # are not in allowed_chat_ids. A role other than "owner" can only do what its
+  # entry in `role_policies` allows; a role with no policy can do nothing.
+  # Module names are the ones /help prints in lower case (core, chronos,
+  # artemis, ...). Photos count as "iris", PDFs as "athena". Restricted chats
+  # can't send location shares or answer anyone else's confirmation prompts.
+  # roles:
+  #   123456789: owner
+  #   987654321: family
+  # role_policies:
+  #   family:
+  #     allow_modules: [core, chronos, artemis, dionysus]   # ["*"] = any module
+  #     deny_modules: []
+  #     deny_intents: [delete_notes, get_user_info]
+
+  # Mirror reminders and other proactive announcements (the morning brief,
+  # nudges) to the owner chats. Reminders get Snooze / Done buttons. Skipped
+  # while do-not-disturb is on. Off by default.
+  push_notifications: false
+  snooze_minutes: [10, 60]       # lengths of the Snooze buttons on a reminder
+
 athena:
   enabled: true
 

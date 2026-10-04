@@ -102,6 +102,12 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("google.enabled", (bool,), False),
     ("telegram", (dict,), False),
     ("telegram.enabled", (bool,), False),
+    # Telegram front-end (backlog #191-#196); all optional.
+    ("telegram.allowed_chat_ids", (list,), False),
+    ("telegram.roles", (dict,), False),
+    ("telegram.role_policies", (dict,), False),
+    ("telegram.push_notifications", (bool,), False),
+    ("telegram.snooze_minutes", (list,), False),
     ("sync", (dict,), False),
     ("sync.enabled", (bool,), False),
     ("athena", (dict,), False),

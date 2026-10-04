@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -840,7 +841,17 @@ class HestiaBuilder:
             return None
 
     def build_telegram_bot(
-        self, process_fn, stt: Optional[HestiaSTT], memory: Optional[Any] = None
+        self,
+        process_fn,
+        stt: Optional[HestiaSTT],
+        memory: Optional[Any] = None,
+        *,
+        classify_fn=None,
+        pending_fn=None,
+        snooze_fn=None,
+        ingest_photo_fn=None,
+        ingest_document_fn=None,
+        should_push_fn=None,
     ) -> Optional[Any]:
         """
         Start the Telegram bot in-process, using the already-initialised
@@ -862,6 +873,15 @@ class HestiaBuilder:
         placeholder was never actually resolved — it just looked like it
         worked. Removed rather than "fixed" via interpolation, since
         secrets belong in the environment regardless.)
+
+        The keyword hooks are what turn the bot from a text relay into the
+        full Telegram front-end (backlog #191-#196); each is optional and the
+        bot degrades to its plain behaviour without it. Config under
+        ``telegram:`` (all optional, see laptop_config.example.yaml):
+        ``roles`` / ``role_policies`` (per-chat intent scoping, #194),
+        ``push_notifications`` (mirror reminders and other proactive
+        announcements to the owner chats, with Snooze/Done buttons, #191) and
+        ``snooze_minutes``.
         """
         telegram_cfg = self.config.get("telegram", {})
         if not telegram_cfg.get("enabled", False):
@@ -883,7 +903,18 @@ class HestiaBuilder:
                 allowed_chat_ids=telegram_cfg.get("allowed_chat_ids"),
                 stt=stt,
                 memory=memory,
+                roles=telegram_cfg.get("roles"),
+                role_policies=telegram_cfg.get("role_policies"),
+                classify_fn=classify_fn,
+                pending_fn=pending_fn,
+                snooze_fn=snooze_fn,
+                ingest_photo_fn=ingest_photo_fn,
+                ingest_document_fn=ingest_document_fn,
+                should_push_fn=should_push_fn,
+                snooze_minutes=telegram_cfg.get("snooze_minutes") or (10, 60),
             )
+            if telegram_cfg.get("push_notifications", False):
+                bot.attach_event_bus(bus)
             bot.start()
             logger.info("Telegram bot started.")
             return bot
@@ -1096,7 +1127,15 @@ class Hestia:
             voice_state=self.voice_state,
         )
 
-        self.telegram_bot = builder.build_telegram_bot(self.process_text, self.stt, self.mnemosyne)
+        self.telegram_bot = builder.build_telegram_bot(
+            self.process_text, self.stt, self.mnemosyne,
+            classify_fn=self._classify_for_telegram,
+            pending_fn=self._has_pending_confirmation,
+            snooze_fn=self._telegram_snooze,
+            ingest_photo_fn=self._telegram_ingest_photo,
+            ingest_document_fn=self._telegram_ingest_document,
+            should_push_fn=lambda: not self.voice_state.dnd_active(),
+        )
 
         builder.start_sync_api(
             self.mnemosyne, diagnostics=self.diagnostics, nlu=self.nlu
@@ -1234,6 +1273,99 @@ class Hestia:
         return (
             f"While notifications were muted, {n} came in. " + " ".join(held)
         )
+
+    # ------------------------------------------------------------------
+    # Telegram hooks (backlog #191-#196). The bot owns the transport; these
+    # give it the bits of Hestia it needs without it importing main.
+    # ------------------------------------------------------------------
+
+    def _classify_for_telegram(self, text: str) -> list[str]:
+        """Every intent *text* could trigger, so a restricted chat's role can be
+        enforced before anything runs (#194). Mirrors process_text: the whole
+        message and, for a compound query, each half are classified, and all of
+        them must be allowed. Assistant-voice controls (do-not-disturb, "repeat
+        that") run before NLU and act on the owner's machine, so they are
+        reported as an unregistered intent and a restricted chat is refused."""
+        cleaned = _clean_input(text)
+        if not cleaned:
+            return []
+        if parse_voice_command(cleaned) is not None:
+            return ["voice_control"]
+        context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
+        candidates = [cleaned]
+        segments = candidate_segments(cleaned)
+        if len(segments) == 2:
+            candidates.extend(segments)
+        return [self.nlu.understand(c, context).get("intent", "chat") for c in candidates]
+
+    def _has_pending_confirmation(self) -> bool:
+        """True while the orchestrator is waiting on a yes/no (drives the
+        Confirm/Cancel buttons and keeps confirmations with the chat that
+        raised them)."""
+        return getattr(self.orchestrator, "_pending", None) is not None
+
+    def _telegram_snooze(self, minutes: int) -> str:
+        """Snooze button: snooze the most recently fired reminder, directly
+        through Chronos rather than re-parsing "snooze for N minutes" with NLU."""
+        result = self.chronos.handle(
+            "snooze_reminder",
+            {"duration": f"{minutes} minutes", "raw_query": f"snooze {minutes} minutes"},
+            {},
+        )
+        return (result or {}).get("response") or "I couldn't snooze that reminder."
+
+    def _telegram_inbox(self, name: str) -> Path:
+        path = Path(__file__).resolve().parent / "data" / "telegram_inbox" / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _telegram_ingest_photo(self, path: str, filename: str) -> str:
+        """A photo (or image sent as a file) from Telegram → Iris. Each upload
+        gets its own folder under data/telegram_inbox/ and Iris ingests just
+        that folder, so nothing is added to the library folder Iris scans and
+        the result describes this one file. Kept only if Iris stored it."""
+        if self.iris is None:
+            return "Photo filing isn't available right now (Iris is off)."
+        folder = self._telegram_inbox("photos") / f"{int(time.time() * 1000)}"
+        folder.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, folder / Path(filename).name)
+        try:
+            stats = self.iris.ingest(source_dir=str(folder)) or {}
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        if stats.get("ingested"):
+            return "Saved to your photo library."
+        shutil.rmtree(folder, ignore_errors=True)
+        if stats.get("exceeds_quota"):
+            return "Your photo library is over its storage quota, so I didn't add that."
+        if stats.get("duplicates_skipped"):
+            return "That photo is already in your library."
+        return "I couldn't add that to your photo library."
+
+    def _telegram_ingest_document(self, path: str, filename: str) -> str:
+        """A PDF from Telegram → Athena's document index under a "Telegram" subject."""
+        if self.athena is None:
+            return "Document filing isn't available right now (Athena is off)."
+        from modules.athena.config import get_config as get_athena_config
+
+        folder = Path(str(get_athena_config().data_dir)) / "Telegram"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / Path(filename).name
+        shutil.copyfile(path, target)
+        chunks, status = self.athena.rag.ingest_file({
+            "full_path": str(target),
+            "file_name": target.name,
+            "subject": "Telegram",
+            "module": "General",
+            "relative_path": os.path.join("Telegram", target.name),
+        })
+        if status == "failed":
+            return f"I couldn't read {target.name}."
+        if status == "unchanged":
+            return f"{target.name} is already in your documents."
+        verb = "Updated" if status == "updated" else "Added"
+        return f"{verb} {target.name} in your documents ({chunks} chunks). You can ask me about it now."
 
     def _try_local_command(self, cleaned: str, voice_turn: bool) -> Optional[str]:
         """Handle assistant-voice control phrases ("repeat that", "do not

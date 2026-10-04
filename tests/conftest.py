@@ -122,7 +122,29 @@ except Exception:  # ImportError, or anything else raised at import time
 # ---------------------------------------------------------------------------
 # python-telegram-bot (core/telegram_bot.py)
 # ---------------------------------------------------------------------------
-_telegram = _install_fake_module("telegram", Update=MagicMock(name="telegram.Update"))
+class _FakeInlineKeyboardButton:
+    """Records what the bot put on a button so tests can read it back."""
+
+    def __init__(self, text, callback_data=None, **_kwargs):
+        self.text = text
+        self.callback_data = callback_data
+
+
+class _FakeInlineKeyboardMarkup:
+    def __init__(self, inline_keyboard, **_kwargs):
+        self.inline_keyboard = inline_keyboard
+
+
+_telegram = _install_fake_module(
+    "telegram",
+    Update=MagicMock(name="telegram.Update"),
+    InlineKeyboardButton=_FakeInlineKeyboardButton,
+    InlineKeyboardMarkup=_FakeInlineKeyboardMarkup,
+)
+_install_fake_module(
+    "telegram.constants",
+    ChatAction=types.SimpleNamespace(TYPING="typing", UPLOAD_PHOTO="upload_photo"),
+)
 
 
 class _FakeApplicationBuilder:
@@ -147,12 +169,15 @@ _install_fake_module(
     ApplicationBuilder=_FakeApplicationBuilder,
     CommandHandler=MagicMock(name="telegram.ext.CommandHandler"),
     MessageHandler=MagicMock(name="telegram.ext.MessageHandler"),
+    CallbackQueryHandler=MagicMock(name="telegram.ext.CallbackQueryHandler"),
     ContextTypes=types.SimpleNamespace(DEFAULT_TYPE=MagicMock(name="ContextTypes.DEFAULT_TYPE")),
     filters=types.SimpleNamespace(
         TEXT=MagicMock(name="filters.TEXT"),
         COMMAND=MagicMock(name="filters.COMMAND"),
         VOICE=MagicMock(name="filters.VOICE"),
         LOCATION=MagicMock(name="filters.LOCATION"),
+        PHOTO=MagicMock(name="filters.PHOTO"),
+        Document=types.SimpleNamespace(ALL=MagicMock(name="filters.Document.ALL")),
     ),
 )
 # Note: `filters.TEXT & ~filters.COMMAND` is evaluated at HestiaTelegramBot.__init__

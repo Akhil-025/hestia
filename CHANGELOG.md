@@ -12,6 +12,53 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Telegram bot: inline buttons, photo/PDF filing, generated /help, per-chat roles, typing indicator, voice notes (#191–#196)
+
+No registry change. New tests: 104 in `tests/test_telegram_bot.py` (133 in the file) and 32 in
+`tests/test_telegram_main_hooks.py`. Full suite compared with the original zip: 3270 → 3406 passed, and the same
+16 failures and 15 collection errors in both (missing optional packages in this sandbox: chromadb, psycopg2,
+vectorbt and others), so nothing regressed. `python-telegram-bot` is faked in `tests/conftest.py`, as before.
+
+### Changed
+
+- **Replies run in a worker thread** instead of on the bot's event loop, so one slow request (ingestion, a
+  backtest) no longer blocks every other chat. Calls into `process_text` are serialised with a lock.
+- Long replies are split at line breaks to fit Telegram's 4096-character limit instead of failing.
+- **Fixed:** a failed download in `_handle_voice` raised `UnboundLocalError` (the `subprocess` import sat inside
+  the `try`). The test that documented the bug now asserts the fix. Temp audio files are always removed.
+- `/start` mentions `/help`.
+
+### Added
+
+- **Inline buttons (#191, partial).** Confirm / Cancel when the orchestrator is waiting on a yes/no; Snooze (10m,
+  1h, configurable) / Done on pushed reminders. `telegram.push_notifications` (default off) mirrors `speak`
+  events to owner chats, skipping them during do-not-disturb. Snooze calls Chronos directly.
+- **Photo and PDF handling (#192, partial).** Photo → Iris (own folder under `data/telegram_inbox/`), PDF →
+  Athena (subject "Telegram"), image-as-file → Iris, anything else declined. 20 MB limit.
+- **`/help` (#193).** Generated from `INTENT_MODULE_MAP`, filtered by role; `/help <section>` for one module.
+- **Per-chat roles (#194).** `telegram.roles` and `telegram.role_policies`. Fail-closed; compound messages are
+  checked part by part; restricted chats can't share location, answer others' confirmations, or run
+  voice-control commands; pushes go only to unrestricted chats.
+- **Typing indicator (#195).** Refreshed while a request runs.
+- **Voice notes (#196).** Transcript now goes through the same role check and buttons as typed text.
+- `main.py`: `build_telegram_bot` takes optional hooks; `Hestia._classify_for_telegram`,
+  `_has_pending_confirmation`, `_telegram_snooze`, `_telegram_ingest_photo`, `_telegram_ingest_document`.
+- Config keys `telegram.roles`, `role_policies`, `push_notifications`, `snooze_minutes` (validated; documented in
+  `laptop_config.example.yaml`).
+
+### Not done / not verified
+
+- **Not run against live Telegram.** The handlers, the Bot API push and the real `python-telegram-bot` 
+  `CallbackQueryHandler`, `filters.Document.ALL` and `send_action` calls are tested with the library faked.
+- The Iris and Athena hooks are tested against mocks, not real instances (chromadb and CLIP aren't installed here).
+- Role scoping depends on the NLU classifying a message the same way before and after; a message whose
+  classification changes between the check and the run is not re-checked.
+- The pending-confirmation owner is tracked in the bot and resets if the bot restarts mid-confirmation.
+- `config/laptop_config.yaml` (your real config) was not changed; copy the new keys from the example if wanted.
+- #223 (alert on repeated module errors) and #256 (streak celebrations) could reuse `push()` but are not done.
+
+---
+
 ## [Unreleased] — Pluto: forecast ranges, rebalancing, receipts, explain-holding, backtest sweeps, throttle visibility, score breakdown (#139–#145)
 
 Registry version 2.22.0 (seven new `pluto_` intents, also in `config/nlu_prompt.txt` with examples and a

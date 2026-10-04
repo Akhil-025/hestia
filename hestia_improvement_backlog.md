@@ -4,13 +4,13 @@
 
 Each item is a single sentence so you can copy rows straight into an issue tracker. `[Q]` = quick win (hours), `[M]` = medium (a weekend), `[L]` = large (multi-week project).
 
-**Status legend** (source: `CHANGELOG.md` in `hestia_files - Copy.zip` only; code and tests were not independently verified)
+**Status legend** (source: `CHANGELOG.md` in `hestia_files - Copy.zip` only; code and tests were not independently verified, **except section 18 (Telegram Bot), which was implemented and tested in the same pass that annotated it**)
 
 - ✅ = completed per the changelog
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 156 ✅ + 21 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
+**Tally: 160 ✅ + 23 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 18 (Telegram Bot, #191–#196), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -29,6 +29,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 15. Metis & Orpheus | 6 of 6 |
 | 10. Artemis | 8 done (`#122`–`#125`, `#127`–`#130`), 1 partial (`#121`), of 10 (`#126` is counted under Apollo cross-module) |
 | Apollo cross-module | 5 done (`#126`, `#149`, `#159`, `#161`, `#233`), 1 partial (`#183`) |
+| 18. Telegram Bot | 4 done (`#193`–`#196`), 2 partial (`#191`, `#192`), of 6 |
 | 20. Testing & QA | 8 done (`#207`–`#210`, `#212`–`#215`), 1 partial (`#211`), of 9 |
 | 26. Docs | 2 of 6 (`#245`, `#249`) |
 | 29. Judgment testing | 1 of 3 (`#259`) |
@@ -281,12 +282,12 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 18. Telegram Bot
 
-191. `[Q]` Add inline buttons for common actions (confirm/cancel, snooze reminder) instead of text-only replies.
-192. `[M]` Add photo-message handling routed straight to Iris ingestion, and PDF-message handling routed to Athena — natural extensions of the existing `process_paper` pattern.
-193. `[Q]` Add a `/help` command that's auto-generated from the intent registry instead of hand-maintained.
-194. `[M]` Add per-chat-id role scoping (you vs. a family member gets a different allowed intent set) building on `allowed_chat_ids`.
-195. `[Q]` Add typing indicators while a long-running intent (document ingestion, backtest) executes.
-196. `[M]` Add voice-note support in Telegram (send audio → STT → same NLU pipeline as the desktop voice mode).
+191. 🟡 `[Q]` Add inline buttons for common actions (confirm/cancel, snooze reminder) instead of text-only replies. *(partial: Confirm/Cancel buttons appear exactly when the orchestrator is waiting on a yes/no, and a fired reminder pushed to Telegram gets Snooze/Done buttons; taps go through the same path as the typed "yes"/"no"/"snooze" and are tested with the Telegram library faked. Reminder and other `speak` events are mirrored to the owner chats only when `telegram.push_notifications` is on (off by default), and are skipped during do-not-disturb. The push uses the Bot API over `requests` and, like the handlers, has not been run against live Telegram.)*
+192. 🟡 `[M]` Add photo-message handling routed straight to Iris ingestion, and PDF-message handling routed to Athena — natural extensions of the existing `process_paper` pattern. *(partial: a photo goes to Iris, a PDF to Athena (subject "Telegram"), and an image sent as a file to Iris; other file types are declined, 20 MB limit, filenames sanitised, temp files removed. The Iris and Athena hooks are tested against mocks matching their real signatures, not a real Iris/Athena instance or live Telegram. Each photo is ingested from its own folder under `data/telegram_inbox/`, so nothing lands in the folder Iris scans.)*
+193. ✅ `[Q]` Add a `/help` command that's auto-generated from the intent registry instead of hand-maintained. *(`/help` is built from `INTENT_MODULE_MAP`, grouped by module and filtered by the chat's role; `/help <section>` lists every intent in one module. A test checks every registered module appears.)*
+194. ✅ `[M]` Add per-chat-id role scoping (you vs. a family member gets a different allowed intent set) building on `allowed_chat_ids`. *(`telegram.roles` maps chat id → role and `telegram.role_policies` gives each role `allow_modules` / `deny_modules` / `deny_intents`; chats with no role are unrestricted "owner", so existing configs behave as before. Checks fail closed (classifier error, unregistered intent, or missing policy means refusal). Every part of a compound message is classified, photos count as `iris` and PDFs as `athena`, restricted roles can't send location shares, and they can't answer a confirmation raised by someone else. Voice-control phrases like "do not disturb" are refused to restricted chats. See `laptop_config.example.yaml`.)*
+195. ✅ `[Q]` Add typing indicators while a long-running intent (document ingestion, backtest) executes. *("typing…" is refreshed every few seconds while a request runs, and the request now runs off the event loop so a slow intent no longer freezes other chats. Calls into `process_text` are serialised with a lock because it isn't built for concurrent callers. Long replies are split to fit Telegram's 4096-character limit.)*
+196. ✅ `[M]` Add voice-note support in Telegram (send audio → STT → same NLU pipeline as the desktop voice mode). *(voice notes already worked; this pass moved the `subprocess`/`wave` imports to module level, fixing a real `UnboundLocalError` when the download failed before ffmpeg ran, always removes the temp OGG/WAV files, runs ffmpeg + STT off the event loop, and sends the transcript through the same role check and button logic as typed text.)*
 
 ## 19. Security & Privacy
 
