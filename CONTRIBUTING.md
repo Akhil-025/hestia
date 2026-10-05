@@ -297,6 +297,26 @@ recoverable instead of silent.
 
 ---
 
+## Cross-module reasoning (conference, what-if, audit trail)
+
+Some answers span modules. They are built in the orchestrator layer, not in a module, so the rule that
+**no module calls another** still holds.
+
+- **Hecate decides, the orchestrator convenes.** Hecate marks a decision `conference=[...]`; it never calls a
+  module. `HestiaOrchestrator.call_module()` is the one sanctioned way for a cross-module layer to read a module,
+  and it goes through the module's circuit breaker.
+- **Every conference lens must be a pure read.** `core/conference.py`'s `LENSES` names one intent per module. If you
+  add one, it must not write, schedule or call an LLM inside the module. (`decision_support` is not a lens for
+  that reason.) `tests/test_decision_engine.py` checks each lens still exists in its module.
+- **Show the working.** `core/whatif.py` reports arithmetic on logged data and says "I can't project that" for
+  anything it can't compute. Do not add guesses or random draws; Ares's `simulate_outcomes` is the place for those.
+- **Add a trace line when you add a Hecate check.** `_decide` appends one string to `trace` per thing examined,
+  whether or not it decided. That list is what `audit_routing` shows the user.
+- Both layers have kill switches (`conference.enabled`, `whatif.enabled`) and leave core's own honest reply in
+  place if anything fails.
+
+---
+
 ## Mnemosyne (memory & knowledge)
 
 - **Decay flags, never deletes.** `run_decay_check` marks a fact `stale`
@@ -444,7 +464,9 @@ recoverable instead of silent.
    It flags a registry/Hecate disagreement and a `can_handle()` rejection
    explicitly, because those are the two usual causes.
 2. Ask her: "why did you route that there?" (`explain_routing`) — same
-   information, mid-conversation, and it works in voice mode.
+   information, mid-conversation, and it works in voice mode. "What did you
+   check before answering that?" (`audit_routing`) gives the full ordered
+   list, including the checks that didn't decide anything.
 3. `python main.py --verbose` for Hecate's tier-by-tier debug trace.
 4. Check `logs/routing.jsonl` for the pattern across many queries rather
    than one.

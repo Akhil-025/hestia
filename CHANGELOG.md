@@ -12,6 +12,61 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Hecate decision engine: conference, what-if, routing audit, weekly focus (#158, #160, #162, #163)
+
+Registry 2.22.0 → 2.23.0: new intents `audit_routing`, `conference`, `what_if` (core) and `weekly_focus` (Chronos).
+New tests: 138 in `tests/test_decision_engine.py`. Full suite compared with the original zip: 3320 → 3464 passed
+and the same 102 failures and 15 collection errors before and after (missing optional packages in this sandbox,
+and pytest itself, which was unavailable here, so the suite was run through a small pytest-compatible shim rather
+than the real thing), so nothing regressed.
+
+### Added
+
+- **Routing audit trail (#162).** `HecateEngine.decide()` now returns `checked`: an ordered list of everything it
+  examined, including the checks that did not decide (inactive owning module, text triggers that missed, the
+  confidence gate). `Diagnostics.record_classification` stores it and `audit_last()` reads it back, so "what did you
+  check before answering that?" (`audit_routing`) lists the steps in order. `explain_routing` stays the short
+  one-line version. Both skip over each other and look at the last real query. Records written before this change
+  have no trail and say so.
+- **Conference (#158).** `conference` intent. Hecate picks 2–3 modules whose data bears on the topic (or uses
+  `entities.modules`) and marks the decision `conference=[...]`; `core/conference.py` asks each for one read-only
+  view through `HestiaOrchestrator.call_module()` (same circuit breakers as a normal dispatch), lists the views
+  verbatim and adds a short summary. Needs at least two modules with something recorded; otherwise it says so.
+  It surfaces Apollo-vs-Artemis disagreement from `core/consensus.py` and never picks a winner.
+  Config: `conference.enabled`, `conference.llm_summary`.
+- **What-if (#160).** `what_if` intent, `core/whatif.py`. Plain arithmetic on existing data, with the working
+  shown: cutting a recurring charge (Pluto: money freed over 3/6/12 months, share of budget, effect on today's
+  safe-to-spend), dropping a habit (Artemis: streak lost, 30-day rate, nearby Apollo workouts or goal), changing
+  sleep (Apollo: new 7-night average against the burnout check's 6h line). Anything else gets "I can't project
+  that" instead of an invented number. Read-only. Config: `whatif.enabled`.
+- **Weekly focus (#163).** `weekly_focus` intent in Chronos. Ranks overdue and due goals, calendar deadlines,
+  overdue reminders and streaks about to break into the few that need attention this week. Goals are also scored
+  by how many open (non-busy) calendar days remain before they are due. Rules are plain and documented in
+  `modules/chronos/agenda.py`; a missing source adds a note and the rest still answer.
+- `HestiaOrchestrator.attach_conference`, `attach_whatif`, `call_module`; `CoreModule` answers `audit_routing`
+  and says so honestly when the conference or what-if layer is not attached.
+- NLU prompt entries and aliases for all four intents.
+
+### Changed
+
+- Hecate's decision dict has two new keys (`conference`, `checked`); the two tests that pin its exact shape were
+  updated.
+- Ares's `decision_support` is deliberately not a conference lens because it saves the decision and schedules a
+  reminder; the conference reads `outcome_stats` instead.
+
+### Not done / not verified
+
+- **Not run against a live Ollama model.** The conference summary is tested with a fake; with `llm_summary: true`
+  and the model down, it falls back to the plain summary.
+- **`main.py` wiring is untested here.** `tests/test_telegram_main_hooks.py` and the other `main.py` tests cannot
+  import in this sandbox. The changes compile and the objects they construct are covered by their own tests.
+- Conference topic matching is a small word list in `HecateEngine._CONFERENCE_TOPICS`; topics it does not cover
+  need `entities.modules` from the NLU or the user naming the areas.
+- What-if does not cover quitting a job, buying something, or moving; those are decisions for Ares, not
+  projections from logged data.
+
+---
+
 ## [Unreleased] — Telegram bot: inline buttons, photo/PDF filing, generated /help, per-chat roles, typing indicator, voice notes (#191–#196)
 
 No registry change. New tests: 104 in `tests/test_telegram_bot.py` (133 in the file) and 32 in

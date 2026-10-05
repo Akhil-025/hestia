@@ -144,6 +144,8 @@ from core.browser_agent import HestiaBrowserAgent
 from core.event_bus import bus
 from core.heartbeat import HestiaHeartbeat
 from core.consensus import ConsensusEngine
+from core.conference import Conference, ollama_synthesizer
+from core.whatif import WhatIfEngine
 from core.db_maintenance import DBMaintenance
 from core.llm import HestiaLLM
 from core.nlu import HestiaNLU
@@ -603,13 +605,34 @@ class HestiaBuilder:
         # Backlog #159: surface disagreements between Apollo ("rest") and
         # Artemis ("push"). Append-only; `consensus.enabled: false` kills it.
         consensus_cfg = self.config.get("consensus") or {}
+        consensus_engine = None
         if consensus_cfg.get("enabled", True) and hasattr(orchestrator, "attach_consensus"):
-            orchestrator.attach_consensus(
-                ConsensusEngine(
-                    apollo=apollo,
-                    artemis=artemis,
-                    intents=consensus_cfg.get("intents") or None,
+            consensus_engine = ConsensusEngine(
+                apollo=apollo,
+                artemis=artemis,
+                intents=consensus_cfg.get("intents") or None,
+            )
+            orchestrator.attach_consensus(consensus_engine)
+        # Backlog #158 / #160: cross-module reasoning, convened here because
+        # this is where every module is in hand. Both are read-only, and both
+        # have a kill switch. Hecate decides who sits at a conference; this
+        # only supplies the means to ask them.
+        conference_cfg = self.config.get("conference") or {}
+        if conference_cfg.get("enabled", True) and hasattr(orchestrator, "attach_conference"):
+            orchestrator.attach_conference(
+                Conference(
+                    orchestrator.call_module,
+                    synthesize=(
+                        ollama_synthesizer(self.ollama_cfg)
+                        if conference_cfg.get("llm_summary", True) else None
+                    ),
+                    consensus=consensus_engine,
                 )
+            )
+        whatif_cfg = self.config.get("whatif") or {}
+        if whatif_cfg.get("enabled", True) and hasattr(orchestrator, "attach_whatif"):
+            orchestrator.attach_whatif(
+                WhatIfEngine(pluto=pluto, artemis=artemis, apollo=apollo)
             )
 
         # Drop-in skills (backlog #9): single-file BaseModule subclasses
@@ -1795,6 +1818,7 @@ class Hestia:
             reason=decision.get("reason", ""),
             latency_ms=latency_ms,
             source=nlu_result.get("source", "nlu"),
+            checked=decision.get("checked"),
         )
 
     def resolve_only(self, text: str) -> dict:

@@ -416,3 +416,238 @@ def format_concerns(concerns: list[WeatherConcern], tz: Any) -> str:
             f"({c.probability}% chance), which could affect '{c.item.text}'{when}."
         )
     return " ".join(lines)
+
+# ---------------------------------------------------------------------------
+# What actually needs attention this week (#163)
+# ---------------------------------------------------------------------------
+#
+# "What's on my plate" (above) lists everything for one day. This answers a
+# different question: of everything coming up in the next week, which few
+# things actually need *attention*, and why those? It reads the same three
+# sources (Chronos reminders, Hermes calendar, Artemis goals/habits) and ranks
+# them with plain, inspectable rules rather than a model.
+#
+# The "critical path" part is the calendar. A goal due Friday that is 30% done
+# is a different problem when Wednesday and Thursday are full of meetings than
+# when they're empty, so each goal is also scored by how many *open* days
+# remain before it is due.
+#
+# Rules (higher score = more pressing):
+#   goal overdue ................ 100 + days overdue (capped at 30 extra)
+#   goal due in the window ...... 50 + 30 x (1 - progress) + 2 x days closer, +10 if only 0-2 open
+#                                 days remain; -25 once it's 80%+ done
+#   reminder overdue ............ 60
+#   calendar event that is a
+#     deadline (exam, submit...) . 55 - 3 per day away
+#   habit streak ending today ... 35 + streak (capped at 21)
+#   reminder due in the window .. 25 - 2 per day away (one-off reminders only)
+
+_FOCUS_WINDOW_DAYS = 7
+_FOCUS_LIMIT = 5
+_BUSY_DAY_HOURS = 4.0
+_DEADLINE_RE = re.compile(
+    r"\b(deadline|due|exam|test|viva|submit|submission|assignment|interview|"
+    r"presentation|defen[cs]e|final|tax|renewal|expires?)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class FocusItem:
+    score: float
+    source: str                     # "goal" | "reminder" | "calendar" | "habit"
+    text: str
+    why: str
+    due: Optional[date] = None
+    open_days: Optional[int] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "score": round(self.score, 1), "source": self.source, "text": self.text,
+            "why": self.why, "due": self.due.isoformat() if self.due else None,
+            "open_days": self.open_days,
+        }
+
+
+@dataclass
+class WeekFocus:
+    start: date
+    days: int
+    items: list[FocusItem] = field(default_factory=list)
+    considered: int = 0              # how many candidates were scored before the cut
+    notes: list[str] = field(default_factory=list)
+
+
+def _events_in_window(
+    hermes: Any, tz: Any, today: date, days: int,
+) -> tuple[list[tuple[datetime, Optional[datetime], bool, str]], Optional[str]]:
+    """Calendar events across the window as ``(start, end, all_day, title)``."""
+    if hermes is None:
+        return [], None
+    try:
+        result = hermes.handle("list_events", {"days": days}, {})
+    except Exception:
+        logger.exception("week focus: calendar lookup raised.")
+        return [], "I couldn't read your calendar."
+    data = (result or {}).get("data") or {}
+    if "events" not in data:
+        return [], "Your calendar isn't connected, so it's not included."
+    out = []
+    for ev in data["events"]:
+        start, all_day = _parse_event_time(ev.get("start"), tz)
+        if start is None:
+            continue
+        end, _ = _parse_event_time(ev.get("end"), tz)
+        out.append((start, end, all_day, ev.get("title") or "event"))
+    return out, None
+
+
+def _busy_days(events: list, today: date, window_end: date) -> set[date]:
+    """Days in [today, window_end] too full to count as open: an all-day
+    event, or timed events adding up to _BUSY_DAY_HOURS or more."""
+    hours: dict[date, float] = {}
+    busy: set[date] = set()
+    for start, end, all_day, _title in events:
+        d = start.date()
+        if not (today <= d <= window_end):
+            continue
+        if all_day:
+            busy.add(d)
+            continue
+        if end is not None and end > start:
+            hours[d] = hours.get(d, 0.0) + (end - start).total_seconds() / 3600.0
+    busy.update(d for d, h in hours.items() if h >= _BUSY_DAY_HOURS)
+    return busy
+
+
+def build_week_focus(
+    service: Optional[ReminderService],
+    tz: Any,
+    now: datetime,
+    *,
+    hermes: Any = None,
+    artemis: Any = None,
+    days: int = _FOCUS_WINDOW_DAYS,
+    limit: int = _FOCUS_LIMIT,
+) -> WeekFocus:
+    """Rank what needs attention over the next *days* days. Any source that is
+    missing or fails just contributes a note; the rest still answer."""
+    days = max(1, min(14, int(days)))
+    today = now.astimezone(tz).date()
+    window_end = today + timedelta(days=days - 1)
+    focus = WeekFocus(start=today, days=days)
+    candidates: list[FocusItem] = []
+
+    events, note = _events_in_window(hermes, tz, today, days)
+    if note:
+        focus.notes.append(note)
+    busy = _busy_days(events, today, window_end)
+
+    # -- goals --------------------------------------------------------
+    tracker = getattr(artemis, "tracker", None)
+    if tracker is not None:
+        try:
+            goals = tracker.get_goals()
+        except Exception:
+            logger.exception("week focus: goal lookup failed.")
+            goals = {}
+            focus.notes.append("I couldn't read your goals.")
+        for name, goal in goals.items():
+            if getattr(goal, "status", "active") != "active":
+                continue
+            left = goal.days_until_due(today)
+            if left is None or left > days:
+                continue
+            pct = round(goal.progress * 100)
+            due = today + timedelta(days=left)
+            if left < 0:
+                candidates.append(FocusItem(
+                    100 + min(-left, 30), "goal", name,
+                    f"overdue by {-left} day{'s' if left != -1 else ''}, {pct}% done", due,
+                ))
+                continue
+            # Open days between now and the due date, counting the due day itself.
+            span = [today + timedelta(days=i) for i in range(left + 1)]
+            open_days = sum(1 for d in span if d not in busy)
+            score = 50 + 30 * (1 - goal.progress) + 2 * (days - left)
+            if open_days <= 2:
+                score += 10
+            if goal.progress >= 0.8:
+                score -= 25
+            when = "today" if left == 0 else f"in {left} day{'s' if left != 1 else ''}"
+            why = f"due {when}, {pct}% done"
+            if events:
+                why += (f", and only {open_days} open day{'s' if open_days != 1 else ''} "
+                        "before then" if open_days <= 2 else f", {open_days} open days before then")
+            candidates.append(FocusItem(score, "goal", name, why, due, open_days))
+
+        # -- habit streaks that end today ------------------------------
+        try:
+            default_grace = getattr(tracker, "default_grace_days", 0)
+            for name, habit in tracker.get_habits().items():
+                check = getattr(habit, "streak_ends_if_skipped_today", None)
+                if habit.streak >= 3 and callable(check) and check(today, default_grace):
+                    candidates.append(FocusItem(
+                        35 + min(habit.streak, 21), "habit", name,
+                        f"your {habit.streak}-day streak ends if it's skipped today", today,
+                    ))
+        except Exception:
+            logger.exception("week focus: habit lookup failed.")
+
+    # -- calendar deadlines -------------------------------------------
+    for start, _end, all_day, title in events:
+        d = start.date()
+        if today <= d <= window_end and _DEADLINE_RE.search(title):
+            away = (d - today).days
+            when = "today" if away == 0 else "tomorrow" if away == 1 else d.strftime("%A")
+            clock = "" if all_day else start.astimezone(tz).strftime(" at %I:%M %p").replace(" 0", " ")
+            candidates.append(FocusItem(55 - 3 * away, "calendar", title, f"on your calendar {when}{clock}", d))
+
+    # -- reminders ----------------------------------------------------
+    if service is not None:
+        try:
+            for offset in range(days):
+                day = today + timedelta(days=offset)
+                items, _skipped = reminder_items(service, day, tz, now)
+                for it in items:
+                    if offset == 0 and it.overdue:
+                        candidates.append(FocusItem(60, "reminder", it.text, "overdue", today))
+                    elif not it.detail and not it.overdue and it.when is not None:
+                        candidates.append(FocusItem(
+                            25 - 2 * offset, "reminder", it.text,
+                            f"reminder {day_label(day, today)}", day,
+                        ))
+        except Exception:
+            logger.exception("week focus: reminder lookup failed.")
+            focus.notes.append("I couldn't read your reminders.")
+
+    # One entry per (source, text): a recurring reminder or a multi-day goal
+    # mustn't fill the list with copies of itself.
+    best: dict[tuple[str, str], FocusItem] = {}
+    for c in candidates:
+        key = (c.source, c.text.strip().lower())
+        if key not in best or c.score > best[key].score:
+            best[key] = c
+    ranked = sorted(best.values(), key=lambda c: (-c.score, c.due or window_end, c.text.lower()))
+    focus.considered = len(ranked)
+    focus.items = ranked[: max(1, limit)]
+    return focus
+
+
+def format_week_focus(focus: WeekFocus) -> str:
+    if not focus.items:
+        text = (f"Nothing looks pressing over the next {focus.days} days: no overdue goals or "
+                "reminders, no deadlines on your calendar, and no streaks about to break.")
+        return " ".join([text, *focus.notes])
+    n = len(focus.items)
+    head = (f"Here {'is the one thing' if n == 1 else f'are the {n} things'} that actually "
+            f"need attention over the next {focus.days} days")
+    if focus.considered > n:
+        head += f" (out of {focus.considered} I looked at)"
+    lines = [head + "."]
+    for i, item in enumerate(focus.items, 1):
+        label = {"goal": "Goal", "habit": "Habit", "calendar": "Calendar",
+                 "reminder": "Reminder"}.get(item.source, item.source.title())
+        lines.append(f"{i}. {label}: {item.text} ({item.why}).")
+    lines.extend(focus.notes)
+    return " ".join(lines)

@@ -251,6 +251,18 @@ ares:
 consensus:
   enabled: true                      # kill switch; only appends a note on a few intents
 
+# "Weigh my budget against my sleep and goals": gathers a read-only view from 2-3 modules and
+# sets them side by side (backlog #158). Never writes anything and never picks a winner for you.
+conference:
+  enabled: true
+  llm_summary: true                  # a short LLM-written summary on top; false = plain deterministic summary
+                                     # (the module views are always listed word for word underneath)
+
+# "What if I cancel Netflix / stop meditating / sleep an hour less": arithmetic on your own logged
+# data, with the working shown (backlog #160). Read-only; no Monte Carlo (that's Ares's simulate_outcomes).
+whatif:
+  enabled: true
+
 # Off-peak SQLite housekeeping (0-5am, at most weekly per file; never deletes data).
 maintenance:
   enabled: true

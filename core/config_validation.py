@@ -184,6 +184,12 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("consensus", (dict,), False),
     ("consensus.enabled", (bool,), False),
     ("consensus.intents", (list,), False),
+    # Backlog #158 / #160: the multi-module conference and the what-if simulator.
+    ("conference", (dict,), False),
+    ("conference.enabled", (bool,), False),
+    ("conference.llm_summary", (bool,), False),
+    ("whatif", (dict,), False),
+    ("whatif.enabled", (bool,), False),
     ("maintenance", (dict,), False),
     ("maintenance.enabled", (bool,), False),
     ("maintenance.free_ratio_threshold", (int, float), False),
@@ -198,7 +204,7 @@ _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
     "google", "telegram", "sync", "athena", "iris", "mnemosyne", "hecate", "stt",
     "tts", "wake_word", "barge_in", "scheduler", "heartbeat", "skills",
     "hephaestus", "pluto", "dionysus", "apollo", "artemis", "logging",
-    "observability", "writing", "consensus", "maintenance",
+    "observability", "writing", "consensus", "conference", "whatif", "maintenance",
 })
 
 

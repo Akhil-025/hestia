@@ -291,6 +291,12 @@ class HestiaOrchestrator:
         # Backlog #159. Optional tension-surfacing layer (core/consensus.py);
         # None means off. It only ever appends a note to a reply.
         self._consensus: Optional[Any] = None
+        # Backlog #158 / #160. Orchestrator-level reasoning that spans modules
+        # (core/conference.py, core/whatif.py). The orchestrator is the only
+        # component holding every module, so it is where these are convened;
+        # None means off, and CoreModule then answers honestly that it can't.
+        self._conference: Optional[Any] = None
+        self._whatif: Optional[Any] = None
         self._ctx = OrchestratorContext()
         # Backlog #12. Default 30 minutes: long enough that a normal back-
         # and-forth conversation is never interrupted, short enough that
@@ -381,6 +387,46 @@ class HestiaOrchestrator:
     def attach_consensus(self, consensus: Optional[Any]) -> None:
         """Install (or clear, with None) the tension-surfacing layer."""
         self._consensus = consensus
+
+    def attach_conference(self, conference: Optional[Any]) -> None:
+        """Install (or clear, with None) the multi-module conference (#158)."""
+        self._conference = conference
+
+    def attach_whatif(self, whatif: Optional[Any]) -> None:
+        """Install (or clear, with None) the what-if simulator (#160)."""
+        self._whatif = whatif
+
+    def call_module(
+        self, name: str, intent: str, entities: dict, context: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Ask one registered module a question on behalf of a layer that
+        spans modules (the conference). Goes through the same per-module
+        circuit breaker as a normal dispatch, never raises, and returns the
+        module's response dict, or None if it can't be asked.
+
+        This is the one sanctioned way for cross-module reasoning to read a
+        module: a module never holds another module, the orchestrator does.
+        """
+        mod = self._modules.get(name)
+        if mod is None:
+            return None
+        try:
+            if not mod.can_handle(intent):
+                return None
+            self._breakers.before_call(name)
+        except CircuitBreakerOpen:
+            return None
+        except Exception:
+            logger.exception("call_module: %r refused %r.", name, intent)
+            return None
+        try:
+            raw = mod.handle(intent, dict(entities or {}), dict(context or {}))
+        except Exception:
+            logger.exception("call_module: %r raised for %r.", name, intent)
+            self._breakers.record_failure(name)
+            return None
+        self._breakers.record_success(name)
+        return raw if isinstance(raw, dict) else None
 
     def dispatch(self, raw_query: str, nlu_result: dict[str, Any]) -> str:
         """
@@ -535,6 +581,15 @@ class HestiaOrchestrator:
                         response.response,
                         secondary_ctx,
                     )
+
+            # Cross-module reasoning (#158, #160): Hecate sent these to core
+            # because no single module owns them; the real answer is built
+            # here, where every module is reachable. Anything that goes wrong
+            # leaves core's own honest "couldn't" reply in place.
+            if primary_name == "core" and intent in ("conference", "what_if"):
+                self._cross_module_reply(
+                    response, intent, raw_query, entities, decision, context
+                )
 
             # Tension surfacing (#159): append-only, whitelisted intents
             # only, and never allowed to break the reply it decorates.
@@ -872,6 +927,36 @@ class HestiaOrchestrator:
         with self._lock:
             self._last_decision = dict(decision)
         return decision
+
+    def _cross_module_reply(
+        self,
+        response: "DispatchResult",
+        intent: str,
+        raw_query: str,
+        entities: dict[str, Any],
+        decision: dict[str, Any],
+        context: dict[str, Any],
+    ) -> None:
+        """Replace *response* in place with the conference / what-if result
+        when that layer is attached and produced one. Never raises."""
+        try:
+            if intent == "conference":
+                seats = list(decision.get("conference") or [])
+                if self._conference is None or len(seats) < 2:
+                    return
+                result = self._conference.convene(raw_query, seats, context)
+            else:
+                if self._whatif is None:
+                    return
+                result = self._whatif.project(raw_query, entities)
+            text = str((result or {}).get("response") or "").strip()
+            if not text:
+                return
+            response.response = text
+            response.data = dict((result or {}).get("data") or {})
+            response.confidence = float((result or {}).get("confidence") or response.confidence)
+        except Exception:
+            logger.exception("%s failed; keeping the plain reply.", intent)
 
     # ------------------------------------------------------------------
     # Private – context enrichment

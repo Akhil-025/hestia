@@ -419,6 +419,44 @@ explain_routing:
   - phrase: "explain your routing"
     match: exact
 
+audit_routing:
+  - "what did you check"
+  - "what did you look at before"
+  - "audit that routing"
+  - "audit your routing"
+  - "show me your checks"
+  - "walk me through what you checked"
+
+conference:
+  - "hold a conference"
+  - "set my budget and sleep side by side"
+  - "weigh my budget against"
+  - "weigh up my budget"
+  - "look at it from every angle"
+  - "look at this from every angle"
+  - "get every module's view"
+
+what_if:
+  - "what if i cancel"
+  - "what if i stop"
+  - "what if i stopped"
+  - "what if i skip"
+  - "what if i drop"
+  - "what if i slept"
+  - "what if i sleep"
+  - "what happens if i cancel"
+  - "what happens if i stop"
+  - "what happens if i skip"
+
+weekly_focus:
+  - "what needs my attention this week"
+  - "what actually needs attention"
+  - "what needs attention this week"
+  - "what should i focus on this week"
+  - "what matters this week"
+  - "my critical path this week"
+  - "what's critical this week"
+
 report_mistake:
   - phrase: "that was wrong"
     match: exact

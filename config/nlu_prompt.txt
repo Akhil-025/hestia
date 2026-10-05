@@ -92,7 +92,8 @@ hephaestus_watch_page, hephaestus_list_watches, hephaestus_stop_watching, hephae
 hephaestus_fill_form, hephaestus_summarize_repo,
 read_email, send_email, list_events, create_event, delete_events,
 email_digest, draft_email, search_email, check_schedule_gaps, find_meeting_slot, inbox_zero,
-modules_status, explain_routing, report_mistake, clarify_intent
+modules_status, explain_routing, audit_routing, report_mistake, clarify_intent,
+conference, what_if, weekly_focus
 
 ---
 
@@ -134,6 +135,20 @@ User: aaj Mumbai mein mausam kaisa hai
 #  - report_mistake is the user telling Hestia she got the LAST answer
 #    wrong. It is not a request to redo the task; log it and acknowledge.
 #    Put any extra detail the user gave in entities.note.
+#  - audit_routing asks WHAT was checked, step by step, before the previous
+#    answer ("what did you check before answering that"). explain_routing is
+#    the short "why did it go there"; audit_routing is the full ordered list.
+#  - conference is for a decision that genuinely spans several areas of the
+#    user's life (money + health + goals) and where they want the views set
+#    side by side. A question about ONE area is that area's own intent, never
+#    a conference. Put any areas the user named in entities.modules as a
+#    list of module names (pluto, ares, apollo, artemis, chronos).
+#  - what_if is a hypothetical about changing ONE thing the user already
+#    does or pays for ("what if I cancel netflix", "what if I stop
+#    meditating", "what if I slept an hour less"). Not a decision to log
+#    (that is ares_decision_support) and not a request to actually cancel.
+#  - weekly_focus asks which few things need attention over the coming week.
+#    A plain "what's on my plate today" is get_agenda, not weekly_focus.
 
 User: module status
 {"intent": "modules_status", "entities": {}, "response": "Checking every module.", "confidence": 0.97}
@@ -158,6 +173,27 @@ User: that was wrong
 
 User: that was wrong, I meant my sleep log not my workout log
 {"intent": "report_mistake", "entities": {"note": "meant my sleep log not my workout log"}, "response": "Logged as wrong.", "confidence": 0.95}
+
+User: what did you check before answering that
+{"intent": "audit_routing", "entities": {}, "response": "Here's what I checked.", "confidence": 0.95}
+
+User: weigh my budget against my sleep and my goals before I take this on
+{"intent": "conference", "entities": {"modules": ["pluto", "apollo", "artemis"]}, "response": "Setting those side by side.", "confidence": 0.92}
+
+User: should I cut my hours to study for GATE, look at it from every angle
+{"intent": "conference", "entities": {}, "response": "Setting those side by side.", "confidence": 0.88}
+
+User: what if I cancel my netflix subscription
+{"intent": "what_if", "entities": {}, "response": "Working that out.", "confidence": 0.94}
+
+User: what if I only slept 5 hours a night
+{"intent": "what_if", "entities": {}, "response": "Working that out.", "confidence": 0.93}
+
+User: what happens if I stop meditating
+{"intent": "what_if", "entities": {"habit": "meditating"}, "response": "Working that out.", "confidence": 0.92}
+
+User: what actually needs my attention this week
+{"intent": "weekly_focus", "entities": {}, "response": "Looking across your week.", "confidence": 0.95}
 
 ---
 

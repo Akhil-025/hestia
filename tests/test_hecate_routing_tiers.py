@@ -53,8 +53,12 @@ class TestInterface:
 
     def test_decision_shape_and_defaults(self):
         d = decide("hello there")
-        assert set(d) == {"primary", "secondary", "confidence", "reason", "synthesize", "intent"}
+        assert set(d) == {"primary", "secondary", "confidence", "reason", "synthesize", "intent",
+                          "conference", "checked"}
         assert d["synthesize"] is False and d["intent"] is None and d["secondary"] == []
+        # Backlog #158 / #162: no conference unless asked for; an audit trail always.
+        assert d["conference"] is None
+        assert isinstance(d["checked"], list) and d["checked"]
 
     def test_missing_confidence_means_exactly_one_half(self):
         d = H.decide("hello there", {"intent": "chat"}, ALL)
@@ -272,5 +276,6 @@ class TestConfidenceTiers:
 
     def test_route_helper_defaults(self):
         r = HecateEngine._route("core", [], 0.3, "why")
+        # _route() builds the routing fields only; decide() adds "checked" afterwards.
         assert r == {"primary": "core", "secondary": [], "confidence": 0.3, "reason": "why",
-                     "synthesize": False, "intent": None}
+                     "synthesize": False, "intent": None, "conference": None}

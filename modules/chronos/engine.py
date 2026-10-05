@@ -315,6 +315,8 @@ class ChronosEngine(BaseModule):
             "list_reminders", "cancel_reminder", "snooze_reminder",
             "get_agenda", "mark_holiday", "unmark_holiday", "save_place",
             "export_calendar", "import_calendar", "weather_plan",
+            # Backlog #163: the few things that need attention this week
+            "weekly_focus",
         }
     )
 
@@ -473,6 +475,8 @@ class ChronosEngine(BaseModule):
             return self._snooze_reminder(entities)
         if intent == "get_agenda":
             return self._get_agenda(entities)
+        if intent == "weekly_focus":
+            return self._weekly_focus(entities)
         if intent == "mark_holiday":
             return self._mark_holiday(entities, add=True)
         if intent == "unmark_holiday":
@@ -988,6 +992,30 @@ class ChronosEngine(BaseModule):
                 "notes": agenda.notes,
             },
             confidence=0.95,
+        )
+
+    # ------------------------------------------------------------------
+    # Private – what needs attention this week (#163)
+    # ------------------------------------------------------------------
+
+    def _weekly_focus(self, entities: dict) -> dict:
+        """Rank the next seven days' goals, deadlines, reminders and streaks
+        into the few that need attention. Read-only; works with whichever
+        sources are attached."""
+        now = self._now_in(self._tz)
+        focus = agenda_mod.build_week_focus(
+            self._svc, self._tz, now, hermes=self._hermes, artemis=self._artemis,
+        )
+        return _ok(
+            agenda_mod.format_week_focus(focus),
+            data={
+                "start": focus.start.isoformat(),
+                "days": focus.days,
+                "considered": focus.considered,
+                "items": [i.to_dict() for i in focus.items],
+                "notes": focus.notes,
+            },
+            confidence=0.9,
         )
 
     # ------------------------------------------------------------------

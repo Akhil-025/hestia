@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 160 ✅ + 23 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 18 (Telegram Bot, #191–#196), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
+**Tally: 164 ✅ + 23 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 14 (Hecate, #158, #160, #162, #163; #159 and #161 are listed under Apollo cross-module), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 18 (Telegram Bot, #191–#196), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -26,6 +26,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 11. Pluto | 7 done (`#133`–`#135`, `#138`, `#139`, `#142`, `#144`), 5 partial (`#137`, `#140`, `#141`, `#143`, `#145`), of 15 (`#131`, `#132`, `#136` not done); plus `#266` |
 | 12. Dionysus | 4 done (`#146`, `#147`, `#150`, `#152`), 1 partial (`#151`), of 7 (`#149` is counted under Apollo cross-module; `#148` needs multi-user and is not done) |
 | 13. Ares | 5 of 5 |
+| 14. Hecate | 4 done (`#158`, `#160`, `#162`, `#163`) of 6 (`#159` and `#161` are counted under Apollo cross-module) |
 | 15. Metis & Orpheus | 6 of 6 |
 | 10. Artemis | 8 done (`#122`–`#125`, `#127`–`#130`), 1 partial (`#121`), of 10 (`#126` is counted under Apollo cross-module) |
 | Apollo cross-module | 5 done (`#126`, `#149`, `#159`, `#161`, `#233`), 1 partial (`#183`) |
@@ -237,12 +238,12 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 14. Hecate — Decision Engine
 
-158. `[L]` Build the multi-agent "conference" feature: route one query through 2–3 relevant modules' perspectives (e.g. Pluto + Ares on a financial risk) and synthesize a combined answer.
+158. ✅ `[L]` Build the multi-agent "conference" feature: route one query through 2–3 relevant modules' perspectives (e.g. Pluto + Ares on a financial risk) and synthesize a combined answer. *(`conference` intent: Hecate seats 2–3 modules, `core/conference.py` gathers a read-only view from each and sets them side by side; summary is optional and falls back to a plain one.)*
 159. ✅ `[M]` Add weighted-voting consensus when modules disagree (e.g. Apollo says rest, Artemis says push through a habit streak) — surface the tension explicitly rather than silently picking one.
-160. `[L]` Add a lightweight what-if simulator: given a proposed change (quit a habit, cut a subscription), project its downstream effect using existing module data instead of a bespoke Monte Carlo engine.
+160. ✅ `[L]` Add a lightweight what-if simulator: given a proposed change (quit a habit, cut a subscription), project its downstream effect using existing module data instead of a bespoke Monte Carlo engine. *(`what_if`, `core/whatif.py`: cutting a recurring charge, dropping a habit, changing sleep; arithmetic on logged data, working shown, no guesses.)*
 161. ✅ `[M]` Add burnout-signal fusion from Apollo (sleep/mood) + Artemis (habit consistency) + Pluto (spending stress proxies) into one weekly risk flag.
-162. `[Q]` Add a routing-decision audit log surfaced to the user on request ("what did you check before answering that?").
-163. `[M]` Add critical-path extraction across active goals/deadlines (Artemis + Hermes + Chronos) into one "what actually needs attention this week" list.
+162. ✅ `[Q]` Add a routing-decision audit log surfaced to the user on request ("what did you check before answering that?"). *(`audit_routing`: Hecate's decision carries an ordered `checked` list; `Diagnostics.audit_last()`.)*
+163. ✅ `[M]` Add critical-path extraction across active goals/deadlines (Artemis + Hermes + Chronos) into one "what actually needs attention this week" list. *(`weekly_focus` in Chronos: plain scoring rules, goals weighed by open calendar days before the due date.)*
 
 ## 15. Metis & Orpheus — Writing
 

@@ -67,6 +67,11 @@ _BACKUP_COUNT = 3
 # How many recent decisions to keep in memory for "why did you route this".
 _RING_SIZE = 50
 
+# Diagnostic questions about a previous turn. "Why did you route that?" and
+# "what did you check?" must look past each other (and past themselves) to
+# find the decision being asked about, not explain one another.
+_META_INTENTS = frozenset({"explain_routing", "audit_routing"})
+
 
 # ---------------------------------------------------------------------------
 # 1. Request IDs
@@ -266,6 +271,7 @@ class Diagnostics:
         reason: str = "",
         latency_ms: float = 0.0,
         source: str = "nlu",
+        checked: Optional[list] = None,
     ) -> dict[str, Any]:
         """
         Log one classification+routing decision and return the record.
@@ -291,6 +297,11 @@ class Diagnostics:
             "latency_ms": round(float(latency_ms or 0.0), 1),
             "source": source,
         }
+        # Backlog #162: what Hecate examined, in order. Stored as plain
+        # strings so the JSONL log stays greppable and a record from before
+        # this field existed simply lacks the key.
+        if checked:
+            record["checked"] = [str(c)[:300] for c in checked][:30]
         with self._lock:
             self._ring.append(record)
         self._routing_log.write(record)
@@ -326,7 +337,7 @@ class Diagnostics:
             items = list(self._ring)
         previous = None
         for rec in reversed(items):
-            if rec.get("intent") != "explain_routing":
+            if rec.get("intent") not in _META_INTENTS:
                 previous = rec
                 break
         if previous is None:
@@ -348,6 +359,40 @@ class Diagnostics:
             parts.append(f"That took {previous['latency_ms']:.0f} ms end to end.")
         parts.append(f"Request id: {previous.get('request_id', '-')}.")
         return " ".join(parts)
+
+    def audit_last(self) -> str:
+        """
+        The ordered list of everything Hecate examined before the previous
+        answer (backlog #162: "what did you check before answering that?").
+
+        Where ``explain_last`` says *where* a query went and the one-line
+        reason, this lists each check in the order it ran, including the ones
+        that did not decide anything — that is the part you want when a
+        routing looks wrong ("did it even consider my documents?").
+        """
+        with self._lock:
+            items = list(self._ring)
+        previous = None
+        for rec in reversed(items):
+            if rec.get("intent") not in _META_INTENTS:
+                previous = rec
+                break
+        if previous is None:
+            return "I haven't routed anything yet this session, so there's nothing to audit."
+
+        checks = previous.get("checked") or []
+        head = f"For {previous['query']!r}, here's what I checked, in order:"
+        if not checks:
+            return (
+                f"{head} I didn't keep a step-by-step record for that one. "
+                f"What I do have: it was classified as '{previous['intent']}' "
+                f"({previous['confidence']:.0%}) and sent to {previous['module']}."
+            )
+        steps = " ".join(f"{i}. {c.rstrip('.')}." for i, c in enumerate(checks, 1))
+        return (
+            f"{head} {steps} Result: sent to the '{previous['module']}' module. "
+            f"Request id {previous.get('request_id', '-')}."
+        )
 
     # -- 4. feedback ---------------------------------------------------
 

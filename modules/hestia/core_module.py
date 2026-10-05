@@ -31,6 +31,15 @@ class CoreModule(BaseModule):
         # module-specific state, so "are your modules up?" still works
         # when the module being asked about is the broken one.
         "modules_status", "explain_routing", "report_mistake",
+        # Backlog #162: the step-by-step audit trail of what Hecate checked.
+        "audit_routing",
+        # Backlog #158: the multi-module "conference". The convening itself
+        # is done by the orchestrator (which holds the modules); this module
+        # only answers when there was nothing to convene.
+        "conference",
+        # Backlog #160: "what if I cancel X / stop Y". Also convened by the
+        # orchestrator; this module only answers when it isn't attached.
+        "what_if",
         # Confidence-weighted fallback (backlog #2). Hecate assigns this
         # when a recognised intent's own NLU confidence is too low to act
         # on blindly; it is never emitted by the NLU/prompt directly.
@@ -104,6 +113,15 @@ class CoreModule(BaseModule):
         if intent == "explain_routing":
             return self._explain_routing()
 
+        if intent == "audit_routing":
+            return self._audit_routing()
+
+        if intent == "conference":
+            return self._conference_unavailable(entities, raw)
+
+        if intent == "what_if":
+            return self._what_if_unavailable(raw)
+
         if intent == "report_mistake":
             return self._report_mistake(entities, raw)
 
@@ -160,6 +178,57 @@ class CoreModule(BaseModule):
                 "confidence": 0.2,
             }
         return {"response": explanation, "data": data, "confidence": 0.95}
+
+    def _audit_routing(self) -> dict:
+        """List every check Hecate ran before the previous answer (#162)."""
+        if self._diagnostics is None:
+            return {"response": self._NO_DIAGNOSTICS, "data": {}, "confidence": 0.3}
+        try:
+            text = self._diagnostics.audit_last()
+            data = self._diagnostics.last_decision() or {}
+        except Exception:
+            logger.exception("audit_routing failed.")
+            return {
+                "response": "I couldn't reconstruct what I checked for that one.",
+                "data": {},
+                "confidence": 0.2,
+            }
+        return {
+            "response": text,
+            "data": {"checked": list(data.get("checked") or []), "decision": data},
+            "confidence": 0.95,
+        }
+
+    def _conference_unavailable(self, entities: dict, raw: str) -> dict:
+        """Reached only when no conference could be convened (#158).
+
+        A real conference never lands here: the orchestrator replaces this
+        reply with the merged one. Getting here means Hecate found fewer than
+        two modules with a stake in the topic, or the conference layer isn't
+        attached. Say so plainly and say what would help.
+        """
+        return {
+            "response": (
+                "I couldn't find at least two parts of your data that bear on "
+                "that, so there's nothing to weigh against each other. Name "
+                "the angles you care about — for example 'weigh my budget "
+                "against my sleep and goals' — and I'll set them side by side."
+            ),
+            "data": {"raw_query": raw, "convened": False},
+            "confidence": 0.5,
+        }
+
+    def _what_if_unavailable(self, raw: str) -> dict:
+        """Reached only if the what-if layer isn't attached (#160); a normal
+        run replaces this reply with the projection."""
+        return {
+            "response": (
+                "I can't run that projection right now. The what-if layer "
+                "isn't available in this session."
+            ),
+            "data": {"raw_query": raw, "projected": False},
+            "confidence": 0.3,
+        }
 
     def _clarify_intent(self, entities: dict, raw: str) -> dict:
         """

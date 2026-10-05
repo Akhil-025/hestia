@@ -104,6 +104,16 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "modules_status": "core",
     "explain_routing": "core",
     "report_mistake": "core",
+    # "What did you check before answering that?" (backlog #162): the full
+    # ordered list of what Hecate examined, from the decision's audit trail.
+    "audit_routing": "core",
+    # Cross-module reasoning (backlog #158, #160). Owned by core because they
+    # span modules; the orchestrator, which holds every module, does the
+    # actual work (core/conference.py, core/whatif.py) and no module ever
+    # calls another. If the orchestrator layer isn't attached, CoreModule
+    # answers honestly that there was nothing to convene or project.
+    "conference": "core",
+    "what_if": "core",
     # Confidence-weighted fallback (backlog #2). Assigned by Hecate's
     # Tier 0.5, never emitted by the NLU itself, so it's registered here
     # (the enum in _build_schema needs it to exist) but deliberately has
@@ -156,6 +166,7 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "export_calendar": "chronos",
     "import_calendar": "chronos",
     "weather_plan": "chronos",
+    "weekly_focus": "chronos",
 
     # --- Hermes (Gmail + Google Calendar) ---
     "read_email": "hermes",
@@ -419,7 +430,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.22.0"
+REGISTRY_VERSION: str = "2.23.0"
 
 
 def registry_fingerprint() -> str:

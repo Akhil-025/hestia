@@ -189,14 +189,14 @@ def test_every_prefixed_intent_is_registered_to_its_own_prefixs_module():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "intent", ["modules_status", "explain_routing", "report_mistake"]
+    "intent", ["modules_status", "explain_routing", "report_mistake", "audit_routing", "conference", "what_if"]
 )
 def test_diagnostic_intents_are_registered_to_core(intent):
     assert module_for_intent(intent) == "core"
 
 
 @pytest.mark.parametrize(
-    "intent", ["modules_status", "explain_routing", "report_mistake"]
+    "intent", ["modules_status", "explain_routing", "report_mistake", "audit_routing", "conference", "what_if"]
 )
 def test_core_module_declares_the_diagnostic_intents(intent):
     # The registry saying core owns it is only half the contract; core's
