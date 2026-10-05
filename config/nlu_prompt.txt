@@ -45,7 +45,9 @@ review_stale_facts, export_memory, set_fact_importance, recall_on_date, get_memo
 chat,
 iris_search, iris_ingest, iris_status, iris_analyse, iris_query,
 iris_find_duplicates, iris_correct_caption, iris_organize_albums,
-iris_compare_photos,
+iris_compare_photos, iris_reindex, iris_find_similar, iris_scan_faces,
+iris_list_people, iris_name_person, iris_find_person, iris_forget_faces,
+iris_detect_objects,
 athena_search, athena_ingest, athena_status, athena_check_updates,
 athena_mark_feedback, athena_literature_review, athena_research_gaps,
 athena_compare_documents, athena_get_citations, athena_translate_document,
@@ -470,6 +472,33 @@ User: organize my photos into albums
 
 User: what changed between these two photos
 {"intent": "iris_compare_photos", "entities": {}, "response": "Comparing those photos.", "confidence": 0.85}
+
+User: index my photos for semantic search
+{"intent": "iris_reindex", "entities": {}, "response": "Indexing your media.", "confidence": 0.9}
+
+User: find photos similar to photo 12
+{"intent": "iris_find_similar", "entities": {"file_id": 12}, "response": "Looking for look-alikes.", "confidence": 0.9}
+
+User: scan my photos for faces
+{"intent": "iris_scan_faces", "entities": {}, "response": "Scanning for faces.", "confidence": 0.9}
+
+User: who have you found in my photos
+{"intent": "iris_list_people", "entities": {}, "response": "Listing the people I know.", "confidence": 0.9}
+
+User: Person 3 is Mom
+{"intent": "iris_name_person", "entities": {"person": "Person 3", "name": "Mom"}, "response": "Got it.", "confidence": 0.9}
+
+User: show me photos of Mom
+{"intent": "iris_find_person", "entities": {"person": "Mom"}, "response": "Finding photos of Mom.", "confidence": 0.9}
+
+User: delete all the face data
+{"intent": "iris_forget_faces", "entities": {}, "response": "Deleting face data.", "confidence": 0.9}
+
+User: what's on my desk right now
+{"intent": "iris_detect_objects", "entities": {}, "response": "Looking through the camera.", "confidence": 0.9}
+
+User: watch the camera for 20 seconds and tell me what changes
+{"intent": "iris_detect_objects", "entities": {"seconds": 20}, "response": "Watching the camera.", "confidence": 0.9}
 
 ---
 
@@ -1479,6 +1508,8 @@ STRICT RULES:
 - athena_search → documents, PDFs, research, notes, study material
 - iris_search → images, photos, media, gallery ONLY
 - iris_ingest → adding/importing media
+- iris_find_person → "photos of <name>" for a person already named; iris_name_person → naming a face group ("Person 3 is Mom")
+- iris_detect_objects → what the camera currently sees / what objects are in a photo; NOT for reading documents or emails
 - NEVER use iris_search for notes or documents
 - NEVER use athena_search for images
 - read_email / send_email / list_events / create_event / delete_events → Gmail or Calendar ONLY (mail, inbox, email, meetings, calendar, schedule)

@@ -38,6 +38,34 @@ _CLIP_MODEL_NAME = "clip-ViT-B-32"
 _COLLECTION_NAME = "iris_images"
 
 
+def filter_hits(
+    hits: "list[tuple[int, float]]",
+    max_distance: Optional[float] = None,
+    relative_margin: Optional[float] = None,
+) -> "list[tuple[int, float]]":
+    """Drop poor semantic matches (backlog #71).
+
+    A nearest-neighbour search always returns *something*: ask for "submarine"
+    in a library with no submarines and you still get the ten photos least
+    unlike one. Two optional cut-offs, both on cosine distance (lower =
+    closer), both off unless set:
+
+      max_distance     drop anything farther than this, absolutely;
+      relative_margin  drop anything farther than (best hit + margin), so the
+                       list keeps only the hits comparable to the best one.
+
+    *hits* must be ascending by distance, as ImageVectorIndex.query returns
+    them. Order is preserved.
+    """
+    out = list(hits)
+    if max_distance is not None:
+        out = [h for h in out if h[1] <= max_distance]
+    if relative_margin is not None and out:
+        limit = out[0][1] + relative_margin
+        out = [h for h in out if h[1] <= limit]
+    return out
+
+
 class ClipEmbedder:
     """
     Lazily-loaded CLIP text/image encoder. The model is not loaded at
@@ -199,6 +227,41 @@ class ImageVectorIndex:
             except (TypeError, ValueError):
                 continue
         return out
+
+    def indexed_ids(self) -> set:
+        """The file_ids that already have an embedding (backlog #71 re-index)."""
+        if not self._ensure_client():
+            return set()
+        try:
+            count = self._collection.count()
+            if count == 0:
+                return set()
+            result = self._collection.get(include=[], limit=count)
+        except Exception as e:
+            logger.warning("[Iris] indexed_ids failed: %s", e)
+            return set()
+        ids = set()
+        for raw in (result.get("ids") or []):
+            try:
+                ids.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+        return ids
+
+    def get_embedding(self, file_id: int) -> Optional[list]:
+        """The stored embedding for one file, or None (backlog #71 find-similar)."""
+        if not self._ensure_client():
+            return None
+        try:
+            result = self._collection.get(ids=[str(file_id)], include=["embeddings"])
+        except Exception as e:
+            logger.warning("[Iris] get_embedding failed for file_id=%s: %s", file_id, e)
+            return None
+        embeddings = result.get("embeddings")
+        # Chroma may hand back a numpy array, whose truth value is ambiguous.
+        if embeddings is None or len(embeddings) == 0:
+            return None
+        return [float(x) for x in embeddings[0]]
 
     def delete(self, file_id: int) -> None:
         if not self._ensure_client():

@@ -1167,14 +1167,59 @@ with tests (`tests/test_chronos_recurrence.py`, `test_chronos_engine.py`,
 
 ## [Unreleased] — Iris (Vision & Media)
 
-Completes 7 of 8 `[Q]`/`[M]` items. `[L]` items out of scope as usual
-(#71 CLIP-based semantic image search beyond what already exists, #77
-real-time webcam object detection). **#72** (face clustering) is also
-deferred — it needs a face-detection library (`face_recognition`, `dlib`,
-or similar) not currently in `requirements.txt`; flagged rather than
-guessed at, the same treatment given to Athena's `fitz`-dependent items.
+Completes all 10 Iris items. The first batch (#73, #74, #76, #78, #79, #80)
+left #71, #72, #75 and #77 open; they are now done, with the limits stated
+under each entry.
 
-### Added
+### Added (second batch: #71, #72, #75, #77)
+
+- **Video support** (`modules/iris/video.py`, `IrisAnalyser._analyse_video`).
+  Evenly spaced frames per video (`iris.video.frames`, default 4; near-black
+  frames skipped), each captioned by the vision model and merged into one
+  caption/tag/mood record; the frames' CLIP embeddings are averaged into one
+  embedding under the video's own id, so semantic search, find-similar,
+  albums and re-index treat videos like photos. Duration stored
+  (`files.duration_seconds`, migrated) and search results show
+  `(video, 0:42)`. Perceptual hashing is skipped for non-images. Needs
+  OpenCV; without it a video is recorded as a retryable analysis error.
+  No audio, motion or on-screen text. [#75]
+- **Face grouping, local-only** (`modules/iris/faces.py`, `faces`/`people`/
+  `face_scans` tables, intents `iris_scan_faces`, `iris_list_people`,
+  `iris_name_person`, `iris_find_person`, `iris_forget_faces`). OpenCV
+  YuNet + SFace; the two ONNX files must be supplied. **Off by default**
+  (face embeddings are biometric): enable with `iris.faces.enabled`. Stored
+  only in `iris.db`; no face images kept; groups are never named
+  automatically ("Person 3" until you say otherwise); naming a group after
+  an existing person merges them; `iris_forget_faces` deletes all of it.
+  Grouping is deliberately strict (wrong merges are worse than a split you
+  can merge). Incremental: new faces join existing people first. "Photos of
+  Mom at the beach" is answered from the face groups once Mom is named. [#72]
+- **Camera object detection** (`modules/iris/detection.py`, intent
+  `iris_detect_objects`, `python -m modules.iris.detection`). YOLO over
+  everyday objects, from the webcam (one frame, or a watch of up to 60s that
+  reports what appears/disappears, flicker-filtered) or a saved photo, whose
+  result is stored in `files.objects` and searched alongside captions and
+  tags. **Camera off by default** (`iris.camera.enabled`), opened only for the
+  request and always released; frames are not saved. `ultralytics` is
+  optional and not in the active requirements. Not PCB-fault or gesture
+  recognition. [#77]
+- **Semantic search extras** (`embeddings.filter_hits`,
+  `ImageVectorIndex.indexed_ids/get_embedding`, intents `iris_reindex`,
+  `iris_find_similar`). CLIP search itself already existed; this adds
+  re-indexing of anything analysed before CLIP was available, look-alike
+  search, and optional relevance cut-offs (`iris.semantic.max_distance`,
+  `relative_margin`; off by default as they need tuning per library). [#71]
+- Config: `iris.video`, `iris.faces`, `iris.camera`, `iris.semantic` added to
+  `IrisConfig` and `laptop_config.example.yaml`. `opencv-python-headless`
+  added to `requirements.txt`.
+- Intents registered in `intent_registry.py` and `nlu_prompt.txt`.
+- Tests: `test_iris_video_faces_detection.py`, 47 cases using fake
+  embedders, face backends, detectors and cameras, plus real synthetic videos
+  through OpenCV. Not exercised: real CLIP/Chroma, the YuNet/SFace models,
+  YOLO, a physical webcam. The 17 pre-existing Iris/Chroma-stub failures in
+  this sandbox are unchanged.
+
+### Added (first batch: #73, #74, #76, #78, #79, #80)
 
 - **EXIF-based search** (`modules/iris/analyser.py::_extract_exif`,
   `IrisDB.search_files_by_exif`). Date taken, GPS coordinates, and camera

@@ -62,6 +62,11 @@ class DuplicateDetector:
             raise
 
     async def compute_perceptual_hash(self, file_path: Path) -> Optional[str]:
+        # Perceptual hashes are for stills. A video (or audio file) isn't an
+        # image PIL can open, so skip it quietly rather than log an error per
+        # file; videos are still caught by the exact-hash check.
+        if get_file_type(file_path) != "image":
+            return None
         try:
             import imagehash
             from PIL import Image

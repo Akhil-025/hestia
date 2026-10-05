@@ -217,6 +217,15 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "iris_correct_caption": "iris",
     "iris_organize_albums": "iris",
     "iris_compare_photos": "iris",
+    # backlog #71, #72, #77 — re-index / find-similar, face grouping, object detection.
+    "iris_reindex": "iris",
+    "iris_find_similar": "iris",
+    "iris_scan_faces": "iris",
+    "iris_list_people": "iris",
+    "iris_name_person": "iris",
+    "iris_find_person": "iris",
+    "iris_forget_faces": "iris",
+    "iris_detect_objects": "iris",
 
     # --- Artemis (habits & goals) ---
     "add_goal": "artemis",

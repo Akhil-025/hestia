@@ -41,6 +41,27 @@ class IrisConfig:
     # default) disables the guard entirely — most people don't want a
     # quota until they've hit a real storage problem once.
     storage_quota_bytes: Optional[int] = None
+    # backlog #71: optional relevance cut-offs for semantic search. CLIP always
+    # returns the nearest photos, however poor a match they are; these drop the
+    # poor ones. Cosine *distance*, lower = closer. None (default) = off, since
+    # sensible values depend on your library and have to be tuned (see
+    # modules/iris/embeddings.py, filter_hits).
+    semantic_max_distance: Optional[float] = None
+    semantic_relative_margin: Optional[float] = None
+    # backlog #75: frames sampled per video
+    video_frames: int = 4
+    # backlog #72: face grouping. OFF by default: face embeddings are biometric.
+    faces_enabled: bool = False
+    face_detector_model: str = ""
+    face_recognizer_model: str = ""
+    face_match_threshold: float = 0.45
+    face_min_cluster_size: int = 2
+    face_min_size: int = 40
+    # backlog #77: camera object detection. OFF by default: it opens the webcam.
+    camera_enabled: bool = False
+    camera_index: int = 0
+    detector_model: str = "yolov8n.pt"
+    detector_confidence: float = 0.4
 
     def __post_init__(self):
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
@@ -83,6 +104,19 @@ def get_config(path: str = "config/laptop_config.yaml") -> IrisConfig:
         use_gpu=iris_cfg.get("use_gpu", False),
         perceptual_hash_threshold=iris_cfg.get("perceptual_hash_threshold", 12),
         storage_quota_bytes=iris_cfg.get("storage_quota_bytes"),
+        semantic_max_distance=(iris_cfg.get("semantic") or {}).get("max_distance"),
+        semantic_relative_margin=(iris_cfg.get("semantic") or {}).get("relative_margin"),
+        video_frames=int((iris_cfg.get("video") or {}).get("frames", 4)),
+        faces_enabled=bool((iris_cfg.get("faces") or {}).get("enabled", False)),
+        face_detector_model=str((iris_cfg.get("faces") or {}).get("detector_model", "")),
+        face_recognizer_model=str((iris_cfg.get("faces") or {}).get("recognizer_model", "")),
+        face_match_threshold=float((iris_cfg.get("faces") or {}).get("match_threshold", 0.45)),
+        face_min_cluster_size=int((iris_cfg.get("faces") or {}).get("min_cluster_size", 2)),
+        face_min_size=int((iris_cfg.get("faces") or {}).get("min_face_size", 40)),
+        camera_enabled=bool((iris_cfg.get("camera") or {}).get("enabled", False)),
+        camera_index=int((iris_cfg.get("camera") or {}).get("index", 0)),
+        detector_model=str((iris_cfg.get("camera") or {}).get("model", "yolov8n.pt")),
+        detector_confidence=float((iris_cfg.get("camera") or {}).get("confidence", 0.4)),
     )
 
     return _config

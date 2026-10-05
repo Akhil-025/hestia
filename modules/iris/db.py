@@ -95,6 +95,31 @@ class IrisDB:
         errors INTEGER DEFAULT 0,
         total_size INTEGER DEFAULT 0
     );
+
+    -- Face grouping (#72). Embeddings are biometric data: they live only in
+    -- this file, and delete_all_face_data() removes them. Opt-in feature; the
+    -- tables stay empty unless iris.faces.enabled is set.
+    CREATE TABLE IF NOT EXISTS people (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS faces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id INTEGER NOT NULL REFERENCES files(id),
+        person_id INTEGER REFERENCES people(id),
+        box TEXT,
+        score REAL,
+        embedding TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_id);
+    CREATE INDEX IF NOT EXISTS idx_faces_file ON faces(file_id);
+    CREATE TABLE IF NOT EXISTS face_scans (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id),
+        scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        face_count INTEGER DEFAULT 0,
+        error TEXT
+    );
     ''')
                 # Migration: add analysis_status to pre-existing DBs (CREATE TABLE
                 # IF NOT EXISTS above only applies to brand-new databases).
@@ -120,6 +145,8 @@ class IrisDB:
                     # skip files a person has already manually corrected,
                     # instead of silently overwriting their correction.
                     ("caption_source", "TEXT DEFAULT 'ai'"),
+                    # backlog #75: length of a video, in seconds (NULL for photos)
+                    ("duration_seconds", "REAL"),
                 ):
                     try:
                         self._conn.execute(f"ALTER TABLE files ADD COLUMN {column} {coltype}")
@@ -343,6 +370,140 @@ class IrisDB:
                 self._conn.execute("DELETE FROM event_files")
                 self._conn.execute("DELETE FROM events")
 
+
+        # --- Video and object metadata (#75, #77, #71 re-index) ---
+        def update_video_info(self, file_id: int, duration_seconds: Optional[float]) -> None:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "UPDATE files SET duration_seconds=? WHERE id=?", (duration_seconds, file_id)
+                )
+
+        def get_files_by_type(self, file_types, limit: int = 1000) -> List[dict]:
+            """Files of the given type(s), oldest first (stable order for re-indexing)."""
+            types = list(file_types)
+            if not types:
+                return []
+            marks = ",".join("?" for _ in types)
+            cur = self._conn.execute(
+                f"SELECT * FROM files WHERE file_type IN ({marks}) ORDER BY id LIMIT ?",
+                (*types, limit),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        def update_file_objects(self, file_id: int, objects_json: str) -> None:
+            with self._lock, self._conn:
+                self._conn.execute("UPDATE files SET objects=? WHERE id=?", (objects_json, file_id))
+
+        def search_files_by_objects(self, query: str, limit: int = 10) -> List[dict]:
+            """Files whose detected-objects field mentions *query* (a quoted JSON key,
+            so 'cup' doesn't match 'cupboard')."""
+            q = (query or "").strip().lower()
+            if not q:
+                return []
+            cur = self._conn.execute(
+                "SELECT * FROM files WHERE objects LIKE ? ORDER BY ingested_at DESC LIMIT ?",
+                (f'%"{q}"%', limit),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        # --- Faces and people (#72) ---
+        def get_unscanned_images(self, limit: int = 100) -> List[dict]:
+            cur = self._conn.execute(
+                "SELECT id, file_path FROM files WHERE file_type='image' "
+                "AND id NOT IN (SELECT file_id FROM face_scans) ORDER BY id LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        def count_unscanned_images(self) -> int:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) FROM files WHERE file_type='image' "
+                "AND id NOT IN (SELECT file_id FROM face_scans)"
+            )
+            return cur.fetchone()[0]
+
+        def record_face_scan(self, file_id: int, face_count: int, error: Optional[str] = None) -> None:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO face_scans (file_id, face_count, error) VALUES (?, ?, ?)",
+                    (file_id, face_count, error),
+                )
+
+        def add_face(self, file_id: int, box_json: str, score: float, embedding_json: str) -> int:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "INSERT INTO faces (file_id, box, score, embedding) VALUES (?, ?, ?, ?)",
+                    (file_id, box_json, score, embedding_json),
+                )
+                return cur.lastrowid
+
+        def get_faces(self, unassigned_only: bool = False) -> List[dict]:
+            where = "WHERE person_id IS NULL" if unassigned_only else ""
+            cur = self._conn.execute(
+                f"SELECT id, file_id, person_id, box, score, embedding FROM faces {where} ORDER BY id"
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        def set_face_person(self, face_ids: List[int], person_id: Optional[int]) -> None:
+            if not face_ids:
+                return
+            with self._lock, self._conn:
+                self._conn.executemany(
+                    "UPDATE faces SET person_id=? WHERE id=?", [(person_id, i) for i in face_ids]
+                )
+
+        def create_person(self, name: Optional[str] = None) -> int:
+            with self._lock, self._conn:
+                cur = self._conn.execute("INSERT INTO people (name) VALUES (?)", (name,))
+                return cur.lastrowid
+
+        def rename_person(self, person_id: int, name: Optional[str]) -> None:
+            with self._lock, self._conn:
+                self._conn.execute("UPDATE people SET name=? WHERE id=?", (name, person_id))
+
+        def get_people(self) -> List[dict]:
+            cur = self._conn.execute(
+                """
+                SELECT p.id AS id, p.name AS name,
+                       COUNT(f.id) AS face_count,
+                       COUNT(DISTINCT f.file_id) AS photo_count
+                FROM people p LEFT JOIN faces f ON f.person_id = p.id
+                GROUP BY p.id ORDER BY photo_count DESC, p.id
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        def merge_people(self, from_id: int, into_id: int) -> None:
+            if from_id == into_id:
+                return
+            with self._lock, self._conn:
+                self._conn.execute("UPDATE faces SET person_id=? WHERE person_id=?", (into_id, from_id))
+                self._conn.execute("DELETE FROM people WHERE id=?", (from_id,))
+
+        def get_files_for_person(self, person_id: int) -> List[dict]:
+            cur = self._conn.execute(
+                """
+                SELECT DISTINCT fl.* FROM files fl
+                JOIN faces fa ON fa.file_id = fl.id
+                WHERE fa.person_id = ?
+                ORDER BY COALESCE(fl.date_taken, fl.ingested_at) DESC
+                """,
+                (person_id,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+        def delete_all_face_data(self) -> dict:
+            """Remove every face, person and scan record. Returns what was removed."""
+            with self._lock, self._conn:
+                counts = {
+                    "faces": self._conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0],
+                    "people": self._conn.execute("SELECT COUNT(*) FROM people").fetchone()[0],
+                    "scans": self._conn.execute("SELECT COUNT(*) FROM face_scans").fetchone()[0],
+                }
+                self._conn.execute("DELETE FROM faces")
+                self._conn.execute("DELETE FROM people")
+                self._conn.execute("DELETE FROM face_scans")
+            return counts
 
         def enqueue(self, file_id: int, task_type: str = 'analyze', priority: int = 0) -> None:
             with self._lock, self._conn:

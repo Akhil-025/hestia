@@ -399,6 +399,38 @@ iris:
   max_workers: 4
   use_gpu: false
 
+  # Optional. Semantic (CLIP) search always returns the nearest photos, however
+  # poor a match. Cosine distance cut-offs (lower = closer); unset = off. Tune
+  # against your own library. (backlog #71)
+  # semantic:
+  #   max_distance: 0.8
+  #   relative_margin: 0.1
+
+  # Videos: frames sampled per video for captioning and embedding. (backlog #75)
+  video:
+    frames: 4
+
+  # Face grouping, local-only. OFF by default: face embeddings are biometric
+  # data stored in iris.db only; "iris_forget_faces" deletes all of it.
+  # Needs OpenCV 4.5.4+ and two ONNX files from the opencv_zoo project
+  # (face_detection_yunet_*.onnx, face_recognition_sface_*.onnx). (backlog #72)
+  faces:
+    enabled: false
+    detector_model: ""
+    recognizer_model: ""
+    match_threshold: 0.45   # higher = stricter, fewer wrong merges
+    min_cluster_size: 2
+    min_face_size: 40       # pixels; smaller faces are ignored
+
+  # Camera object detection (YOLO, everyday objects only). OFF by default: it
+  # opens the webcam, for one request at a time; frames are never saved. Needs
+  # `pip install ultralytics`. (backlog #77)
+  camera:
+    enabled: false
+    index: 0
+    model: "yolov8n.pt"
+    confidence: 0.4
+
 
 sync:
   enabled: false   # set true to enable multi-device sync API on port 5001

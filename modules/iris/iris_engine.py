@@ -11,7 +11,10 @@ from .config import get_config, IrisConfig
 from pathlib import Path
 from .db import IrisDB
 from .ingestion import FileIngestor
-from .embeddings import ClipEmbedder, ImageVectorIndex
+from .embeddings import ClipEmbedder, ImageVectorIndex, filter_hits
+from . import video as video_mod
+from . import detection as detection_mod
+from .faces import FaceService, OpenCVFaceBackend
 try:
     from .analyser import IrisAnalyser, _load_image_base64
 except ImportError:
@@ -24,7 +27,8 @@ logger = logging.getLogger(__name__)
 class IrisEngine(BaseModule):               
     name = "iris"
 
-    def __init__(self, hestia_llm=None, embedder=None, vector_index=None):
+    def __init__(self, hestia_llm=None, embedder=None, vector_index=None,
+                 face_service=None, detector=None, camera_factory=None):
         try:
             self.config: IrisConfig = get_config()
             self.db = IrisDB(self.config.db_path)
@@ -48,8 +52,33 @@ class IrisEngine(BaseModule):
                 IrisAnalyser(
                     self.db, ollama_host, ollama_port, "llava:7b",
                     embedder=self.embedder, vector_index=self.vector_index,
+                    video_frames=getattr(self.config, "video_frames", 4),
+                    work_dir=self.config.cache_dir,
                 )
                 if IrisAnalyser else None
+            )
+
+            # Face grouping (#72) and camera object detection (#77). Both are
+            # off by default (biometric data / opens the webcam), both load
+            # their models lazily, and both are injectable for tests, so
+            # neither can stop Iris constructing.
+            self.faces = face_service if face_service is not None else FaceService(
+                self.db,
+                OpenCVFaceBackend(
+                    getattr(self.config, "face_detector_model", ""),
+                    getattr(self.config, "face_recognizer_model", ""),
+                    min_face_size=getattr(self.config, "face_min_size", 40),
+                ),
+                enabled=getattr(self.config, "faces_enabled", False),
+                threshold=getattr(self.config, "face_match_threshold", 0.45),
+                min_cluster_size=getattr(self.config, "face_min_cluster_size", 2),
+            )
+            self.detector = detector if detector is not None else detection_mod.YoloDetector(
+                getattr(self.config, "detector_model", "yolov8n.pt"),
+                getattr(self.config, "detector_confidence", 0.4),
+            )
+            self._camera_factory = camera_factory if camera_factory is not None else (
+                lambda: detection_mod.Camera(getattr(self.config, "camera_index", 0))
             )
             logger.info("[Iris] Engine ready")
         except Exception as e:
@@ -72,6 +101,15 @@ class IrisEngine(BaseModule):
             "iris_correct_caption", "correct_caption",
             "iris_organize_albums", "organize_albums",
             "iris_compare_photos", "compare_photos",
+            # backlog #71 (re-index, find-similar), #72 (faces), #77 (objects)
+            "iris_reindex", "reindex",
+            "iris_find_similar", "find_similar",
+            "iris_scan_faces", "scan_faces",
+            "iris_list_people", "list_people",
+            "iris_name_person", "name_person",
+            "iris_find_person", "find_person",
+            "iris_forget_faces", "forget_faces",
+            "iris_detect_objects", "detect_objects",
         }
 
     def handle(self, intent: str, entities: dict, context: dict) -> dict:
@@ -124,6 +162,11 @@ class IrisEngine(BaseModule):
             return {"response": self.status(), "data": {}, "confidence": 0.9}
 
         elif canonical in {"search", "query"}:
+            # "photos of Mom" — if the query names someone Iris has been told
+            # about (#72), answer from the face groups instead.
+            person_reply = self._person_search(raw or entities.get("query", ""))
+            if person_reply is not None:
+                return person_reply
             result = self.search(raw or entities.get("query", ""))
             return {
                 "response": result or "No matching media found.",
@@ -178,6 +221,98 @@ class IrisEngine(BaseModule):
                 "response": result.get("description", "I couldn't compare those photos."),
                 "data": result, "confidence": 0.85 if result.get("description") else 0.2,
             }
+
+        elif canonical == "reindex":
+            stats = self.reindex_embeddings(_as_int(entities.get("limit"), 200))
+            if stats["unavailable"]:
+                response = ("Semantic search isn't available right now (the CLIP model or the "
+                            "vector index didn't load), so there's nothing to index.")
+            else:
+                response = (f"Indexed {stats['indexed']} item(s) for semantic search"
+                            + (f"; {stats['failed']} couldn't be read" if stats["failed"] else "")
+                            + (f"; about {stats['remaining']} still to do, ask again to continue"
+                               if stats["remaining"] else "")
+                            + ("." if stats["indexed"] or stats["failed"] or stats["remaining"]
+                               else "; everything is already indexed."))
+            return {"response": response, "data": stats,
+                    "confidence": 0.3 if stats["unavailable"] else 0.9}
+
+        elif canonical == "find_similar":
+            fid = _as_int(entities.get("file_id"), None)
+            if fid is None:
+                return {"response": "Tell me which photo to find look-alikes of.",
+                        "data": {}, "confidence": 0.0}
+            result = self.find_similar(fid, _as_int(entities.get("limit"), 10))
+            if result.get("error"):
+                return {"response": result["error"], "data": result, "confidence": 0.3}
+            if not result["matches"]:
+                return {"response": "I didn't find anything similar.", "data": result, "confidence": 0.5}
+            lines = [f"Found {len(result['matches'])} similar photo(s):"]
+            lines += [f"{i}. {self._describe(r)}" for i, r in enumerate(result["matches"], 1)]
+            return {"response": "\n".join(lines), "data": result, "confidence": 0.85}
+
+        elif canonical == "scan_faces":
+            stats = self.faces.scan(_as_int(entities.get("limit"), 100))
+            if not stats.get("available"):
+                return {"response": stats["message"], "data": stats, "confidence": 0.5}
+            response = (f"Scanned {stats['scanned']} photo(s) and found {stats['faces_found']} face(s). "
+                        f"{stats['new_people']} new group(s), {stats['added_to_existing']} face(s) added "
+                        f"to people I already know")
+            response += f"; {stats['failed']} photo(s) couldn't be read" if stats["failed"] else ""
+            response += f". {stats['remaining']} photo(s) still to scan." if stats["remaining"] else "."
+            if stats["new_people"]:
+                response += " Say who someone is to name them, e.g. 'Person 3 is Mom'."
+            return {"response": response, "data": stats, "confidence": 0.9}
+
+        elif canonical == "list_people":
+            blocked = self.faces.unavailable_reason()
+            if blocked:
+                return {"response": blocked, "data": {}, "confidence": 0.5}
+            people = self.faces.list_people()
+            if not people:
+                return {"response": "I haven't grouped any faces yet. Ask me to scan your photos for faces first.",
+                        "data": {"people": []}, "confidence": 0.5}
+            lines = [f"I know {len(people)} group(s) of faces:"]
+            lines += [f"- {p['label']}: {p['photo_count']} photo(s)" for p in people[:20]]
+            if len(people) > 20:
+                lines.append(f"…and {len(people) - 20} more.")
+            return {"response": "\n".join(lines), "data": {"people": people}, "confidence": 0.9}
+
+        elif canonical == "name_person":
+            blocked = self.faces.unavailable_reason()
+            if blocked:
+                return {"response": blocked, "data": {}, "confidence": 0.5}
+            ref, name = entities.get("person"), entities.get("name")
+            if ref is None or name is None:
+                return {"response": "Tell me which group and who it is, e.g. 'Person 3 is Mom'.",
+                        "data": {}, "confidence": 0.0}
+            outcome = self.faces.name_person(ref, name)
+            if not outcome["ok"]:
+                return {"response": outcome["reason"], "data": outcome, "confidence": 0.3}
+            response = (f"Merged them: they're all {outcome['label']} now." if outcome["merged"]
+                        else f"Got it, that's {outcome['label']}.")
+            return {"response": response, "data": outcome, "confidence": 0.9}
+
+        elif canonical == "find_person":
+            blocked = self.faces.unavailable_reason()
+            if blocked:
+                return {"response": blocked, "data": {}, "confidence": 0.5}
+            reply = self._person_files_reply(entities.get("person") or entities.get("name"), "")
+            return reply or {"response": "I don't know anyone by that name yet.", "data": {}, "confidence": 0.3}
+
+        elif canonical == "forget_faces":
+            counts = self.faces.forget_all()
+            return {"response": (f"Done. I deleted {counts['faces']} face record(s) and "
+                                 f"{counts['people']} person group(s). Your photos are untouched."),
+                    "data": counts, "confidence": 0.95}
+
+        elif canonical == "detect_objects":
+            result = self.detect_objects(
+                file_id=_as_int(entities.get("file_id"), None),
+                seconds=_as_float(entities.get("seconds"), None),
+            )
+            return {"response": result["response"], "data": result.get("data", {}),
+                    "confidence": result.get("confidence", 0.8)}
 
         return {"response": "I'm not sure how to handle that media request.", "data": {}, "confidence": 0.0}
 
@@ -289,6 +424,12 @@ class IrisEngine(BaseModule):
             if query_vector is None:
                 return []
             hits = self.vector_index.query(query_vector, top_k=limit)
+            # #71: optional relevance cut-offs (off unless configured)
+            hits = filter_hits(
+                hits,
+                _as_float(getattr(self.config, "semantic_max_distance", None), None),
+                _as_float(getattr(self.config, "semantic_relative_margin", None), None),
+            )
             matches = []
             for file_id, _distance in hits:
                 record = self.db.get_file(file_id)
@@ -323,6 +464,10 @@ class IrisEngine(BaseModule):
                 results_semantic = self._semantic_matches(query, limit)
                 results_caption = self.db.search_files_by_caption(query, limit)
                 results_tags = self.db.search_files_by_tags(query, limit)
+            # #77: photos whose detected objects include the query ("laptop").
+            # Not for a pure date/camera query, where the words are filters.
+            if not (pq.active and not pq.text):
+                results_tags = list(results_tags) + self._object_matches(query, limit)
             # Deduplicate by file_path. Semantic hits are listed first so
             # `dict`-insertion order (preserved by unique_map.values() below)
             # keeps them ranked ahead of plain substring caption/tag matches,
@@ -374,11 +519,201 @@ class IrisEngine(BaseModule):
                 # caught while formatting a search result string.
                 except (json.JSONDecodeError, TypeError):
                     tags = raw_tags or ""
-                lines.append(f"{i}. {path} — {caption} [{tags}]")
+                lines.append(f"{i}. {path} — {caption} [{tags}]{self._kind_suffix(r)}")
             return "\n".join(lines)
         except Exception as e:
             logger.error(f"[Iris] Search error: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Helpers for #71 / #72 / #75 / #77
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _kind_suffix(record: dict) -> str:
+        """' (video, 0:42)' for videos; empty for everything else."""
+        if record.get("file_type") != "video":
+            return ""
+        length = video_mod.format_duration(record.get("duration_seconds"))
+        return f" (video, {length})" if length else " (video)"
+
+    def _describe(self, record: dict) -> str:
+        caption = record.get("caption") or "(no caption)"
+        line = f"{record.get('file_path', '?')} — {caption}"
+        if "distance" in record:
+            line += f" [distance {record['distance']}]"
+        return line + self._kind_suffix(record)
+
+    def _object_matches(self, query: str, limit: int) -> list:
+        try:
+            return self.db.search_files_by_objects(query, limit)
+        except Exception as e:
+            logger.warning(f"[Iris] Object search failed: {e}")
+            return []
+
+    def _person_search(self, query: str):
+        """A reply for 'photos of <known person>', or None if the query doesn't
+        name anyone Iris knows (so ordinary search carries on)."""
+        try:
+            hit = self.faces.person_in_query(query)
+        except Exception as e:
+            logger.warning(f"[Iris] Person lookup failed: {e}")
+            return None
+        if hit is None:
+            return None
+        person, rest = hit
+        return self._person_files_reply(person["id"], rest)
+
+    def _person_files_reply(self, ref, rest: str):
+        """Photos containing a person, optionally narrowed to those whose
+        caption/tags/objects mention a word from *rest* ("beach"). If nothing
+        matches the extra words, all of the person's photos are shown, and
+        the reply says so rather than quietly ignoring the words."""
+        found = self.faces.find_person_files(ref)
+        if found is None:
+            return None
+        person, files = found
+        label = self.faces.label(person)
+        if not files:
+            return {"response": f"I don't have any photos of {label} yet.",
+                    "data": {"person": person, "files": []}, "confidence": 0.4}
+        note = ""
+        words = [w for w in (rest or "").split() if len(w) >= 3]
+        if words:
+            def hay(f):
+                return " ".join(str(f.get(k) or "") for k in ("caption", "tags", "objects")).lower()
+            narrowed = [f for f in files if any(w in hay(f) for w in words)]
+            if narrowed:
+                files, note = narrowed, f" matching '{rest}'"
+            else:
+                note = f" (none matched '{rest}', so this is all of them)"
+        shown = files[:10]
+        lines = [f"Found {len(files)} photo(s) of {label}{note}:"]
+        lines += [f"{i}. {self._describe(f)}" for i, f in enumerate(shown, 1)]
+        if len(files) > len(shown):
+            lines.append(f"…and {len(files) - len(shown)} more.")
+        return {"response": "\n".join(lines),
+                "data": {"person": person, "files": [f["id"] for f in files]}, "confidence": 0.9}
+
+    def find_similar(self, file_id: int, limit: int = 10) -> dict:
+        """Photos that look like an existing one (#71), by comparing its CLIP
+        embedding with the rest, nearest first. Never raises."""
+        try:
+            record = self.db.get_file(file_id)
+            if not record:
+                return {"matches": [], "error": "I couldn't find that photo."}
+            vector = self.vector_index.get_embedding(file_id)
+            if vector is None and record.get("file_type") == "image":
+                path = Path(record["file_path"])
+                if path.exists():
+                    vector = self.embedder.embed_image(path)
+                    if vector is not None:
+                        self.vector_index.upsert(file_id, vector)
+            if vector is None:
+                return {"matches": [], "error": (
+                    "I don't have a semantic index entry for that one: semantic search may be "
+                    "unavailable, or it hasn't been indexed yet (ask me to index your photos).")}
+            limit = max(1, min(int(limit), 50))
+            hits = [h for h in self.vector_index.query(vector, top_k=limit + 1) if h[0] != file_id][:limit]
+            matches = []
+            for fid, dist in hits:
+                rec = self.db.get_file(fid)
+                if rec:
+                    matches.append(dict(rec, distance=round(float(dist), 3)))
+            return {"matches": matches, "file_id": file_id}
+        except Exception as e:
+            logger.error(f"[Iris] find_similar error: {e}")
+            return {"matches": [], "error": "Something went wrong looking for similar photos."}
+
+    def reindex_embeddings(self, limit: int = 200) -> dict:
+        """Give every photo and video that has no semantic-search embedding one (#71).
+
+        Embeddings are normally made when a file is analysed, so anything
+        analysed while CLIP wasn't installed or the model couldn't load (or
+        before semantic search existed) is invisible to it until this runs.
+        Works in batches of *limit*; run again for more. Files that can't be
+        read (HEIC, unsupported codecs) are counted as failed and retried
+        next time. Never raises.
+        """
+        stats = {"indexed": 0, "failed": 0, "remaining": 0, "unavailable": False}
+        try:
+            limit = max(1, min(int(limit), 2000))
+            if self.embedder.embed_text("test") is None or not self.vector_index.available:
+                stats["unavailable"] = True
+                return stats
+            done = self.vector_index.indexed_ids()
+            todo = [f for f in self.db.get_files_by_type(("image", "video"), 1_000_000)
+                    if f["id"] not in done]
+            batch, stats["remaining"] = todo[:limit], max(0, len(todo) - limit)
+            for rec in batch:
+                path = Path(rec["file_path"])
+                vector = None
+                try:
+                    if not path.exists():
+                        pass
+                    elif rec.get("file_type") == "video":
+                        import tempfile
+                        with tempfile.TemporaryDirectory(dir=self.config.cache_dir) as tmp:
+                            frames = video_mod.sample_frames(
+                                path, tmp, getattr(self.config, "video_frames", 4))
+                            vector = video_mod.video_embedding(self.embedder, frames)
+                    else:
+                        vector = self.embedder.embed_image(path)
+                except Exception as e:
+                    logger.warning(f"[Iris] Re-index failed for {path}: {e}")
+                if vector is not None and self.vector_index.upsert(rec["id"], vector):
+                    stats["indexed"] += 1
+                else:
+                    stats["failed"] += 1
+        except Exception as e:
+            logger.error(f"[Iris] reindex_embeddings error: {e}")
+        return stats
+
+    def detect_objects(self, file_id=None, seconds=None) -> dict:
+        """What common objects are in a saved photo (``file_id``), or in view of
+        the camera now (one frame) or over ``seconds`` seconds (#77). A photo's
+        result is saved to its ``objects`` field so it becomes searchable; camera
+        frames are never saved. Never raises."""
+        try:
+            reason = self.detector.unavailable_reason
+            if reason:
+                return {"response": f"I can't run object detection: {reason}.", "confidence": 0.3}
+            if file_id is not None:
+                rec = self.db.get_file(file_id)
+                if not rec:
+                    return {"response": "I couldn't find that photo.", "confidence": 0.3}
+                if rec.get("file_type") != "image" or not Path(rec["file_path"]).exists():
+                    return {"response": "I can only look for objects in photos that are still on disk.",
+                            "confidence": 0.3}
+                dets = [d for d in self.detector.detect(rec["file_path"])
+                        if d.confidence >= getattr(self.config, "detector_confidence", 0.4)]
+                self.db.update_file_objects(file_id, detection_mod.objects_json(dets))
+                result = detection_mod.analyse_stream(
+                    _Fixed(dets), [(0.0, None)], getattr(self.config, "detector_confidence", 0.4))
+                return {"response": detection_mod.summarise(result, watched=False),
+                        "data": {"file_id": file_id, "objects": result.max_count}, "confidence": 0.85}
+
+            if not getattr(self.config, "camera_enabled", False):
+                return {"response": ("The camera is switched off. Turn on iris.camera.enabled in your "
+                                     "config if you want me to look through it; frames are analysed "
+                                     "and thrown away, never saved."), "confidence": 0.5}
+            watched = seconds is not None and seconds > 0
+            span = min(float(seconds), detection_mod.MAX_WATCH_SECONDS) if watched else 0.0
+            try:
+                with self._camera_factory() as cam:
+                    result = detection_mod.analyse_stream(
+                        self.detector,
+                        detection_mod.camera_frames(cam, span),
+                        getattr(self.config, "detector_confidence", 0.4),
+                    )
+            except detection_mod.CameraUnavailable as e:
+                return {"response": f"I couldn't use the camera: {e}.", "confidence": 0.3}
+            return {"response": detection_mod.summarise(result, watched=watched),
+                    "data": {"objects": result.max_count, "frames": result.frames,
+                             "events": result.events}, "confidence": 0.85}
+        except Exception as e:
+            logger.error(f"[Iris] detect_objects error: {e}")
+            return {"response": "Something went wrong running object detection.", "confidence": 0.2}
 
     def analyse(self, limit: int = 10) -> str:
         if not self.analyser:
@@ -539,3 +874,28 @@ class IrisEngine(BaseModule):
         except Exception as e:
             logger.error(f"[Iris] Status error: {e}")
             return "Iris status unavailable."
+
+
+class _Fixed:
+    """A detector that returns a fixed list: lets a photo's detections go
+    through the same summary code as a camera stream."""
+
+    def __init__(self, detections):
+        self._d = detections
+
+    def detect(self, _frame):
+        return self._d
+
+
+def _as_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

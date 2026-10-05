@@ -281,8 +281,13 @@ Controls:
 - Enables semantic recall across conversations
 
 ### Image Processing (Iris)
-1. Add images to configured directory
-2. Run captioning + indexing
+1. Add images and videos to configured directory
+2. Run captioning + indexing (videos are sampled into a few frames)
+
+Optional extras, all off or degrading gracefully when their libraries/models are missing:
+- **Semantic search / find similar / re-index** (CLIP + Chroma)
+- **Face grouping** (`iris.faces`, local only, off by default; needs OpenCV 4.5.4+ and two ONNX model files)
+- **Camera object detection** (`iris.camera`, off by default; needs `ultralytics`)
 
 ---
 
@@ -311,7 +316,7 @@ Controls:
 ## Roadmap
 
 - [ ] Learning-based routing
-- [ ] CLIP-based semantic image search
+- [x] CLIP-based semantic image search (Iris; see `modules/iris/embeddings.py`)
 - [ ] Background ingestion pipelines
 - [ ] Multi-device synchronization
 - [ ] Deeper planning + reasoning capabilities

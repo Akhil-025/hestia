@@ -18,7 +18,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 2. NLU | 9 of 10 (`#25` `[L]` out of scope) |
 | 3. Mnemosyne | 19 done, 1 partial (`#47`), of 20 |
 | 4. Athena | 20 of 20 |
-| 5. Iris | 6 of 10 |
+| 5. Iris | 10 of 10 (`#71`, `#72`, `#75`, `#77` done with the limits noted on each) |
 | 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
 | 7. Hermes | 5 done (`#93`, `#94`, `#97`, `#98`, `#100`), 4 partial (`#92`, `#95`, `#96`, `#99`), of 10 (`#91` Todoist not done) |
 | 8. Hephaestus | 6 done (`#101`, `#103`, `#105`, `#106`, `#108`, `#109`), 3 partial (`#102`, `#107`, `#110`), of 10 (`#104` not done) |
@@ -36,7 +36,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 29. Judgment testing | 1 of 3 (`#259`) |
 | 30. Outside ideas | 2 done (`#270`, `#275`), 1 partial (`#269`), of 20 |
 
-Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs `reportlab`), #58 / #59 / #68 (need `fitz`, which was unavailable to test), #70 (not reached), #72 (needs a face-detection library), #32 (needs the knowledge graph from #31). Items it called **out of scope** as multi-week `[L]` projects: #4, #10, #16, #20, #25, #31, #33, #39, #43, #47, #51, #52, #66, #71, #77.
+Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs `reportlab`), #58 / #59 / #68 (need `fitz`, which was unavailable to test), #70 (not reached), #32 (needs the knowledge graph from #31). Items it called **out of scope** as multi-week `[L]` projects: #4, #10, #16, #20, #25, #31, #33, #39, #43, #47, #51, #52, #66.
 
 ---
 
@@ -124,13 +124,13 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 5. Iris — Vision & Media
 
-71. `[L]` Add CLIP-based semantic image search (already on your own roadmap in README) to replace caption-only matching.
-72. `[M]` Add face clustering (privacy-respecting, local-only) so "photos of person X" works without external APIs.
+71. ✅ `[L]` Add CLIP-based semantic image search (already on your own roadmap in README) to replace caption-only matching. — *`embeddings.py` already did the core (CLIP + Chroma, ranked ahead of caption/tag matches). Added: `iris_reindex` (embed photos/videos analysed before CLIP was available), `iris_find_similar` (look-alikes of a photo), and optional relevance cut-offs (`iris.semantic.max_distance` / `relative_margin`, off by default — need tuning on your library). Untested against real CLIP/Chroma here; tests use fakes.*
+72. ✅ `[M]` Add face clustering (privacy-respecting, local-only) so "photos of person X" works without external APIs. — *`modules/iris/faces.py`: OpenCV YuNet + SFace (no new Python dependency beyond OpenCV; two ONNX model files must be downloaded and configured, they are not bundled). **Off by default** (`iris.faces.enabled`), embeddings stay in `iris.db`, groups are never named automatically, naming a group after an existing person merges them, `iris_forget_faces` deletes everything. "photos of Mom at the beach" is answered from the face groups once Mom is named. Grouping logic and engine paths are tested with fake backends; the real models were not run here, and accuracy on children, profiles, masks and low light will be poor.*
 73. ✅ `[M]` Add duplicate/near-duplicate detection across the whole library, not just the perceptual-hash function that already exists — surface it as a cleanup tool.
 74. ✅ `[Q]` Add EXIF-based search (date taken, location, camera) alongside caption search. — *Wired: `IrisEngine.search` applies date / camera / "with location" filters (`modules/iris/query_filters.py`). Place names need reverse geocoding and are not resolved.*
-75. `[M]` Add video support (frame sampling + captioning), not just static images, if your library has video.
+75. ✅ `[M]` Add video support (frame sampling + captioning), not just static images, if your library has video. — *`modules/iris/video.py`: evenly spaced frames (black ones skipped), each captioned by the vision model, merged into one caption/tag set, with the frames' CLIP embeddings averaged into one embedding so semantic search, find-similar, albums and re-index cover videos. Duration stored; search results show `(video, 0:42)`. Tested on synthetic videos with OpenCV. No audio, motion or on-screen text; codec support is whatever your OpenCV build has.*
 76. ✅ `[M]` Add a "describe what changed" mode comparing two photos of the same subject over time (useful for progress photos, plant growth, etc.).
-77. `[L]` Add real-time object detection over a webcam/phone-camera feed for the "hardware debugging via image" and "gesture recognition" use cases HEARTH.txt describes, scoped down to something achievable (e.g. YOLO for common objects, not full PCB fault detection).
+77. ✅ `[L]` Add real-time object detection over a webcam/phone-camera feed for the "hardware debugging via image" and "gesture recognition" use cases HEARTH.txt describes, scoped down to something achievable (e.g. YOLO for common objects, not full PCB fault detection). — *`modules/iris/detection.py`: YOLO (`ultralytics`, optional/heavy, not in the active requirements) over a webcam for one request (`iris_detect_objects`: "what's on my desk", "watch for 20 seconds" reports what appears and disappears, with flicker filtering), or over a saved photo, whose objects are stored so "photos with a laptop" is searchable. Also runnable live: `python -m modules.iris.detection`. **Camera off by default** (`iris.camera.enabled`), opened only for the request and always released, frames never saved. Stock YOLO classes only: it cannot recognise PCB faults, components or hand gestures. Tested with fake detector/camera; no real YOLO model or webcam was available here.*
 78. ✅ `[Q]` Add a manual re-tag/correct-caption flow so wrong AI captions can be fixed and the correction feeds back into search relevance.
 79. ✅ `[M]` Add album/collection auto-organization by clustering embeddings (event detection: "these 40 photos are probably one trip").
 80. ✅ `[Q]` Add a storage-budget guard — warn before ingesting a folder that would blow past a configured disk quota.

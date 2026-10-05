@@ -8,7 +8,10 @@ from pathlib import Path
 from PIL import Image, ExifTags
 import io
 import re
+import tempfile
 from datetime import datetime
+
+from . import video as video_mod
 
 
 def _extract_exif(image: "Image.Image") -> dict:
@@ -91,6 +94,21 @@ def _load_image_base64(file_path: Path, extract_exif: bool = False) -> tuple:
         return base64.b64encode(buf.getvalue()).decode("utf-8"), exif_data
 
 
+# The caption/tags/mood prompt shared by photo and video-frame analysis.
+_ANALYSIS_PROMPT = (
+    "You are an image description assistant. "
+    "You MUST respond using ONLY this exact format with no other text:\n\n"
+    "CAPTION: A clear one-sentence description of the image.\n"
+    "TAGS: tag1, tag2, tag3, tag4, tag5\n"
+    "MOOD: oneword\n\n"
+    "Example response:\n"
+    "CAPTION: A group of friends laughing at a birthday party.\n"
+    "TAGS: people, party, birthday, friends, celebration\n"
+    "MOOD: joyful\n\n"
+    "Now describe the image following this format exactly."
+)
+
+
 class IrisAnalyser:
     def __init__(
         self,
@@ -100,6 +118,8 @@ class IrisAnalyser:
         ollama_model: str = "llava:7b",
         embedder=None,     # ClipEmbedder | None — optional, degrades silently
         vector_index=None,  # ImageVectorIndex | None — optional, degrades silently
+        video_frames: int = video_mod.DEFAULT_FRAMES,  # backlog #75
+        work_dir=None,      # where temporary video frames are written (default: system temp)
     ):
         self.db = db
         self.ollama_host = ollama_host
@@ -107,6 +127,8 @@ class IrisAnalyser:
         self.ollama_model = ollama_model
         self.embedder = embedder
         self.vector_index = vector_index
+        self.video_frames = video_frames
+        self.work_dir = str(work_dir) if work_dir else None
         self.logger = logging.getLogger(__name__)
 
     def analyse_file(self, file_id: int) -> bool:
@@ -120,6 +142,8 @@ class IrisAnalyser:
             if not file_path.exists():
                 self.logger.error(f"File not found on disk: {file_path}")
                 return False
+            if file_type == "video":
+                return self._analyse_video(file_id, file_path)
             if file_type != "image":
                 return True
   
@@ -144,18 +168,7 @@ class IrisAnalyser:
             # `vector_index` are optional and silently no-op if unavailable.
             self._embed_and_index(file_id, file_path)
 
-            prompt = (
-                "You are an image description assistant. "
-                "You MUST respond using ONLY this exact format with no other text:\n\n"
-                "CAPTION: A clear one-sentence description of the image.\n"
-                "TAGS: tag1, tag2, tag3, tag4, tag5\n"
-                "MOOD: oneword\n\n"
-                "Example response:\n"
-                "CAPTION: A group of friends laughing at a birthday party.\n"
-                "TAGS: people, party, birthday, friends, celebration\n"
-                "MOOD: joyful\n\n"
-                "Now describe the image following this format exactly."
-            )
+            prompt = _ANALYSIS_PROMPT
             response = self._send_to_ollama(image_base64, prompt)
             if not response:
                 raise RuntimeError("Empty response from Ollama")
@@ -197,6 +210,57 @@ class IrisAnalyser:
             except Exception:
                 pass
             return False
+
+    def _analyse_video(self, file_id: int, file_path: Path) -> bool:
+        """
+        Caption and index a video from a few evenly spaced frames (#75).
+
+        Each sampled frame is captioned by the vision model; the captions and
+        tags are merged into one record for the video, and the frames' CLIP
+        embeddings are averaged into one embedding under the video's own
+        file_id (see modules/iris/video.py). Raises on failure so analyse_file's
+        handler records a retryable error, as it does for a photo: no frames
+        readable (OpenCV missing, unsupported codec) or no caption from the
+        model at all. Frames are written to a temporary folder and deleted.
+        """
+        self.logger.info(f"Analysing video: {file_path}")
+        info = video_mod.probe_video(file_path)
+        if info is not None:
+            try:
+                self.db.update_video_info(file_id, info.duration_seconds or None)
+            except Exception as exc:
+                self.logger.warning(f"Failed to store video length for file {file_id}: {exc}")
+
+        with tempfile.TemporaryDirectory(dir=self.work_dir, prefix="iris_frames_") as tmp:
+            frames = video_mod.sample_frames(file_path, tmp, self.video_frames)
+            if not frames:
+                raise RuntimeError(
+                    "couldn't read any frames from this video (OpenCV missing, "
+                    "or a codec it can't open)"
+                )
+            if self.embedder is not None and self.vector_index is not None:
+                try:
+                    vector = video_mod.video_embedding(self.embedder, frames)
+                    if vector is not None:
+                        self.vector_index.upsert(file_id, vector)
+                except Exception as exc:
+                    self.logger.warning(f"[Iris] Video embedding failed for file {file_id}: {exc}")
+
+            results = []
+            for frame in frames:
+                image_base64, _ = _load_image_base64(frame)
+                response = self._send_to_ollama(image_base64, _ANALYSIS_PROMPT)
+                if response:
+                    results.append(self._parse_response(response))
+            if not results:
+                raise RuntimeError("Empty response from Ollama")
+
+        caption, tags, mood = video_mod.combine_frame_results(results)
+        self.db.update_file_analysis(
+            file_id, caption, json.dumps(tags), None, mood, False, None
+        )
+        self.db.mark_file_processed(file_id)
+        return True
 
     def _embed_and_index(self, file_id: int, file_path: Path) -> None:
         """
