@@ -30,12 +30,16 @@ Design notes
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import re
+import sqlite3
+import tempfile
+import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Optional
 
@@ -171,6 +175,13 @@ _DEFAULT_MIN_SAMPLE = 4
 _DEFAULT_STREAK_MIN = 2
 _DEFAULT_NUDGE_THRESHOLD_ML = 400
 _MAX_IMPORT_BYTES = 5 * 1024 * 1024
+# Larger caps for the export containers (#119): a Health Connect database or a
+# Takeout zip is far bigger than one CSV. Zip members are only ever read in
+# memory or into a private temp file, never extracted by name.
+_MAX_IMPORT_ARCHIVE_BYTES = 150 * 1024 * 1024
+_MAX_IMPORT_DB_BYTES = 200 * 1024 * 1024
+_MAX_ZIP_MEMBERS = 500
+_IMPORT_SUFFIXES = (".csv", ".json", ".zip", ".db", ".sqlite", ".sqlite3")
 
 _MIN_GOAL_TARGET = 0.1
 _MAX_GOAL_TARGET = 10_000.0
@@ -1381,22 +1392,23 @@ class ApolloEngine(BaseModule):
             for p in base.iterdir():
                 try:
                     rp = p.resolve()
-                    if rp.parent == base and rp.is_file() and rp.suffix.lower() in (".csv", ".json"):
+                    if rp.parent == base and rp.is_file() and rp.suffix.lower() in _IMPORT_SUFFIXES:
                         files.append(rp)
                 except OSError:
                     continue
             files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:20]
         if not files:
-            return _ok("No .csv or .json files in the import folder.",
+            return _ok("No step exports in the import folder (I read .csv, .json, .zip "
+                       "and Health Connect .db files).",
                        data={"files": 0}, confidence=0.9)
 
         totals = Counter()
         for path in files:
             try:
-                if path.stat().st_size > _MAX_IMPORT_BYTES:
+                if path.stat().st_size > _import_size_cap(path):
                     totals["skipped_files"] += 1
                     continue
-                days, skipped = _parse_steps_file(path)
+                days, skipped = _parse_steps_file(path, self._tz)
             except Exception:
                 logger.exception("_import_steps: failed to parse %s", path.name)
                 totals["skipped_files"] += 1
@@ -1413,7 +1425,8 @@ class ApolloEngine(BaseModule):
         if totals["skipped_files"]:
             text += f" Couldn't read {totals['skipped_files']} file(s) (too large or unrecognised layout)."
         if not (totals["inserted"] or totals["updated"] or totals["unchanged"]):
-            text += " Expected a date column and a steps column (see the CHANGELOG for the layout)."
+            text += (" Expected a date column and a steps column, a Google Fit (Takeout) export, "
+                     "or a Health Connect export (see the CHANGELOG for the layouts).")
         return _ok(text, data=dict(totals), confidence=0.85)
 
     # ------------------------------------------------------------------
@@ -2848,14 +2861,25 @@ def _norm_key(key: Any) -> str:
 
 
 _STEP_DATE_KEYS = [_norm_key(k) for k in (
-    "date", "day", "start_date", "startdate", "start time", "start_time",
-    "timestamp", "datetime", "time", "end_date", "enddate",
+    "date", "day", "local date", "start_date", "startdate", "start time", "start_time",
+    "starttime", "timestamp", "datetime", "time", "end_date", "enddate",
 )]
 _STEP_COUNT_KEYS = [_norm_key(k) for k in (
     "steps", "step_count", "step count", "stepcount", "total steps",
     "steps (count)", "count", "value",
 )]
 _MAX_DAILY_STEPS = 200_000
+_FILENAME_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+_FIT_STEP_TYPE = "com.google.step_count.delta"
+
+
+def _import_size_cap(path: Path) -> int:
+    suffix = path.suffix.lower()
+    if suffix == ".zip":
+        return _MAX_IMPORT_ARCHIVE_BYTES
+    if suffix in (".db", ".sqlite", ".sqlite3"):
+        return _MAX_IMPORT_DB_BYTES
+    return _MAX_IMPORT_BYTES
 
 
 def _pick_key(keys: list[str], candidates: list[str]) -> Optional[str]:
@@ -2865,13 +2889,16 @@ def _pick_key(keys: list[str], candidates: list[str]) -> Optional[str]:
     return None
 
 
-def _parse_day(value: Any) -> Optional[date]:
+def _parse_day(value: Any, tz: Optional[tzinfo] = None) -> Optional[date]:
+    """Calendar day for a date string or an epoch (seconds or milliseconds).
+    Epoch values are placed in *tz* (UTC when not given) so steps near
+    midnight land on the day the person actually walked them."""
     if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()
                                            and len(value.strip()) >= 10):
         try:
             v = float(value)
             v = v / 1000.0 if v > 1e11 else v
-            return datetime.fromtimestamp(v, timezone.utc).date()
+            return datetime.fromtimestamp(v, tz or timezone.utc).date()
         except (ValueError, OverflowError, OSError):
             return None
     text = str(value or "").strip()
@@ -2899,10 +2926,40 @@ def _parse_step_value(value: Any) -> Optional[int]:
     return int(round(num))
 
 
-def _json_records(obj: Any) -> list[dict]:
+def _fit_datapoint_records(obj: dict, tz: Optional[tzinfo]) -> Optional[list[dict]]:
+    """Google Fit Takeout "All data" JSON: ``{"Data Points": [{"startTimeNanos":
+    ..., "dataTypeName": "com.google.step_count.delta", "value": [{"intVal":
+    n}]}]}``. Returns None when *obj* isn't that shape. Points of other data
+    types are ignored."""
+    points = next((v for k, v in obj.items() if _norm_key(k) == "data points"), None)
+    if not isinstance(points, list):
+        return None
+    records = []
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        kind = p.get("dataTypeName")
+        if kind and kind != _FIT_STEP_TYPE:
+            continue
+        nanos = p.get("startTimeNanos")
+        vals = p.get("value")
+        if nanos is None or not isinstance(vals, list) or not vals or not isinstance(vals[0], dict):
+            continue
+        count = vals[0].get("intVal", vals[0].get("fpVal"))
+        try:
+            records.append({"date": float(nanos) / 1e9, "steps": count})
+        except (TypeError, ValueError):
+            continue
+    return records
+
+
+def _json_records(obj: Any, tz: Optional[tzinfo] = None) -> list[dict]:
     if isinstance(obj, list):
         return [x for x in obj if isinstance(x, dict)]
     if isinstance(obj, dict):
+        fit = _fit_datapoint_records(obj, tz)
+        if fit is not None:
+            return fit
         for key in ("steps", "data", "records", "days", "values", "items"):
             val = obj.get(key)
             if isinstance(val, list) and val and isinstance(val[0], dict):
@@ -2915,18 +2972,12 @@ def _json_records(obj: Any) -> list[dict]:
     return []
 
 
-def _parse_steps_file(path: Path) -> tuple[dict[str, int], int]:
-    """Read a CSV/JSON step export -> ({YYYY-MM-DD: steps}, skipped_rows).
-
-    Recognised layout: one record per row/object with a date column
-    (date, day, start_date, timestamp, ...) and a steps column (steps,
-    step_count, count, value, ...). Several records on one day are summed
-    (per-record exports); a daily-total file has one per day so the sum is
-    the total. Column names are matched case- and punctuation-insensitively.
-    """
-    text = path.read_text(encoding="utf-8-sig", errors="replace")
-    if path.suffix.lower() == ".json":
-        records = _json_records(json.loads(text))
+def _parse_steps_text(name: str, text: str, tz: Optional[tzinfo]) -> tuple[dict[str, int], int]:
+    """Parse one CSV/JSON export's text. *name* is the file name: a day in it
+    (``2026-09-01.csv``) stands in for the date when the rows carry only a
+    time of day, which is how Google Fit's per-day files are laid out."""
+    if name.lower().endswith(".json"):
+        records = _json_records(json.loads(text), tz)
     else:
         try:
             dialect = csv.Sniffer().sniff(text[:2048], delimiters=",;\t")
@@ -2934,16 +2985,150 @@ def _parse_steps_file(path: Path) -> tuple[dict[str, int], int]:
             dialect = csv.excel
         records = list(csv.DictReader(text.splitlines(), dialect=dialect))
 
+    m = _FILENAME_DATE.search(Path(name).name)
+    try:
+        name_day = date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    except ValueError:
+        name_day = None
+
     totals: dict[str, int] = defaultdict(int)
     skipped = 0
     for rec in records:
         norm = {_norm_key(k): v for k, v in rec.items() if k is not None}
         dk = _pick_key(list(norm), _STEP_DATE_KEYS)
         sk = _pick_key(list(norm), _STEP_COUNT_KEYS)
-        day = _parse_day(norm.get(dk)) if dk else None
-        steps = _parse_step_value(norm.get(sk)) if sk else None
+        raw_steps = norm.get(sk) if sk else None
+        if sk and (raw_steps is None or str(raw_steps).strip() == ""):
+            continue  # an interval with no step data (common in Fit exports) isn't an error
+        day = _parse_day(norm.get(dk), tz) if dk else None
+        if day is None and dk and name_day is not None:
+            day = name_day
+        steps = _parse_step_value(raw_steps) if sk else None
         if day is None or steps is None:
             skipped += 1
             continue
         totals[day.isoformat()] += steps
     return {d: min(v, _MAX_DAILY_STEPS) for d, v in totals.items()}, skipped
+
+
+def _merge_days(into: dict[str, int], more: dict[str, int]) -> None:
+    """Combine day totals from several files of one export. The same day
+    appearing in two files (Takeout ships both an all-days CSV and per-day
+    files) is the same walking counted twice, so the larger figure is kept
+    rather than the sum."""
+    for day, steps in more.items():
+        into[day] = max(into.get(day, 0), steps)
+
+
+def _parse_health_connect_db(path: Path, tz: Optional[tzinfo]) -> tuple[dict[str, int], int]:
+    """Android Health Connect export database -> ({day: steps}, skipped_rows).
+
+    Reads the table whose name contains ``steps_record`` (columns
+    ``start_time`` in epoch milliseconds and ``count``). Where the table has
+    ``start_zone_offset`` (seconds) each record is placed on the day in the
+    zone it was recorded in; otherwise *tz* is used. Where it has
+    ``app_info_id``, records are totalled per app per day and the day takes the
+    largest app total, so a phone and a watch both counting the same walk
+    aren't added together. An unrecognised database yields ({}, 0)."""
+    con = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        names = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        table = next(
+            (n for n in names if "steps_record" in n.lower() and "series" not in n.lower()
+             and '"' not in n), None)
+        if table is None:
+            return {}, 0
+        cols = {r[1].lower(): r[1] for r in con.execute(f'PRAGMA table_info("{table}")')}
+        if "start_time" not in cols or "count" not in cols:
+            return {}, 0
+        zone_col, app_col = cols.get("start_zone_offset"), cols.get("app_info_id")
+        select = [f'"{cols["start_time"]}"', f'"{cols["count"]}"',
+                  f'"{zone_col}"' if zone_col else "NULL", f'"{app_col}"' if app_col else "NULL"]
+        per_app: dict[tuple[str, Any], int] = defaultdict(int)
+        skipped = 0
+        for start, count, offset, app in con.execute(f'SELECT {", ".join(select)} FROM "{table}"'):
+            steps = _parse_step_value(count)
+            try:
+                seconds = float(start) / 1000.0
+                if offset is not None:
+                    day = datetime.fromtimestamp(seconds + float(offset), timezone.utc).date()
+                else:
+                    day = datetime.fromtimestamp(seconds, tz or timezone.utc).date()
+            except (TypeError, ValueError, OverflowError, OSError):
+                day = None
+            if day is None or steps is None:
+                skipped += 1
+                continue
+            per_app[(day.isoformat(), app)] += steps
+    finally:
+        con.close()
+    days: dict[str, int] = {}
+    for (day, _app), steps in per_app.items():
+        days[day] = max(days.get(day, 0), steps)
+    return {d: min(v, _MAX_DAILY_STEPS) for d, v in days.items()}, skipped
+
+
+def _parse_steps_zip(path: Path, tz: Optional[tzinfo]) -> tuple[dict[str, int], int]:
+    """Read a Takeout or Health Connect ``.zip`` without extracting it: CSV and
+    JSON members are read in memory, a database member into a private temp
+    file. Member names are never used as paths. Oversized members and anything
+    past the member cap are skipped; a corrupt archive raises."""
+    days: dict[str, int] = {}
+    skipped = 0
+    budget = _MAX_IMPORT_ARCHIVE_BYTES
+    with zipfile.ZipFile(path) as zf:
+        members = [i for i in zf.infolist() if not i.is_dir()][:_MAX_ZIP_MEMBERS]
+        for info in members:
+            suffix = Path(info.filename).suffix.lower()
+            if suffix not in (".csv", ".json", ".db", ".sqlite", ".sqlite3"):
+                continue
+            if info.file_size > _import_size_cap(Path(info.filename)) or info.file_size > budget:
+                skipped += 1
+                continue
+            budget -= info.file_size
+            try:
+                data = zf.read(info)
+                if suffix in (".csv", ".json"):
+                    part, bad = _parse_steps_text(
+                        Path(info.filename).name, data.decode("utf-8-sig", errors="replace"), tz)
+                else:
+                    with tempfile.TemporaryDirectory(prefix="hestia_steps_") as tmp:
+                        db_path = Path(tmp) / "export.db"
+                        db_path.write_bytes(data)
+                        part, bad = _parse_health_connect_db(db_path, tz)
+            except Exception:
+                logger.exception("_import_steps: failed to parse %s inside %s", info.filename, path.name)
+                skipped += 1
+                continue
+            skipped += bad
+            _merge_days(days, part)
+    return days, skipped
+
+
+def _parse_steps_file(path: Path, tz: Optional[tzinfo] = None) -> tuple[dict[str, int], int]:
+    """Read a step export -> ({YYYY-MM-DD: steps}, skipped_rows).
+
+    Recognised layouts:
+
+    * CSV/JSON with one record per row/object: a date column (date, day,
+      start_date, timestamp, ...) and a steps column (steps, step_count,
+      count, value, ...). Several records on one day are summed (per-record
+      exports); a daily-total file has one per day so the sum is the total.
+      Column names are matched case- and punctuation-insensitively.
+    * Google Fit (Takeout): ``Daily activity metrics.csv`` (``Date`` and
+      ``Step count``), the per-day ``YYYY-MM-DD.csv`` files whose rows carry
+      only a time (the day comes from the file name), and the "All data" JSON
+      of step_count.delta data points.
+    * Android Health Connect: the exported ``.db`` (``steps_record_table``),
+      alone or inside the ``.zip`` it is exported as.
+    * A ``.zip`` of any of the above.
+
+    *tz* places epoch timestamps on a local day (UTC when not given).
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".zip":
+        return _parse_steps_zip(path, tz)
+    if suffix in (".db", ".sqlite", ".sqlite3"):
+        return _parse_health_connect_db(path, tz)
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    return _parse_steps_text(path.name, text, tz)

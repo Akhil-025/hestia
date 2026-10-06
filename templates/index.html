@@ -1645,13 +1645,15 @@
   .hm-wrap { overflow-x: auto; }
   .hm-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; min-width: max-content; }
   .hm-name { width: 140px; flex: 0 0 140px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hm-cells { display: flex; gap: 2px; }
-  .hm-cell { width: 11px; height: 11px; border-radius: 2px; background: rgba(127,127,127,0.18); }
+  /* Cells share the row width so all 84 days fit on a desktop; on a phone the
+     row keeps a minimum width and scrolls inside .hm-wrap (see loadHeatmap). */
+  .hm-cells { display: flex; gap: 2px; flex: 1 1 auto; min-width: 760px; }
+  .hm-cell { flex: 1 1 0; min-width: 7px; height: 11px; border-radius: 2px; background: rgba(127,127,127,0.18); }
   .hm-cell.hm-done { background: #c1502e; }
   .hm-cell.hm-miss { background: rgba(127,127,127,0.35); }
   .hm-cell.hm-unk { background: repeating-linear-gradient(45deg, rgba(127,127,127,0.10), rgba(127,127,127,0.10) 2px, transparent 2px, transparent 4px); }
   .hm-legend { display: flex; gap: 14px; font-size: 12px; opacity: 0.8; margin: 10px 0; flex-wrap: wrap; }
-  .hm-legend .hm-cell { display: inline-block; vertical-align: -1px; margin-right: 4px; }
+  .hm-legend .hm-cell { display: inline-block; flex: none; width: 11px; vertical-align: -1px; margin-right: 4px; }
   .streak-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(127,127,127,0.18); font-size: 14px; }
   .health-note { font-size: 12px; opacity: 0.75; margin: 8px 0 18px; }
   </style>
@@ -2567,6 +2569,7 @@
         }).join('');
         return `<div class="hm-row"><div class="hm-name" title="${esc(h.name)}">${esc(h.name)}</div><div class="hm-cells">${cells}</div></div>`;
       }).join('');
+      el.scrollLeft = el.scrollWidth;   // on a narrow screen start at today, not 12 weeks ago
       const anyHistory = habits.some(h => (h.done || []).length);
       note.textContent = anyHistory
         ? 'Hatched squares are days before completion dates were being recorded, so they are unknown rather than missed.'

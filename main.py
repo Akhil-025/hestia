@@ -440,6 +440,7 @@ class HestiaBuilder:
                     screenshot_dir=browser_cfg.get("screenshot_dir") or None,
                     slow_mo_ms=browser_cfg.get("slow_mo_ms", 0),
                     idle_timeout_seconds=browser_cfg.get("idle_timeout_seconds", 0),
+                    pool_size=browser_cfg.get("pool_size", 1),
                 )
                 if ((self.config.get("hephaestus", {}) or {}).get("monitors") or {}).get("enabled", True):
                     modules["monitor_browser"] = HestiaBrowserAgent(
@@ -606,6 +607,9 @@ class HestiaBuilder:
                 monitor_browser=optional_modules.get("monitor_browser"),
                 scrapers=scrapers,
                 forms=heph_cfg.get("forms") or {},
+                forms_store_path=heph_cfg.get("forms_store_path", "data/hephaestus_forms.json"),
+                llm=optional_modules.get("llm"),
+                repo_review=heph_cfg.get("repo_review") or {},
                 repo_roots=heph_cfg.get("repo_roots") or [],
                 min_host_interval=heph_cfg.get("min_request_interval_seconds", 1.0),
                 quiet_hours=mon_cfg.get("quiet_hours", (22, 7)),

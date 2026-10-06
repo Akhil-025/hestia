@@ -17,6 +17,98 @@ _USER_AGENT = (
 # How many failure screenshots to keep on disk (oldest are deleted first).
 _MAX_FAILURE_SHOTS = 20
 
+# Upper bound for ``pool_size``: every pooled browser is a full Chromium
+# process, so a typo like 50 must not be able to exhaust the machine.
+_MAX_POOL_SIZE = 8
+
+# Form-field discovery (backlog #102). Only plain typed-text controls can be
+# filled by ``page.fill`` (selects, checkboxes and files need other calls), so
+# only those are offered. The sensitive-name filter is a guard, not a promise:
+# card, ID and one-time-code fields are left out so a spoken command can never
+# end up typing them into a page.
+_FILLABLE_TYPES = frozenset({
+    "input", "text", "email", "tel", "number", "url", "search", "date", "time",
+    "datetime-local", "month", "week", "textarea",
+})
+_SENSITIVE_FIELD = re.compile(
+    r"pass(word|code)?|pwd|card|cvv|cvc|ccnum|iban|routing|account.?n(o|um)|"
+    r"\bpin\b|otp|one.?time|ssn|social.?security|aadhaa?r|\bpan\b|passport",
+    re.I,
+)
+_MAX_DISCOVERED_FIELDS = 30
+_SAFE_ID = re.compile(r"^[A-Za-z_][\w-]*$")
+_SAFE_NAME = re.compile(r"^[^\"'\\\s\]\[]+$")
+
+# Runs in the page. Returns plain data only; every decision about what is safe
+# to offer is made in Python (``form_fields_from_raw``) where it can be tested.
+_DISCOVER_JS = """
+() => {
+  const text = (v) => (v || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+  const labelFor = (el) => {
+    const aria = el.getAttribute('aria-label');
+    if (aria) return text(aria);
+    if (el.id) {
+      for (const l of document.querySelectorAll('label[for]')) {
+        if (l.getAttribute('for') === el.id) return text(l.innerText);
+      }
+    }
+    const wrap = el.closest('label');
+    if (wrap) return text(wrap.innerText);
+    return text(el.getAttribute('placeholder') || el.getAttribute('name') || '');
+  };
+  const fields = [];
+  for (const el of document.querySelectorAll('input, textarea, select')) {
+    const rect = el.getBoundingClientRect();
+    fields.push({
+      tag: el.tagName.toLowerCase(),
+      type: (el.getAttribute('type') || el.tagName).toLowerCase(),
+      id: el.id || '',
+      name: el.getAttribute('name') || '',
+      label: labelFor(el),
+      disabled: !!(el.disabled || el.readOnly),
+      hidden: rect.width === 0 && rect.height === 0,
+    });
+  }
+  const submits = [];
+  for (const el of document.querySelectorAll(
+      'button[type=submit], input[type=submit], form button:not([type])')) {
+    submits.push({
+      tag: el.tagName.toLowerCase(),
+      id: el.id || '',
+      type: (el.getAttribute('type') || '').toLowerCase(),
+    });
+  }
+  return {fields, submits};
+}
+"""
+
+
+class _Slot:
+    """One pooled browser: the browser itself, its shared context, and the
+    pages opened on it (so the pool can tell which browser is least busy)."""
+
+    __slots__ = ("browser", "context", "pages")
+
+    def __init__(self, browser):
+        self.browser = browser
+        self.context = None
+        self.pages: list = []
+
+    def live_pages(self) -> int:
+        """Number of pages still open. Forgets pages that have been closed.
+        Anything that can't confirm it is open (``is_closed()`` raising or not
+        returning False) counts as closed, so a broken page never pins a
+        browser as busy."""
+        alive = []
+        for page in self.pages:
+            try:
+                if page.is_closed() is False:
+                    alive.append(page)
+            except Exception:
+                continue
+        self.pages = alive
+        return len(alive)
+
 
 class HestiaBrowserAgent:
     """Playwright-powered browser automation with voice confirmation before acting."""
@@ -29,6 +121,7 @@ class HestiaBrowserAgent:
         screenshot_dir: Optional[str] = None,
         slow_mo_ms: int = 0,
         idle_timeout_seconds: float = 0.0,
+        pool_size: int = 1,
         clock: Callable[[], float] = time.monotonic,
     ):
         """
@@ -46,62 +139,141 @@ class HestiaBrowserAgent:
             slow_mo_ms: Milliseconds Playwright waits between actions. Useful
                         with headless=False so you can follow what it's doing
                         (backlog #108). 0 = full speed.
-            idle_timeout_seconds: Close the browser after this long without use
-                        and relaunch on the next request (backlog #107). 0 = keep
-                        it open until close(). Checked on the next call and by
-                        close_if_idle(); there is no background thread.
+            idle_timeout_seconds: Close the browser(s) after this long without
+                        use and relaunch on the next request (backlog #107).
+                        0 = keep them open until close(). Checked on the next
+                        call and by close_if_idle(); there is no background
+                        thread.
+            pool_size: Most browsers to keep open at once (backlog #107),
+                        clamped to 1-8. Default 1 = one reused browser, exactly
+                        as before. With more than one, a request goes to the
+                        least-busy open browser and another is launched only
+                        when every open one still has a page in use, so the
+                        pool grows under concurrent work and stays at one
+                        browser for sequential work. Each browser has its own
+                        context, so cookies are shared per browser, not across
+                        the pool.
         """
         self.confirm_fn = confirm_fn
         self.headless = headless
         self.screenshot_dir = screenshot_dir
         self.slow_mo_ms = max(0, int(slow_mo_ms or 0))
         self.idle_timeout_seconds = max(0.0, float(idle_timeout_seconds or 0.0))
+        try:
+            requested = int(pool_size or 1)
+        except (TypeError, ValueError):
+            requested = 1
+        self.pool_size = max(1, min(requested, _MAX_POOL_SIZE))
         self.last_failure_screenshot: Optional[str] = None
         self._clock = clock
-        self._browser = None
         self._playwright = None
-        # One long-lived browser context shared by every page (backlog #107):
-        # the browser is launched once, and pages no longer each create (and
-        # leak) a fresh context. Cookies and consent choices therefore persist
-        # between tasks until close() or the idle timeout.
-        self._context = None
-        self._context_browser = None
+        # Pooled browsers, oldest first (backlog #107). Each keeps one
+        # long-lived context shared by every page opened on it, so pages no
+        # longer each create (and leak) a fresh context, and cookies and
+        # consent choices persist until close() or the idle timeout.
+        self._slots: list[_Slot] = []
         self._last_used = self._clock()
         self._lock = threading.Lock()
+
+    # Single-browser views of the pool, kept so code and tests written for one
+    # browser still read naturally. They describe the first (oldest) browser.
+    @property
+    def _browser(self):
+        return self._slots[0].browser if self._slots else None
+
+    @property
+    def _context(self):
+        return self._slots[0].context if self._slots else None
+
+    @property
+    def _context_browser(self):
+        return self._browser if self._context is not None else None
 
     # ------------------------------------------------------------------
     # Browser / session lifecycle
     # ------------------------------------------------------------------
 
     def _get_browser(self):
-        """Lazy-init Playwright and Chromium browser. Reuse if already running."""
+        """Lazy-init Playwright and return a browser to open a page on: the
+        least-busy open one, or a newly launched one while the pool has room
+        and every open browser is in use. Returns None if Playwright isn't
+        installed."""
         with self._lock:
-            if self._browser and self._idle_expired():
+            if self._slots and self._idle_expired():
                 logger.info("Browser idle for over %.0fs; closing it.", self.idle_timeout_seconds)
                 self._close_locked()
-            if self._browser:
+            self._drop_dead_slots()
+            slot = self._pick_slot()
+            if slot is None:
+                slot = self._launch_slot()
+            if slot is None:
+                return None
+            self._last_used = self._clock()
+            return slot.browser
+
+    def _drop_dead_slots(self) -> None:
+        """Forget browsers whose connection is gone so they get relaunched."""
+        alive = []
+        for slot in self._slots:
+            try:
+                connected = bool(slot.browser.is_connected())
+            except Exception:
+                # Playwright crashed or the connection is dead.
+                connected = False
+            if connected:
+                alive.append(slot)
+                continue
+            logger.warning("A pooled browser lost its connection; dropping it.")
+            for closer in (
+                lambda s=slot: s.context.close() if s.context else None,
+                lambda s=slot: s.browser.close(),
+            ):
                 try:
-                    if self._browser.is_connected():
-                        self._last_used = self._clock()
-                        return self._browser
+                    closer()
                 except Exception:
-                    # Playwright crashed or the connection is dead — reset and
-                    # fall through to re-initialize below.
-                    self._browser = None
-                    self._context = None
-                    self._context_browser = None
+                    pass
+        self._slots = alive
+
+    def _pick_slot(self) -> Optional[_Slot]:
+        """Least-busy open browser, or None when a new one should be launched
+        (nothing open yet, or all busy and the pool still has room)."""
+        if not self._slots:
+            return None
+        least = min(self._slots, key=lambda s: s.live_pages())
+        if len(self._slots) < self.pool_size and least.live_pages() > 0:
+            return None
+        return least
+
+    def _launch_slot(self) -> Optional[_Slot]:
+        """Launch one more browser. Caller holds self._lock. The first launch
+        failing raises, as it always has; failing to grow an already-working
+        pool just reuses an open browser."""
+        reused_playwright = self._playwright is not None
+        if self._playwright is None:
             try:
                 from playwright.sync_api import sync_playwright
             except ImportError:
                 logger.error("playwright not installed. Run: pip install playwright && playwright install chromium")
                 return None
             self._playwright = sync_playwright().__enter__()
-            launch_kwargs = {"headless": self.headless}
-            if self.slow_mo_ms:
-                launch_kwargs["slow_mo"] = self.slow_mo_ms
-            self._browser = self._playwright.chromium.launch(**launch_kwargs)
-            self._last_used = self._clock()
-            return self._browser
+        launch_kwargs = {"headless": self.headless}
+        if self.slow_mo_ms:
+            launch_kwargs["slow_mo"] = self.slow_mo_ms
+        try:
+            browser = self._playwright.chromium.launch(**launch_kwargs)
+        except Exception:
+            if self._slots:
+                logger.warning("Could not launch another browser; reusing an open one.", exc_info=True)
+                return min(self._slots, key=lambda s: s.live_pages())
+            if reused_playwright:
+                # The driver itself may have died with the last browser; one
+                # retry on a fresh Playwright before giving up.
+                self._exit_playwright()
+                return self._launch_slot()
+            raise
+        slot = _Slot(browser)
+        self._slots.append(slot)
+        return slot
 
     def _idle_expired(self) -> bool:
         return (
@@ -109,35 +281,50 @@ class HestiaBrowserAgent:
             and (self._clock() - self._last_used) > self.idle_timeout_seconds
         )
 
-    def _close_locked(self) -> None:
-        """Close context, browser and Playwright. Caller holds self._lock."""
-        for closer in (
-            lambda: self._context.close() if self._context else None,
-            lambda: self._browser.close() if self._browser else None,
-            lambda: self._playwright.__exit__(None, None, None) if self._playwright else None,
-        ):
-            try:
-                closer()
-            except Exception:
-                pass
-        self._context = None
-        self._context_browser = None
-        self._browser = None
+    def _exit_playwright(self) -> None:
+        try:
+            if self._playwright:
+                self._playwright.__exit__(None, None, None)
+        except Exception:
+            pass
         self._playwright = None
 
+    def _close_locked(self) -> None:
+        """Close every context and browser, then Playwright. Caller holds self._lock."""
+        for slot in self._slots:
+            for closer in (
+                lambda s=slot: s.context.close() if s.context else None,
+                lambda s=slot: s.browser.close(),
+            ):
+                try:
+                    closer()
+                except Exception:
+                    pass
+        self._slots = []
+        self._exit_playwright()
+
     def close(self) -> None:
-        """Close browser and Playwright instance cleanly."""
+        """Close every browser and the Playwright instance cleanly."""
         with self._lock:
             self._close_locked()
 
     def close_if_idle(self) -> bool:
-        """Close the browser if it has sat unused past ``idle_timeout_seconds``.
-        Returns True if it was closed. Safe to call from a periodic job."""
+        """Close the browser(s) if they have sat unused past ``idle_timeout_seconds``.
+        Returns True if they were closed. Safe to call from a periodic job."""
         with self._lock:
-            if self._browser and self._idle_expired():
+            if self._slots and self._idle_expired():
                 self._close_locked()
                 return True
         return False
+
+    def pool_stats(self) -> dict:
+        """Snapshot for diagnostics: configured size, browsers open, pages in use."""
+        with self._lock:
+            return {
+                "pool_size": self.pool_size,
+                "browsers_open": len(self._slots),
+                "pages_open": sum(s.live_pages() for s in self._slots),
+            }
 
     def _confirm(self, question: str) -> bool:
         """Ask user to confirm an action. Returns True if confirmed."""
@@ -145,28 +332,39 @@ class HestiaBrowserAgent:
             return True
         return self.confirm_fn(question)
 
-    def _get_context(self, browser):
-        """Return the shared context, creating it on first use (or if the
-        browser was replaced since)."""
-        if self._context is not None and self._context_browser is browser:
-            return self._context
-        self._context = browser.new_context(user_agent=_USER_AGENT)
-        self._context_browser = browser
-        return self._context
+    def _slot_for(self, browser) -> _Slot:
+        """The pool slot holding *browser* (adopting it if it isn't pooled yet)."""
+        for slot in self._slots:
+            if slot.browser is browser:
+                return slot
+        slot = _Slot(browser)
+        self._slots.append(slot)
+        return slot
+
+    def _get_context(self, slot: _Slot):
+        """Return the slot's shared context, creating it on first use (or
+        after it was discarded because it failed)."""
+        if slot.context is None:
+            slot.context = slot.browser.new_context(user_agent=_USER_AGENT)
+        return slot.context
 
     def _new_page(self):
         """Open a new browser page. Returns page or None on failure."""
         browser = self._get_browser()
         if not browser:
             return None
+        slot = None
         try:
-            return self._get_context(browser).new_page()
+            slot = self._slot_for(browser)
+            page = self._get_context(slot).new_page()
+            slot.pages.append(page)
+            return page
         except Exception as e:
             logger.warning("Failed to open page: %s", e)
             # The shared context may have been closed or crashed; forget it so
             # the next call builds a fresh one rather than failing forever.
-            self._context = None
-            self._context_browser = None
+            if slot is not None:
+                slot.context = None
             return None
 
     # ------------------------------------------------------------------
@@ -359,6 +557,35 @@ class HestiaBrowserAgent:
                 pass
             return "Something went wrong filling that form."
 
+    def discover_form_fields(self, url: str) -> Optional[dict]:
+        """Open *url* and list the fields a person could fill (backlog #102),
+        so a form can be saved by voice without anyone speaking a CSS selector.
+
+        Returns ``{"fields": [{"selector", "label", "key"}...], "submit_selector",
+        "skipped_sensitive", "skipped_other"}``, or ``None`` when the page
+        couldn't be loaded. Read-only: nothing is typed or clicked, so it needs
+        no confirmation.
+        """
+        page = self._new_page()
+        if not page:
+            return None
+        try:
+            if not url.startswith("http"):
+                url = "https://" + url
+            page.goto(url, timeout=20000)
+            page.wait_for_load_state("domcontentloaded", timeout=8000)
+            raw = page.evaluate(_DISCOVER_JS)
+            page.close()
+            return form_fields_from_raw(raw)
+        except Exception as e:
+            logger.warning("discover_form_fields error: %s", e)
+            self._snap_failure(page, f"discover-{url}")
+            try:
+                page.close()
+            except Exception:
+                pass
+            return None
+
     # ------------------------------------------------------------------
     # Reading pages
     # ------------------------------------------------------------------
@@ -495,3 +722,86 @@ class HestiaBrowserAgent:
             except Exception:
                 pass
             return "I couldn't check that flight status."
+
+
+# ----------------------------------------------------------------------
+# Form-field discovery helpers (backlog #102). Pure functions so the safety
+# rules (what is offered, what is left out) are testable without a browser.
+# ----------------------------------------------------------------------
+
+def _field_key(label: str, name: str, ident: str) -> str:
+    """A short spoken-friendly key (``full_name``) for a field."""
+    for source in (label, name, ident):
+        slug = re.sub(r"[^a-z0-9]+", "_", str(source or "").lower()).strip("_")
+        if slug:
+            return slug[:30]
+    return "field"
+
+
+def _field_selector(ident: str, name: str) -> Optional[str]:
+    if ident and _SAFE_ID.match(ident):
+        return f"#{ident}"
+    if name and _SAFE_NAME.match(name):
+        return f'[name="{name}"]'
+    return None
+
+
+def form_fields_from_raw(raw) -> dict:
+    """Turn the page's raw control list into fields safe to offer for saving.
+
+    Left out, and counted: password, card, ID and one-time-code fields
+    (``skipped_sensitive``); and anything else ``page.fill`` can't type into or
+    that has no usable selector (``skipped_other``: hidden, disabled, selects,
+    checkboxes, files, buttons)."""
+    raw = raw if isinstance(raw, dict) else {}
+    fields: list[dict] = []
+    seen_selectors: set[str] = set()
+    used_keys: set[str] = set()
+    sensitive = other = 0
+    for item in raw.get("fields") or []:
+        if not isinstance(item, dict):
+            continue
+        ident, name = str(item.get("id") or ""), str(item.get("name") or "")
+        label = str(item.get("label") or "")
+        ftype = str(item.get("type") or "").lower()
+        if ftype == "password" or _SENSITIVE_FIELD.search(" ".join((label, name, ident))):
+            sensitive += 1
+            continue
+        selector = _field_selector(ident, name)
+        if (
+            ftype not in _FILLABLE_TYPES
+            or item.get("hidden") or item.get("disabled")
+            or selector is None or selector in seen_selectors
+        ):
+            other += 1
+            continue
+        if len(fields) >= _MAX_DISCOVERED_FIELDS:
+            other += 1
+            continue
+        key = base = _field_key(label, name, ident)
+        n = 2
+        while key in used_keys:
+            key = f"{base}_{n}"
+            n += 1
+        used_keys.add(key)
+        seen_selectors.add(selector)
+        fields.append({"selector": selector, "label": label or name or ident, "key": key})
+
+    submit = None
+    for item in raw.get("submits") or []:
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get("id") or "")
+        if ident and _SAFE_ID.match(ident):
+            submit = f"#{ident}"
+        elif item.get("tag") == "input":
+            submit = "input[type=submit]"
+        else:
+            submit = "button[type=submit]" if item.get("type") == "submit" else "form button"
+        break
+    return {
+        "fields": fields,
+        "submit_selector": submit,
+        "skipped_sensitive": sensitive,
+        "skipped_other": other,
+    }

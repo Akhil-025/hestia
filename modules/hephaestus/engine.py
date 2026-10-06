@@ -22,6 +22,7 @@ Design notes
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -46,7 +47,7 @@ from modules.hephaestus.monitor import (
     normalize,
     validate_monitor_url,
 )
-from modules.hephaestus.repo_summary import format_summary, summarize_repo
+from modules.hephaestus.repo_summary import build_review_prompt, format_summary, summarize_repo
 from modules.hephaestus.scrapers import ScraperRegistry
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,13 @@ _MAX_CHECKS_PER_RUN = 10        # monitors fetched per heartbeat tick / "check n
 _MONITOR_FETCH_TIMEOUT = 120.0  # seconds before one monitor fetch counts as failed
 _SCRAPER_TEXT_CAP = 2000        # chars of site-scraper output handed back to chat
 _MAX_POLITE_WAIT = 10.0         # never stall a request longer than this
+_MAX_SAVED_FORMS = 20           # forms saved by voice (config forms don't count)
+_FORM_SAVE_ACTIONS = frozenset({"save", "add", "create", "remember", "learn", "record", "define"})
+_FORM_FORGET_ACTIONS = frozenset({"forget", "delete", "remove", "drop"})
+_FORM_LIST_ACTIONS = frozenset({"list", "show", "which"})
+_DEFAULT_REVIEW_CHARS = 6000    # most text sent to the model for a code review
+_DEFAULT_REVIEW_FILES = 4       # most files excerpted for a code review
+_REVIEW_REPLY_CAP = 1500        # chars of the model's review spoken back
 _PRICE_WORDS = re.compile(r"price|cheaper|discount|sale|deal|drop", re.I)
 
 # Default desktop-app name → executable/path map. Overridable per-deployment
@@ -142,10 +150,15 @@ class HephaestusEngine(BaseModule):
         Scheduled page monitoring (#101, #109): record a baseline, re-check on
         the heartbeat, and speak up only about meaningful changes.
     ``fill_form``
-        Fill (and optionally submit) a form saved in ``hephaestus.forms``
-        (#102), behind the usual say-yes confirmation.
+        Fill (and optionally submit) a saved form (#102), behind the usual
+        say-yes confirmation. Forms come from ``hephaestus.forms`` in config or
+        are saved by voice: ``action: save`` with a name and a page URL reads
+        the page's fields (nothing is typed), ``action: list`` and
+        ``action: forget`` manage them.
     ``summarize_repo``
-        Structure/health summary of a local code folder (#110).
+        Structure/health summary of a local code folder (#110); with
+        ``review: true`` (and ``hephaestus.repo_review.enabled``) a local-LLM
+        review of the files the scan flagged is added.
 
     Parameters
     ----------
@@ -170,6 +183,18 @@ class HephaestusEngine(BaseModule):
     forms:
         ``{name: {"url", "fields": {selector: value}, "submit_selector"}}``
         profiles for ``fill_form`` (#102). Invalid entries are dropped.
+    forms_store_path:
+        JSON file where forms saved by voice are kept so they survive a
+        restart. Without it they last until Hestia stops. Forms in ``forms``
+        always win over a saved one with the same name and can't be changed
+        or forgotten by voice.
+    llm:
+        Object with ``generate(prompt, options=None) -> str`` (``HestiaLLM``)
+        used only for the optional code review.
+    repo_review:
+        ``{"enabled": bool, "max_chars": int, "max_files": int}``. Off by
+        default: a review sends short excerpts of flagged files to the
+        configured model, which the plain scan never does.
     repo_roots:
         Optional allow-list of folders ``summarize_repo`` may scan. Empty
         means any folder.
@@ -208,6 +233,9 @@ class HephaestusEngine(BaseModule):
         monitor_browser: Any = None,
         scrapers: Optional[ScraperRegistry] = None,
         forms: Optional[dict[str, dict]] = None,
+        forms_store_path: Optional[str] = None,
+        llm: Any = None,
+        repo_review: Optional[dict] = None,
         repo_roots: Optional[list[str]] = None,
         min_host_interval: float = 0.0,
         quiet_hours: Optional[tuple[int, int]] = None,
@@ -220,7 +248,19 @@ class HephaestusEngine(BaseModule):
         self._monitor_store = monitor_store
         self._monitor_browser = monitor_browser or browser_agent
         self._scrapers = scrapers if scrapers is not None else ScraperRegistry()
-        self._forms = _clean_forms(forms)
+        self._config_forms = _clean_forms(forms)
+        self._forms_store_path = forms_store_path or None
+        self._saved_forms = _load_saved_forms(self._forms_store_path)
+        for _key in list(self._saved_forms):
+            if _key in self._config_forms:
+                del self._saved_forms[_key]   # config always wins
+        self._forms = {**self._saved_forms, **self._config_forms}
+        self._forms_lock = threading.Lock()
+        self._llm = llm
+        review_cfg = repo_review if isinstance(repo_review, dict) else {}
+        self._review_enabled = bool(review_cfg.get("enabled", False))
+        self._review_chars = _bounded_int(review_cfg.get("max_chars"), _DEFAULT_REVIEW_CHARS, 1000, 20000)
+        self._review_files = _bounded_int(review_cfg.get("max_files"), _DEFAULT_REVIEW_FILES, 1, 10)
         self._repo_roots = [os.path.realpath(os.path.expanduser(r)) for r in (repo_roots or [])]
         self._min_host_interval = max(0.0, float(min_host_interval or 0.0))
         self._quiet_hours = _clean_quiet_hours(quiet_hours)
@@ -876,10 +916,18 @@ class HephaestusEngine(BaseModule):
         values) and the orchestrator asks for a yes before the second call
         touches the browser. Nothing is submitted unless the saved profile
         has a ``submit_selector``."""
+        action = _extract(entities, "action", "form_action").lower()
+        if action in _FORM_SAVE_ACTIONS:
+            return self._save_form(entities)
+        if action in _FORM_FORGET_ACTIONS:
+            return self._forget_form(entities)
+        if action in _FORM_LIST_ACTIONS:
+            return self._list_forms()
         if not self._forms:
             return _err(
-                "No forms are saved yet. Add them under hephaestus.forms in your config "
-                "with a URL, the fields to fill and optionally a submit button."
+                "No forms are saved yet. Say \"save the form at <address> as <name>\", or add "
+                "them under hephaestus.forms in your config with a URL, the fields to fill "
+                "and optionally a submit button."
             )
         listing = ", ".join(f["label"] for f in self._forms.values())
         query = _extract(entities, "form", "form_name", "name", "query", "raw_query")
@@ -942,6 +990,134 @@ class HephaestusEngine(BaseModule):
         return _ok(result, data={"form": profile["label"], "submitted": result.startswith("Form submitted")},
                    confidence=0.85)
 
+    def _list_forms(self) -> dict:
+        if not self._forms:
+            return _ok("No forms are saved yet.", data={"forms": []}, confidence=0.9)
+        names = [f["label"] for f in self._forms.values()]
+        return _ok("I have these forms: " + ", ".join(names) + ".",
+                   data={"forms": names}, confidence=0.9)
+
+    def _save_form(self, entities: dict) -> dict:
+        """Save a form by voice (#102) without anyone speaking a selector.
+
+        The page is opened read-only and its text fields are listed; each one
+        becomes a ``{placeholder}`` asked for when the form is filled, unless
+        a value was given now (``values``), in which case it is kept as fixed
+        text. Password, card, ID and one-time-code fields are never offered.
+        The saved form has no submit button unless ``submit`` is true, so
+        nothing is sent without that being asked for. Filling a saved form
+        still needs a spoken yes."""
+        name = re.sub(r"\s+", " ", _extract(entities, "form", "form_name", "name")).strip()[:40]
+        raw_url = _extract(entities, "url", "link", "page", "address")
+        if not name:
+            return _clarify("What should I call this form?")
+        if not raw_url:
+            return _clarify("Which page is the form on? Give me its address.")
+        key = name.lower()
+        if key in self._config_forms:
+            return _err(f"The {name} form is set up in your config, so I can't change it from here.")
+        if key not in self._saved_forms and len(self._saved_forms) >= _MAX_SAVED_FORMS:
+            return _err(f"I can only keep {_MAX_SAVED_FORMS} saved forms. Forget one first.")
+        url, problem = validate_monitor_url(raw_url)
+        if problem:
+            return _err(f"I can't use that address: {problem}.")
+        discover = getattr(self._browser, "discover_form_fields", None)
+        if discover is None:
+            return _err("This browser can't read a page's form fields.")
+        self._polite_wait(url)
+        try:
+            found = discover(url)
+        except Exception:
+            logger.exception("discover_form_fields() raised for %r.", name)
+            return _err("Something went wrong reading that page.")
+        if not found:
+            return _err("I couldn't open that page to read its form.")
+        fields = found.get("fields") or []
+        left_out = int(found.get("skipped_sensitive") or 0)
+        if not fields:
+            extra = (f" I left out {left_out} sensitive field(s) such as passwords and card numbers."
+                     if left_out else "")
+            return _err("I didn't find any text fields I can fill on that page." + extra)
+
+        given = entities.get("values")
+        given = {_form_key(k): str(v) for k, v in given.items()} if isinstance(given, dict) else {}
+        templates: dict[str, str] = {}
+        fixed: list[str] = []
+        asked: list[str] = []
+        for f in fields:
+            value = _match_given(given, f["key"])
+            if value is not None and "{" not in value and "}" not in value:
+                templates[f["selector"]] = value
+                fixed.append(f["key"])
+            else:
+                templates[f["selector"]] = "{" + f["key"] + "}"
+                asked.append(f["key"])
+        submit = found.get("submit_selector") if _truthy(entities.get("submit")) else None
+
+        profile = {"label": name, "url": url, "fields": templates, "submit_selector": submit}
+        with self._forms_lock:
+            self._saved_forms[key] = profile
+            self._forms[key] = profile
+            persisted = self._persist_saved_forms()
+        parts = [f"Saved the {name} form at {host_of(url)} with {len(fields)} field"
+                 f"{'s' if len(fields) != 1 else ''}."]
+        if fixed:
+            parts.append("I'll fill in " + ", ".join(fixed) + " myself.")
+        if asked:
+            parts.append("I'll ask you for " + ", ".join(asked) + " each time.")
+        parts.append("It will be submitted after you say yes." if submit else
+                     "I won't submit it; to have me submit, save it again and say so.")
+        if left_out:
+            parts.append(f"I left out {left_out} sensitive field(s) (passwords, cards, IDs); "
+                         "you'll need to fill those yourself.")
+        if not persisted:
+            parts.append("I couldn't write it to disk, so it will be forgotten when I restart.")
+        return _ok(" ".join(parts), data={
+            "form": name, "fields": len(fields), "fixed": fixed, "asked": asked,
+            "submit": bool(submit), "skipped_sensitive": left_out, "persisted": persisted,
+        }, confidence=0.9)
+
+    def _forget_form(self, entities: dict) -> dict:
+        query = _extract(entities, "form", "form_name", "name", "query", "raw_query").lower()
+        if not query:
+            return _clarify("Which saved form should I forget?")
+        hits = [k for k in {**self._saved_forms, **self._config_forms} if k in query]
+        if not hits:
+            return _clarify(f"I don't have a form matching {query!r}.")
+        key = max(hits, key=len)
+        if key in self._config_forms:
+            return _err(f"The {self._config_forms[key]['label']} form is set up in your config, "
+                        "so I can't forget it from here.")
+        with self._forms_lock:
+            label = self._saved_forms.pop(key)["label"]
+            self._forms.pop(key, None)
+            persisted = self._persist_saved_forms()
+        note = "" if persisted else " I couldn't update the file on disk."
+        return _ok(f"Forgot the {label} form.{note}", data={"form": label}, confidence=0.9)
+
+    def _persist_saved_forms(self) -> bool:
+        """Write voice-saved forms to ``forms_store_path`` (atomically).
+        Returns False when there is nowhere to write or the write failed."""
+        path = self._forms_store_path
+        if not path:
+            return False
+        payload = {
+            p["label"]: {"url": p["url"], "fields": p["fields"],
+                         "submit_selector": p["submit_selector"]}
+            for p in self._saved_forms.values()
+        }
+        try:
+            folder = os.path.dirname(os.path.abspath(path))
+            os.makedirs(folder, exist_ok=True)
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2, ensure_ascii=False)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            logger.exception("Could not save forms to %s.", path)
+            return False
+
     # ------------------------------------------------------------------
     # Repository summary (#110)
     # ------------------------------------------------------------------
@@ -962,7 +1138,37 @@ class HephaestusEngine(BaseModule):
         except Exception:
             logger.exception("summarize_repo() raised for %r.", path)
             return _err(f"I couldn't scan {raw!r}.")
-        return _ok(format_summary(summary), data={"summary": summary}, confidence=0.85)
+        text = format_summary(summary)
+        if not _truthy(entities.get("review")):
+            return _ok(text, data={"summary": summary}, confidence=0.85)
+        return self._review_repo(path, summary, text)
+
+    def _review_repo(self, path: str, summary: dict, text: str) -> dict:
+        """Add a local-model review to the scan (#110). Opt-in twice: the
+        ``repo_review.enabled`` setting and ``review`` in the request. Any
+        reason it can't run is said out loud and the scan is still returned."""
+        if not self._review_enabled:
+            return _ok(text + " I can also review the code with the model, but that is turned "
+                       "off; set hephaestus.repo_review.enabled to true to allow it.",
+                       data={"summary": summary, "review": None}, confidence=0.85)
+        if self._llm is None or not hasattr(self._llm, "generate"):
+            return _ok(text + " The model isn't available, so I skipped the review.",
+                       data={"summary": summary, "review": None}, confidence=0.8)
+        if not summary.get("code_files"):
+            return _ok(text, data={"summary": summary, "review": None}, confidence=0.85)
+        try:
+            prompt = build_review_prompt(summary, self._review_chars, self._review_files)
+            review = str(self._llm.generate(prompt, options={"temperature": 0.2}) or "").strip()
+        except Exception:
+            logger.exception("Repo review failed for %r.", path)
+            return _ok(text + " I couldn't get a review from the model.",
+                       data={"summary": summary, "review": None}, confidence=0.8)
+        if not review:
+            return _ok(text + " The model gave no review.",
+                       data={"summary": summary, "review": None}, confidence=0.8)
+        spoken = review if len(review) <= _REVIEW_REPLY_CAP else review[:_REVIEW_REPLY_CAP].rstrip() + "…"
+        return _ok(f"{text}\n\nModel review (a suggestion, not a measurement): {spoken}",
+                   data={"summary": summary, "review": review}, confidence=0.8)
 
     # ------------------------------------------------------------------
     # Reusable helpers for OTHER modules to call directly
@@ -1219,6 +1425,53 @@ def _clean_quiet_hours(value: Any) -> Optional[tuple[int, int]]:
     if not (0 <= start <= 23 and 0 <= end <= 24) or start == end:
         return None
     return start, end
+
+
+def _truthy(value: Any) -> bool:
+    """True for True or a spoken-ish yes ("yes", "true", "review it"); False
+    for None, False and anything else."""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"true", "yes", "y", "1", "on", "submit", "review"}
+
+
+def _bounded_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(int(value), high))
+    except (TypeError, ValueError):
+        return default
+
+
+def _form_key(name: Any) -> str:
+    """Normalise a spoken field name the way saved field keys are made."""
+    return re.sub(r"[^a-z0-9]+", "_", str(name or "").lower()).strip("_")
+
+
+def _match_given(given: dict[str, str], key: str) -> Optional[str]:
+    """The value spoken for a field, matching its key exactly or by one
+    containing the other (``email`` for ``email_address``); None if none."""
+    if key in given:
+        return given[key]
+    for spoken, value in given.items():
+        if len(spoken) >= 3 and (spoken in key or key in spoken):
+            return value
+    return None
+
+
+def _load_saved_forms(path: Optional[str]) -> dict[str, dict]:
+    """Read voice-saved forms back from *path*, validated like config forms.
+    A missing or unreadable file means no saved forms; it never stops startup."""
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        logger.warning("Ignoring unreadable saved-forms file %s.", path, exc_info=True)
+        return {}
+    return _clean_forms(raw if isinstance(raw, dict) else {})
 
 
 def _clean_forms(forms: Optional[dict]) -> dict[str, dict]:

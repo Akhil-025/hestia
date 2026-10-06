@@ -47,7 +47,7 @@ iris_search, iris_ingest, iris_status, iris_analyse, iris_query,
 iris_find_duplicates, iris_correct_caption, iris_organize_albums,
 iris_compare_photos, iris_reindex, iris_find_similar, iris_scan_faces,
 iris_list_people, iris_name_person, iris_find_person, iris_forget_faces,
-iris_detect_objects,
+iris_detect_objects, iris_check_circuit,
 athena_search, athena_ingest, athena_status, athena_check_updates,
 athena_mark_feedback, athena_literature_review, athena_research_gaps,
 athena_compare_documents, athena_get_citations, athena_translate_document,
@@ -500,6 +500,16 @@ User: what's on my desk right now
 
 User: watch the camera for 20 seconds and tell me what changes
 {"intent": "iris_detect_objects", "entities": {"seconds": 20}, "response": "Watching the camera.", "confidence": 0.9}
+
+# iris_check_circuit is a visual check of ONE breadboard photo Iris has already
+# indexed (the newest image unless entities.file_id names one). It cannot test
+# a circuit; it only looks for faults that show in the picture.
+
+User: does anything look wrong on my breadboard
+{"intent": "iris_check_circuit", "entities": {}, "response": "Taking a look at the breadboard photo.", "confidence": 0.9}
+
+User: check the circuit in photo 14 for mistakes
+{"intent": "iris_check_circuit", "entities": {"file_id": 14}, "response": "Checking that circuit.", "confidence": 0.9}
 
 ---
 
@@ -1267,11 +1277,33 @@ User: check my watched pages now
 User: fill in my scholarship form
 {"intent": "hephaestus_fill_form", "entities": {"form": "scholarship"}, "response": "Getting the scholarship form ready.", "confidence": 0.9}
 
+# hephaestus_fill_form can also MANAGE forms. entities.action is "save" (read
+# the fields from entities.url; set entities.submit true only if the user
+# said to submit), "list" or "forget". The user never speaks selectors.
+
+User: save the form at apply.example.org/gate as gate application
+{"intent": "hephaestus_fill_form", "entities": {"action": "save", "form": "gate application", "url": "apply.example.org/gate"}, "response": "Reading that form.", "confidence": 0.9}
+
+User: remember the form at example.org/news as newsletter and submit it each time
+{"intent": "hephaestus_fill_form", "entities": {"action": "save", "form": "newsletter", "url": "example.org/news", "submit": true}, "response": "Saving that form.", "confidence": 0.88}
+
+User: which forms do you have saved
+{"intent": "hephaestus_fill_form", "entities": {"action": "list"}, "response": "Here are your saved forms.", "confidence": 0.9}
+
+User: forget my newsletter form
+{"intent": "hephaestus_fill_form", "entities": {"action": "forget", "form": "newsletter"}, "response": "Forgetting that form.", "confidence": 0.9}
+
 # hephaestus_summarize_repo summarises a LOCAL code folder (structure, size,
 # tests, things worth a look). entities.path is a folder on this computer.
 
 User: summarize the code in C:\projects\hestia
 {"intent": "hephaestus_summarize_repo", "entities": {"path": "C:\\projects\\hestia"}, "response": "Looking through that project.", "confidence": 0.9}
+
+# entities.review is true only when the user asks for a REVIEW or opinion of
+# the code (not just a summary); it needs the optional model review setting.
+
+User: review the code in C:\projects\hestia
+{"intent": "hephaestus_summarize_repo", "entities": {"path": "C:\\projects\\hestia", "review": true}, "response": "Reviewing that project.", "confidence": 0.88}
 
 # ---- CORE ----
 
@@ -1538,6 +1570,7 @@ STRICT RULES:
 - iris_ingest → adding/importing media
 - iris_find_person → "photos of <name>" for a person already named; iris_name_person → naming a face group ("Person 3 is Mom")
 - iris_detect_objects → what the camera currently sees / what objects are in a photo; NOT for reading documents or emails
+- iris_check_circuit → "is my breadboard/circuit wired wrong" about a PHOTO of one; NOT for measuring, simulating or debugging code
 - NEVER use iris_search for notes or documents
 - NEVER use athena_search for images
 - read_email / send_email / list_events / create_event / delete_events → Gmail or Calendar ONLY (mail, inbox, email, meetings, calendar, schedule)

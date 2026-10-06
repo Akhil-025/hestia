@@ -12,6 +12,50 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Hephaestus forms, browser pool, repo review; Iris breadboard check; step-export formats; heatmap layout (#102, #104, #107, #110, #119, #121)
+
+Registry version 2.25.0 (minor: `iris_check_circuit` added). New tests:
+`tests/test_backlog_hephaestus_apollo_iris_round2.py` (55). Every new setting is
+optional and off or unchanged by default. Tested with fakes, synthetic files,
+a local HTML page and real Chromium; not against real third-party sites, phone
+exports or a real model.
+
+### Added
+
+- **Browser pool (#107).** `browser.pool_size` (1-8, default 1). Requests use
+  the least-busy open browser; another is launched only while all open ones are
+  in use. Dead browsers are replaced, a failed extra launch reuses an open one,
+  idle timeout closes the whole pool, `pool_stats()` for diagnostics.
+- **Forms by voice (#102).** `fill_form` with `action: save|list|forget`. Saving
+  reads a page's text fields read-only (`HestiaBrowserAgent.discover_form_fields`)
+  and stores them as asked-for placeholders; password, card, ID and OTP fields are
+  never offered; nothing is submitted unless you say so; addresses use the page-watch
+  URL check. Persisted in `hephaestus.forms_store_path` (default
+  `data/hephaestus_forms.json`). Config forms always win and can't be changed by voice.
+- **Breadboard check (#104).** `iris_check_circuit`: one vision-model call on an
+  indexed photo with a constrained VERDICT/FINDINGS reply. Always says it is a
+  visual check; unreadable or self-contradicting replies are not trusted.
+- **Repo scan and review (#110).** JS/TS/Go/Rust function lengths and findings,
+  Python `eval`/`exec` and mutable defaults, dependency counts. `review: true`
+  plus `hephaestus.repo_review.enabled` adds a local-model review of a few flagged,
+  secret-redacted file excerpts.
+- **Step exports (#119).** Google Fit Takeout CSV/JSON, Health Connect `.db`, and
+  `.zip`s of them; timezone-aware day placement; duplicate days keep the larger
+  figure; per-app totals so two sources aren't summed.
+
+### Fixed
+
+- **Heatmap layout (#121).** Found by rendering the tab in Chromium: on a
+  desktop-width page the newest days were off-screen. Cells now share the row
+  width; on narrow screens the grid scrolls inside its wrapper, starting at today.
+
+### Config
+
+`browser.pool_size`, `hephaestus.forms_store_path`, `hephaestus.repo_review.*`
+(see `config/laptop_config.example.yaml`; validated in `core/config_validation.py`).
+
+---
+
 ## [Unreleased] — Hermes: Todoist, scheduled digest, travel times, meeting booking, inbox archiving (#91, #92, #95, #96, #99, #88)
 
 Registry version 2.24.0 (minor: 5 intents added). New tests:

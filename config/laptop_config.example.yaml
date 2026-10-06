@@ -18,6 +18,9 @@ browser:
   # Close the browser after this many idle seconds (it relaunches on demand).
   # 0 keeps it open until Hestia exits.
   idle_timeout_seconds: 0
+  # Most browsers kept open at once (1-8). 1 = one reused browser. Higher only
+  # helps when several page tasks run at the same time; each is a full Chromium.
+  pool_size: 1
 
 # Hephaestus (browser automation) — every key is optional
 hephaestus:
@@ -55,6 +58,15 @@ hephaestus:
   #     submit_selector: "button[type=submit]"
   # Folders "summarize the code in <path>" may scan. Empty = any folder.
   repo_roots: []
+  # Where forms saved by voice ("save the form at <address> as <name>") are kept.
+  # forms_store_path: "data/hephaestus_forms.json"
+  # "review the code in <path>" asks your local model for a review of the files
+  # the scan flagged. Off by default: it sends short excerpts of those files
+  # (secret-looking lines removed) to the model, which the plain scan never does.
+  # repo_review:
+  #   enabled: false
+  #   max_chars: 6000
+  #   max_files: 4
 
 # Web UI dashboard
 webui:
@@ -256,7 +268,7 @@ apollo:
     every_days: 7
   burnout:
     enabled: true                    # weekly; only speaks up when signals are worth a look
-  # import_dir: "data/apollo/imports"  # folder for `import my steps` (CSV/JSON: a date column + a steps column)
+  # import_dir: "data/apollo/imports"  # folder for `import my steps` (CSV/JSON, Google Fit Takeout, Health Connect .db, or a .zip of those)
 
 dionysus:
   mood_aware: true                   # use your logged mood for movie/music picks when you give none

@@ -232,6 +232,8 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "iris_find_person": "iris",
     "iris_forget_faces": "iris",
     "iris_detect_objects": "iris",
+    # backlog #104 — visual check of a breadboard photo.
+    "iris_check_circuit": "iris",
 
     # --- Artemis (habits & goals) ---
     "add_goal": "artemis",
@@ -445,7 +447,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.24.0"
+REGISTRY_VERSION: str = "2.25.0"
 
 
 def registry_fingerprint() -> str:

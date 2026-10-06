@@ -7,6 +7,7 @@ from modules.base import BaseModule
 import logging
 import asyncio
 import json
+import re
 from .config import get_config, IrisConfig
 from pathlib import Path
 from .db import IrisDB
@@ -23,6 +24,66 @@ except ImportError:
     logging.warning("[Iris] requests library not available, IrisAnalyser disabled.")
 
 logger = logging.getLogger(__name__)
+
+# Breadboard photo check (backlog #104). Deliberately small: one vision-model
+# call on one photo, looking only for faults that can be SEEN. It is not PCB
+# fault classification and it cannot measure anything, so the reply format
+# forces a verdict the engine can hold the model to, and the spoken answer
+# always says it was a visual check.
+_CIRCUIT_PROMPT = (
+    "You are helping a hobbyist check a photo of a breadboard circuit. "
+    "Look ONLY for problems you can actually see in this photo, such as:\n"
+    "- a component leg or jumper end that is not seated in a hole, or a bent leg "
+    "touching a neighbouring leg;\n"
+    "- an LED that looks reversed relative to the others, or an LED with no "
+    "resistor in series;\n"
+    "- an electrolytic capacitor or other polarised part whose stripe or long leg "
+    "looks reversed;\n"
+    "- two wires or legs in the same row that would short;\n"
+    "- an IC not straddling the centre channel;\n"
+    "- a power rail with no supply wire, or red and black wires that look swapped.\n"
+    "Do not invent parts you cannot see. You cannot measure voltage or test the "
+    "circuit, so never say it works.\n"
+    "If the image is too blurry or dark, or does not show a breadboard, say CANNOT_TELL "
+    "and why.\n\n"
+    "Reply in EXACTLY this format and nothing else:\n"
+    "VERDICT: LOOKS_OK or POSSIBLE_PROBLEMS or CANNOT_TELL\n"
+    "FINDINGS:\n"
+    "- one short line per problem or reason, saying where in the photo it is\n"
+    "(write '- none' under FINDINGS when the verdict is LOOKS_OK)"
+)
+_CIRCUIT_VERDICTS = ("LOOKS_OK", "POSSIBLE_PROBLEMS", "CANNOT_TELL")
+_CIRCUIT_NOTE = "That is a visual check only; I can't test the circuit, so check it against your schematic."
+_MAX_CIRCUIT_FINDINGS = 8
+
+
+def parse_circuit_reply(reply: str) -> dict:
+    """Read the vision model's reply to ``_CIRCUIT_PROMPT``.
+
+    Returns ``{"verdict": one of _CIRCUIT_VERDICTS or "UNREADABLE", "findings": [...]}``.
+    A reply with no recognisable verdict is UNREADABLE rather than guessed at.
+    A LOOKS_OK verdict that still lists problems is downgraded to
+    POSSIBLE_PROBLEMS: when the model contradicts itself, the cautious reading wins."""
+    text = str(reply or "")
+    m = re.search(r"VERDICT\s*:\s*([A-Za-z_ ]+)", text)
+    verdict = re.sub(r"[ ]+", "_", m.group(1).strip().upper()) if m else ""
+    verdict = verdict if verdict in _CIRCUIT_VERDICTS else "UNREADABLE"
+    findings: list[str] = []
+    after = text.split("FINDINGS", 1)[1] if "FINDINGS" in text else ""
+    for line in after.splitlines():
+        line = line.strip()
+        if not line or line.endswith(":") and not line.startswith(("-", "*")):
+            continue
+        item = re.sub(r"^(?:[-*\u2022]|\d+[.)])\s*", "", line).strip()
+        if not item or re.match(r"(?i)^(none|n/a|nothing|no problems?)\b", item):
+            continue
+        findings.append(item[:200])
+        if len(findings) >= _MAX_CIRCUIT_FINDINGS:
+            break
+    if verdict == "LOOKS_OK" and findings:
+        verdict = "POSSIBLE_PROBLEMS"
+    return {"verdict": verdict, "findings": findings}
+
 
 class IrisEngine(BaseModule):               
     name = "iris"
@@ -110,6 +171,8 @@ class IrisEngine(BaseModule):
             "iris_find_person", "find_person",
             "iris_forget_faces", "forget_faces",
             "iris_detect_objects", "detect_objects",
+            # backlog #104 — "does anything look wrong on this breadboard"
+            "iris_check_circuit", "check_circuit",
         }
 
     def handle(self, intent: str, entities: dict, context: dict) -> dict:
@@ -221,6 +284,9 @@ class IrisEngine(BaseModule):
                 "response": result.get("description", "I couldn't compare those photos."),
                 "data": result, "confidence": 0.85 if result.get("description") else 0.2,
             }
+
+        elif canonical == "check_circuit":
+            return self._circuit_reply(self.check_circuit(_as_int(entities.get("file_id"), None)))
 
         elif canonical == "reindex":
             stats = self.reindex_embeddings(_as_int(entities.get("limit"), 200))
@@ -855,6 +921,69 @@ class IrisEngine(BaseModule):
             "file_id_a": file_id_a,
             "file_id_b": file_id_b,
         }
+
+    def check_circuit(self, file_id=None) -> dict:
+        """\"Does anything look wrong on this breadboard\" (backlog #104): one
+        vision-model call on one indexed photo (the one given, else the most
+        recently ingested image) with ``_CIRCUIT_PROMPT``.
+
+        Only photos Iris has indexed can be checked, so a spoken request can't
+        point the model at an arbitrary file. Returns ``{"verdict", "findings",
+        "file_id"}`` or ``{"error": ...}``."""
+        if self.analyser is None:
+            return {"error": "vision analysis is not configured"}
+        try:
+            if file_id is None:
+                record = next(
+                    (r for r in self.db.get_all_files(limit=50) if r.get("file_type") == "image"), None)
+            else:
+                record = self.db.get_file(int(file_id))
+        except Exception as e:
+            logger.error(f"[Iris] check_circuit: lookup failed: {e}")
+            return {"error": "I couldn't look that photo up"}
+        if not record:
+            return {"error": "I couldn't find a photo to check. Ingest it first, or tell me its number"}
+        if record.get("file_type") != "image":
+            return {"error": "That isn't a photo, so I can't check it"}
+        path = Path(record["file_path"])
+        if not path.exists():
+            return {"error": "That photo is missing on disk"}
+        try:
+            image, _ = _load_image_base64(path)
+        except Exception as e:
+            logger.error(f"[Iris] check_circuit: image load failed: {e}")
+            return {"error": "I couldn't load that image"}
+        reply = self.analyser._send_to_ollama(image, _CIRCUIT_PROMPT)
+        if not reply:
+            return {"error": "The vision model didn't answer"}
+        parsed = parse_circuit_reply(reply)
+        parsed["file_id"] = record["id"]
+        return parsed
+
+    @staticmethod
+    def _circuit_reply(result: dict) -> dict:
+        """Turn a ``check_circuit`` result into the spoken reply."""
+        if result.get("error"):
+            return {"response": result["error"] + ".", "data": result, "confidence": 0.2}
+        verdict, findings, fid = result["verdict"], result["findings"], result["file_id"]
+        if verdict == "LOOKS_OK":
+            text = f"Nothing looks obviously wrong in photo {fid}. {_CIRCUIT_NOTE}"
+            confidence = 0.7
+        elif verdict == "POSSIBLE_PROBLEMS":
+            lines = [f"Possible problems in photo {fid}:"] + [f"{i}. {f}" for i, f in enumerate(findings, 1)]
+            if not findings:
+                lines.append("(the model flagged a problem but didn't say what)")
+            lines.append(_CIRCUIT_NOTE)
+            text, confidence = "\n".join(lines), 0.7
+        elif verdict == "CANNOT_TELL":
+            why = f" {findings[0]}." if findings else ""
+            text = ("I can't tell from photo " + str(fid) + "." + why +
+                    " A close, bright shot from straight above works best.")
+            confidence = 0.5
+        else:
+            text = "The vision model's answer wasn't something I could read reliably, so I won't guess. Try again."
+            confidence = 0.2
+        return {"response": text, "data": result, "confidence": confidence}
 
     def stats(self) -> dict:
         try:
