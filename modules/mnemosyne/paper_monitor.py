@@ -8,12 +8,18 @@ documents.
 
 Sources
 -------
-**arXiv** is implemented (public Atom API, no key). **IEEE Xplore is NOT**:
-its API needs a registered key and its response format could not be
-verified from here, so rather than ship an untested adapter the fetch step
-is a plain ``fetch_fn(url) -> str`` and the parser is per-source — an IEEE
-adapter would be a second ``parse_*`` function plus a URL builder, with
-the interest/seen/queue machinery below unchanged.
+Each source is a small adapter (``PaperSource``: ``name``, ``supports``,
+``build_url``, ``parse``, ``recent``, ``min_gap``, optional ``daily_limit``).
+
+**arXiv** (``ArxivSource``): public Atom API, no key.
+**IEEE Xplore** (``ieee_source.IeeeSource``): needs your own API key, written
+from the documented response shape and NOT yet verified against the live
+API; ``scripts/check_ieee.py`` is the one-time check. See that module.
+
+The interest / seen / queue machinery is shared. A paper found by two sources
+(an arXiv preprint and its IEEE version) is queued once: matched by DOI, or by
+an exact normalised title of 20+ characters. A source with a ``daily_limit``
+has its calls counted in the database and stops for the day at the limit.
 
 How a paper is "queued in Athena"
 ---------------------------------
@@ -61,6 +67,19 @@ class Paper:
     categories: list[str] = field(default_factory=list)
     matched_query: str = ""
     digest: str = ""                   # model summary (filled by the monitor)
+    source: str = "arxiv"              # which PaperSource produced it
+    doi: str = ""
+    external_id: str = ""              # non-arXiv sources: their own id (IEEE article number)
+    venue: str = ""
+    date_precision: str = "day"        # "day" | "month" | "year" (IEEE often gives only a month)
+
+    @property
+    def paper_id(self) -> str:
+        """Key used for de-duplication: the bare arXiv id (unchanged, so existing
+        rows stay valid), or ``<source>:<id>`` for other sources."""
+        if self.source == "arxiv":
+            return self.arxiv_id
+        return f"{self.source}:{self.external_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +147,7 @@ def parse_arxiv_feed(xml_text: str) -> list[Paper]:
             link=link or raw_id,
             pdf_link=pdf,
             categories=[c.get("term", "") for c in entry.findall(f"{_ATOM}category") if c.get("term")],
+            doi=_clean(entry.findtext(f"{_ARXIV_NS}doi")).lower(),
         ))
     return papers
 
@@ -135,13 +155,19 @@ def parse_arxiv_feed(xml_text: str) -> list[Paper]:
 def paper_markdown(paper: Paper) -> str:
     """The document Athena will ingest for one paper."""
     authors = ", ".join(paper.authors[:8]) + (" et al." if len(paper.authors) > 8 else "")
+    id_line = (f"- arXiv: {paper.arxiv_id}" if paper.source == "arxiv"
+               else f"- {paper.source.upper()}: {paper.external_id}")
     lines = [
         f"# {paper.title}", "",
-        f"- arXiv: {paper.arxiv_id}",
+        id_line,
         f"- Authors: {authors or 'unknown'}",
         f"- Published: {paper.published[:10] or 'unknown'}",
         f"- Link: {paper.link}",
     ]
+    if paper.doi:
+        lines.append(f"- DOI: {paper.doi}")
+    if paper.venue:
+        lines.append(f"- Venue: {paper.venue}")
     if paper.categories:
         lines.append(f"- Categories: {', '.join(paper.categories)}")
     if paper.matched_query:
@@ -179,6 +205,68 @@ CREATE TABLE IF NOT EXISTS papers_seen (
 );
 """
 
+# Columns added after the first release; added to an existing database on open.
+_MIGRATIONS = (
+    ("papers_seen", "source", "TEXT DEFAULT 'arxiv'"),
+    ("papers_seen", "doi", "TEXT DEFAULT ''"),
+    ("papers_seen", "norm_title", "TEXT DEFAULT ''"),
+)
+
+_USAGE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS api_usage (
+    source TEXT NOT NULL,
+    day TEXT NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (source, day)
+);
+"""
+
+_MIN_TITLE_CHARS = 20
+
+
+def normalise_title(title: str) -> str:
+    """Lower-case letters and digits only, for cross-source title matching."""
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+class PaperSource:
+    """Interface every source implements (duck-typed; subclassing is optional)."""
+
+    name: str = ""
+    min_gap: float = 0.0              # seconds between two calls in one check
+    daily_limit: Optional[int] = None  # None = not counted
+
+    def supports(self, query: str) -> bool:
+        return True
+
+    def build_url(self, query: str, max_results: int) -> str:
+        raise NotImplementedError
+
+    def parse(self, text: str) -> list["Paper"]:
+        raise NotImplementedError
+
+    def recent(self, paper: "Paper", cutoff: datetime) -> bool:
+        return True
+
+    def redact(self, text: str) -> str:
+        """Remove secrets (an API key) from text before it is logged."""
+        return text
+
+
+class ArxivSource(PaperSource):
+    name = "arxiv"
+    min_gap = _MIN_REQUEST_GAP_SECONDS
+
+    def build_url(self, query: str, max_results: int) -> str:
+        return build_arxiv_url(query, max_results=max_results)
+
+    def parse(self, text: str) -> list["Paper"]:
+        return parse_arxiv_feed(text)
+
+    def recent(self, paper: "Paper", cutoff: datetime) -> bool:
+        return PaperMonitor._recent_enough(paper, cutoff)
+
+
 _PROMPT = (
     "Summarise this research paper abstract in exactly 2 plain sentences for "
     "a busy reader: what was done and what was found. No preamble.\n\n"
@@ -206,8 +294,10 @@ class PaperMonitor:
         sleep_fn: Callable[[float], None] = time.sleep,
         max_new_per_query: int = 5,
         lookback_days: int = 14,
+        sources: Optional[list] = None,
     ) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.sources: list = list(sources) if sources else [ArxivSource()]
         self.docs_dir = Path(docs_dir)
         self.llm = llm
         self.fetch_fn = fetch_fn or _default_fetch
@@ -219,6 +309,49 @@ class PaperMonitor:
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.executescript(_SCHEMA)
+            self._conn.executescript(_USAGE_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first release, and backfill the
+        title key for rows written before it existed. Idempotent."""
+        with self._lock, self._conn:
+            for table, column, decl in _MIGRATIONS:
+                cols = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                if column not in cols:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            rows = self._conn.execute(
+                "SELECT arxiv_id, title FROM papers_seen WHERE norm_title IS NULL OR norm_title = ''"
+            ).fetchall()
+            for r in rows:
+                self._conn.execute(
+                    "UPDATE papers_seen SET norm_title = ? WHERE arxiv_id = ?",
+                    (normalise_title(r["title"]), r["arxiv_id"]))
+
+    # -- per-source daily call counter ---------------------------------
+
+    @staticmethod
+    def _day(now: datetime) -> str:
+        return now.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+    def usage_today(self, source: str, now: Optional[datetime] = None) -> int:
+        row = self._conn.execute(
+            "SELECT calls FROM api_usage WHERE source = ? AND day = ?",
+            (source, self._day(now or datetime.now(timezone.utc)))).fetchone()
+        return int(row["calls"]) if row else 0
+
+    def _bump_usage(self, source: str, now: datetime, to: Optional[int] = None) -> None:
+        day = self._day(now)
+        with self._lock, self._conn:
+            if to is None:
+                self._conn.execute(
+                    "INSERT INTO api_usage (source, day, calls) VALUES (?, ?, 1) "
+                    "ON CONFLICT(source, day) DO UPDATE SET calls = calls + 1", (source, day))
+            else:
+                self._conn.execute(
+                    "INSERT INTO api_usage (source, day, calls) VALUES (?, ?, ?) "
+                    "ON CONFLICT(source, day) DO UPDATE SET calls = MAX(calls, excluded.calls)",
+                    (source, day, to))
 
     # -- interests -------------------------------------------------------
 
@@ -254,7 +387,7 @@ class PaperMonitor:
     def recent_papers(self, limit: int = 10) -> list[dict]:
         return [
             dict(r) for r in self._conn.execute(
-                "SELECT arxiv_id, title, query, published, digest FROM papers_seen "
+                "SELECT arxiv_id, title, query, published, digest, source FROM papers_seen "
                 "ORDER BY first_seen DESC LIMIT ?", (limit,)
             ).fetchall()
         ]
@@ -264,55 +397,97 @@ class PaperMonitor:
             "SELECT 1 FROM papers_seen WHERE arxiv_id = ?", (arxiv_id,)
         ).fetchone() is not None
 
+    def _is_cross_source_duplicate(self, paper: Paper, pending: list) -> bool:
+        """True if the same work is already stored or queued from another source:
+        same DOI, or the same normalised title (only when it is long enough that
+        a collision between different papers is implausible)."""
+        key = normalise_title(paper.title)
+        long_title = len(key) >= _MIN_TITLE_CHARS
+        for q in pending:
+            if q.paper_id == paper.paper_id:
+                continue
+            if paper.doi and q.doi and paper.doi == q.doi:
+                return True
+            if long_title and normalise_title(q.title) == key:
+                return True
+        row = self._conn.execute(
+            "SELECT 1 FROM papers_seen WHERE arxiv_id != ? AND "
+            "((? != '' AND doi = ?) OR (? AND norm_title = ?)) LIMIT 1",
+            (paper.paper_id, paper.doi, paper.doi, 1 if long_title else 0, key)).fetchone()
+        return row is not None
+
     # -- checking --------------------------------------------------------
 
     def check(self, now: Optional[datetime] = None) -> dict:
         """
-        Fetch every interest, process unseen recent papers, return
-        ``{"new": [Paper...], "errors": n, "interests": n}``.
+        Fetch every interest from every source, process unseen recent papers,
+        return ``{"new": [Paper...], "errors": n, "interests": n,
+        "by_source": {name: n_new}, "quota_skipped": [names]}``.
 
-        Failure isolation: a network error on one interest is logged and
-        counted, and the others still run. A paper is marked seen only
-        AFTER its file is written, so a crash mid-run retries it next time
-        instead of silently dropping it.
+        Failure isolation: a failure for one (interest, source) is logged and
+        counted, and the rest still run. A paper is marked seen only AFTER its
+        file is written, so a crash mid-run retries it next time instead of
+        silently dropping it. A source with a daily limit stops for the day
+        when the limit is reached, or when the service reports it was exceeded.
         """
         now = now or datetime.now(timezone.utc)
         cutoff = now - timedelta(days=self.lookback_days)
         interests = self.list_interests()
-        result: dict[str, Any] = {"new": [], "errors": 0, "interests": len(interests)}
+        result: dict[str, Any] = {
+            "new": [], "errors": 0, "interests": len(interests),
+            "by_source": {s.name: 0 for s in self.sources}, "quota_skipped": [],
+        }
+        calls = {s.name: 0 for s in self.sources}
+        halted: set[str] = set()
 
-        for i, interest in enumerate(interests):
-            if i > 0:
-                self.sleep_fn(_MIN_REQUEST_GAP_SECONDS)
+        for interest in interests:
             query = interest["query"]
-            try:
-                papers = parse_arxiv_feed(
-                    self.fetch_fn(build_arxiv_url(query, max_results=self.max_new_per_query * 4))
-                )
-            except Exception:
-                logger.exception("Paper check failed for interest %r; continuing.", query)
-                result["errors"] += 1
-                continue
-
-            taken = 0
-            for paper in papers:
-                if taken >= self.max_new_per_query:
-                    break
-                if self._is_seen(paper.arxiv_id) or any(p.arxiv_id == paper.arxiv_id for p in result["new"]):
+            for src in self.sources:
+                if src.name in halted or not src.supports(query):
                     continue
-                if not self._recent_enough(paper, cutoff):
+                if src.daily_limit is not None and self.usage_today(src.name, now) >= src.daily_limit:
+                    logger.info("%s: daily call limit (%d) reached; skipping until tomorrow.",
+                                src.name, src.daily_limit)
+                    if src.name not in result["quota_skipped"]:
+                        result["quota_skipped"].append(src.name)
+                    halted.add(src.name)
                     continue
-                paper.matched_query = query
-                paper.digest = self._digest(paper)
+                if calls[src.name] > 0:
+                    self.sleep_fn(src.min_gap)
+                calls[src.name] += 1
+                if src.daily_limit is not None:
+                    self._bump_usage(src.name, now)      # an attempt counts, successful or not
                 try:
-                    self._write_paper(paper)
-                except OSError:
-                    logger.exception("Could not write paper file for %s; will retry.", paper.arxiv_id)
+                    papers = src.parse(
+                        self.fetch_fn(src.build_url(query, self.max_new_per_query * 4)))
+                except Exception as exc:
                     result["errors"] += 1
+                    self._on_fetch_error(src, query, exc, halted, now, result)
                     continue
-                self._mark_seen(paper, now)
-                result["new"].append(paper)
-                taken += 1
+
+                taken = 0
+                for paper in papers:
+                    if taken >= self.max_new_per_query:
+                        break
+                    pid = paper.paper_id
+                    if self._is_seen(pid) or any(p.paper_id == pid for p in result["new"]):
+                        continue
+                    if self._is_cross_source_duplicate(paper, result["new"]):
+                        continue
+                    if not src.recent(paper, cutoff):
+                        continue
+                    paper.matched_query = query
+                    paper.digest = self._digest(paper)
+                    try:
+                        self._write_paper(paper)
+                    except OSError:
+                        logger.exception("Could not write paper file for %s; will retry.", pid)
+                        result["errors"] += 1
+                        continue
+                    self._mark_seen(paper, now)
+                    result["new"].append(paper)
+                    result["by_source"][src.name] = result["by_source"].get(src.name, 0) + 1
+                    taken += 1
 
             with self._lock, self._conn:
                 self._conn.execute(
@@ -320,6 +495,27 @@ class PaperMonitor:
                     (now.isoformat(), query),
                 )
         return result
+
+    def _on_fetch_error(self, src, query: str, exc: Exception, halted: set,
+                        now: datetime, result: dict) -> None:
+        """Log a failed fetch (secrets removed) and react to quota/auth errors."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        msg = src.redact(f"{type(exc).__name__}: {exc}")
+        if status in (403, 429) and src.daily_limit is not None:
+            # The service says we're over its limit: stop for the day and remember it.
+            logger.warning("%s refused the request (HTTP %s): treating the daily quota as used. %s",
+                           src.name, status, msg)
+            self._bump_usage(src.name, now, to=src.daily_limit)
+            halted.add(src.name)
+            if src.name not in result["quota_skipped"]:
+                result["quota_skipped"].append(src.name)
+        elif status == 401:
+            logger.warning("%s rejected the API key (HTTP 401); skipping it for this check. %s",
+                           src.name, msg)
+            halted.add(src.name)
+        else:
+            logger.warning("Paper check failed for interest %r on %s; continuing. %s",
+                           query, src.name, msg)
 
     @staticmethod
     def _recent_enough(paper: Paper, cutoff: datetime) -> bool:
@@ -331,6 +527,12 @@ class PaperMonitor:
             return True
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        # A source that only knows the month (or year) must not lose a paper
+        # published this month just because the 1st is older than the cutoff.
+        if paper.date_precision == "month":
+            return (dt.year, dt.month) >= (cutoff.year, cutoff.month)
+        if paper.date_precision == "year":
+            return dt.year >= cutoff.year
         return dt >= cutoff
 
     def _digest(self, paper: Paper) -> str:
@@ -342,24 +544,28 @@ class PaperMonitor:
                 if text:
                     return text
             except Exception:
-                logger.exception("Paper summarisation failed for %s; using abstract.", paper.arxiv_id)
+                logger.exception("Paper summarisation failed for %s; using abstract.", paper.paper_id)
         return fallback_digest(paper.summary)
 
     def _write_paper(self, paper: Paper) -> Path:
         self.docs_dir.mkdir(parents=True, exist_ok=True)
         # arXiv ids are [\w./-]; old-style ids contain a slash (hep-th/9901001).
-        safe = re.sub(r"[^\w.\-]", "_", paper.arxiv_id)
-        path = self.docs_dir / f"arxiv_{safe}.md"
+        # Other sources: "<source>_<their id>.md" (ieee_1234567.md).
+        ident = paper.arxiv_id if paper.source == "arxiv" else paper.external_id
+        safe = re.sub(r"[^\w.\-]", "_", ident)
+        path = self.docs_dir / f"{paper.source}_{safe}.md"
         path.write_text(paper_markdown(paper), encoding="utf-8")
         return path
 
     def _mark_seen(self, paper: Paper, now: datetime) -> None:
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT OR IGNORE INTO papers_seen (arxiv_id, title, query, published, first_seen, digest) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (paper.arxiv_id, paper.title, paper.matched_query, paper.published,
-                 now.isoformat(), paper.digest),
+                "INSERT OR IGNORE INTO papers_seen "
+                "(arxiv_id, title, query, published, first_seen, digest, source, doi, norm_title) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (paper.paper_id, paper.title, paper.matched_query, paper.published,
+                 now.isoformat(), paper.digest, paper.source, paper.doi,
+                 normalise_title(paper.title)),
             )
 
 
@@ -368,7 +574,8 @@ def digest_markdown(papers: list[Paper], when: Optional[datetime] = None) -> str
     when = when or datetime.now(timezone.utc)
     lines = [f"{len(papers)} new paper(s) found on {when:%Y-%m-%d}.", ""]
     for p in papers:
-        lines += [f"## {p.title}", f"- [arXiv:{p.arxiv_id}]({p.link}) — interest: {p.matched_query}"]
+        label = f"arXiv:{p.arxiv_id}" if p.source == "arxiv" else f"{p.source.upper()}:{p.external_id}"
+        lines += [f"## {p.title}", f"- [{label}]({p.link}) — interest: {p.matched_query}"]
         if p.digest:
             lines.append(f"- {p.digest}")
         lines.append("")

@@ -378,6 +378,11 @@ mnemosyne:
     enabled: false
     max_new_per_query: 5
     lookback_days: 14
+    # Sources: arxiv (default, no key) and/or ieee. IEEE needs IEEE_API_KEY in your
+    # environment or .env (never here). Unverified until scripts/check_ieee.py passes.
+    sources: ["arxiv"]
+    # ieee:
+    #   daily_limit: 100        # our own ceiling; IEEE's is 200 calls/day (max accepted: 200)
     # docs_dir: "data/athena/documents/arxiv"
 
   # Episodic clustering (backlog #43). Bag-of-words by default; embeddings are

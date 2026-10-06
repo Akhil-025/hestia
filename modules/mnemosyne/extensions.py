@@ -198,15 +198,52 @@ class MnemosyneExtensionsMixin:
             self.paper_monitor = None
             return
         try:
-            from .paper_monitor import PaperMonitor
+            from .paper_monitor import ArxivSource, PaperMonitor
+            sources = self._paper_sources(pc, ArxivSource)
             self.paper_monitor = PaperMonitor(
                 self.config.db_path, self._papers_dir(), llm=self.hestia_llm,
                 max_new_per_query=int(pc.get("max_new_per_query", 5)),
                 lookback_days=int(pc.get("lookback_days", 14)),
+                sources=sources,
             )
         except Exception:
             logger.exception("Mnemosyne: paper monitor could not start; disabled.")
             self.paper_monitor = None
+
+    @staticmethod
+    def _paper_sources(pc: dict, arxiv_cls) -> list:
+        """Sources named in ``papers.sources`` (default arXiv only).
+
+        IEEE is added only when asked for AND ``IEEE_API_KEY`` is set; a missing
+        key is a warning, not an error, so arXiv monitoring keeps working. An
+        unknown source name is ignored with a warning.
+        """
+        import os
+        wanted = pc.get("sources") or ["arxiv"]
+        if isinstance(wanted, str):
+            wanted = [wanted]
+        out: list = []
+        for name in (str(w).strip().lower() for w in wanted):
+            if name == "arxiv":
+                out.append(arxiv_cls())
+            elif name == "ieee":
+                key = os.environ.get("IEEE_API_KEY", "").strip()
+                if not key:
+                    logger.warning("papers.sources lists ieee but IEEE_API_KEY is not set; IEEE skipped.")
+                    continue
+                from .ieee_source import DEFAULT_DAILY_LIMIT, IeeeSource
+                limit = int((pc.get("ieee") or {}).get("daily_limit", DEFAULT_DAILY_LIMIT))
+                out.append(IeeeSource(key, daily_limit=limit))
+            else:
+                logger.warning("papers.sources: unknown source %r ignored.", name)
+        return out or [arxiv_cls()]
+
+    def _paper_source_label(self) -> str:
+        """"arXiv", or "arXiv and IEEE" - how the intent names what it watches."""
+        names = {"arxiv": "arXiv", "ieee": "IEEE"}
+        pm = self.paper_monitor
+        labels = [names.get(s.name, s.name) for s in (pm.sources if pm else [])] or ["arXiv"]
+        return " and ".join(labels)
 
     def _papers_dir(self) -> str:
         explicit = (self._ext_cfg.get("papers") or {}).get("docs_dir")
@@ -790,7 +827,8 @@ class MnemosyneExtensionsMixin:
             if not topic:
                 return _ok("Which research topic should I watch?", confidence=0.3)
             added = pm.add_interest(topic)
-            return _ok(f"Now watching arXiv for {topic}." if added else f"I'm already watching {topic}.")
+            return _ok(f"Now watching {self._paper_source_label()} for {topic}." if added
+                       else f"I'm already watching {topic}.")
         if action == "remove":
             if not topic:
                 return _ok("Which topic should I stop watching?", confidence=0.3)
@@ -799,13 +837,17 @@ class MnemosyneExtensionsMixin:
 
         result = self.check_papers()
         new = result.get("new", [])
+        quota = result.get("quota_skipped") or []
+        note = (f" The daily limit for {' and '.join(q.upper() if q == 'ieee' else q for q in quota)} "
+                f"is used up, so I'll try that again tomorrow.") if quota else ""
         if result.get("errors") and not new:
-            return _ok("I couldn't reach arXiv just now. I'll try again later.", confidence=0.3)
+            return _ok(f"I couldn't reach {self._paper_source_label()} just now. I'll try again later.{note}",
+                       confidence=0.3)
         if not new:
-            return _ok("No new papers matching your topics.", data={"new": 0})
+            return _ok(f"No new papers matching your topics.{note}", data={"new": 0})
         titles = "; ".join(p.title for p in new[:5]) + ("…" if len(new) > 5 else "")
-        return _ok(f"{len(new)} new paper(s), added to your documents: {titles}.",
-                   data={"new": [p.arxiv_id for p in new]})
+        return _ok(f"{len(new)} new paper(s), added to your documents: {titles}.{note}",
+                   data={"new": [p.paper_id for p in new]})
 
     def check_papers(self) -> dict:
         """Fetch new papers, then let Athena index them. Never raises."""
@@ -826,7 +868,7 @@ class MnemosyneExtensionsMixin:
             try:
                 from .paper_monitor import digest_markdown
                 self.write_obsidian_note(
-                    f"New papers {datetime.now():%Y-%m-%d}", digest_markdown(new), tags=["papers", "arxiv"],
+                    f"New papers {datetime.now():%Y-%m-%d}", digest_markdown(new), tags=["papers"] + [s.name for s in self.paper_monitor.sources],
                 )
             except Exception:
                 logger.exception("Paper digest write-back failed; continuing.")
