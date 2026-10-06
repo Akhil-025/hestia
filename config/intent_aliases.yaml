@@ -194,6 +194,22 @@ pluto_log_receipt:
   - "log a receipt"
   - "scan this receipt"
   - "scan my receipt"
+pluto_sync_broker:
+  - "sync my zerodha"
+  - "sync my broker"
+  - "import my holdings from zerodha"
+  - "sync holdings from my broker"
+pluto_set_price_alert:
+  - "alert me when a stock moves"
+  - "set a price alert"
+  - "watch this stock for big moves"
+pluto_net_worth:
+  - "what is my net worth"
+  - "show my net worth"
+  - "total net worth in rupees"
+pluto_set_holding_currency:
+  - "that holding is in dollars"
+  - "set the currency of my holding"
 pluto_data_source_status:
   - "is the market data throttled"
   - "is the price feed throttled"
@@ -734,6 +750,16 @@ dionysus_less_like_this:
   - "less of this"
   - "less of that"
 
+dionysus_plan_group_outing:
+  - "when is everyone free"
+  - "plan an outing for the group"
+  - "find a time for the group"
+dionysus_set_outing_preferences:
+  - "my friend is free on"
+  - "note that my friend likes"
+dionysus_clear_group_outing:
+  - "clear the outing group"
+  - "forget the outing group"
 dionysus_surprise_me:
   - "surprise me"
 

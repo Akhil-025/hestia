@@ -29,7 +29,11 @@ from .logging_config import get_logger, correlation_id_var
 from .planning import PlanningManager
 from .rebalance import RebalanceAdvisor
 from .receipts import ReceiptIngestor
-from .holding_explainer import HoldingExplainer
+from .holding_explainer import HoldingExplainer, fetch_news
+from .networth import NetWorth, base_code
+from .brokers import BrokerSync
+from .alerts import PriceAlerts
+from .market_data import fetch_price_history
 from .market_data import configure_retry, retry_settings
 from .throttle import MONITOR
 
@@ -118,6 +122,10 @@ class PlutoEngine(BaseModule):
         "rebalance_portfolio",     # #142
         "log_receipt",             # #141
         "data_source_status",      # #144
+        "sync_broker",             # #131
+        "set_price_alert",         # #132
+        "set_holding_currency",    # #136
+        "net_worth",               # #136
     })
 
     _EXTRA_INTENT_ALIASES: dict[str, str] = {
@@ -139,6 +147,14 @@ class PlutoEngine(BaseModule):
         "api_status": "data_source_status",
         "throttle_status": "data_source_status",
         "market_data_status": "data_source_status",
+        "broker_sync": "sync_broker",
+        "sync_zerodha": "sync_broker",
+        "sync_holdings": "sync_broker",
+        "price_alert": "set_price_alert",
+        "price_alerts": "set_price_alert",
+        "networth": "net_worth",
+        "total_net_worth": "net_worth",
+        "set_currency": "set_holding_currency",
     }
 
     _QUANT_INTENT_ALIASES: dict[str, str] = {
@@ -172,6 +188,9 @@ class PlutoEngine(BaseModule):
         rebalancer: Optional[Any] = None,
         receipts: Optional[Any] = None,
         explainer: Optional[Any] = None,
+        networth: Optional[Any] = None,
+        broker_sync: Optional[Any] = None,
+        price_alerts: Optional[Any] = None,
     ) -> None:
         """
         `ollama_cfg` mirrors the `{host, port, model}` dict every other
@@ -235,6 +254,13 @@ class PlutoEngine(BaseModule):
             score_fn=self._indicator_score if self._market_db_connected() else None,
             llm=self.llm_client)
 
+        self.networth = networth or NetWorth(
+            db=db, base_currency=base_code(self.config.currency), symbol=self.config.currency,
+            price_fn=self._live_price, fx_fn=self._fx_rate)
+        self.broker_sync = broker_sync or BrokerSync(db=db, symbol=self.config.currency)
+        self.price_alerts = price_alerts or PriceAlerts(
+            db=db, history_fn=fetch_price_history, news_fn=lambda sym: fetch_news(sym, 5))
+
         logger.info("PlutoEngine coordinator initialized.")
 
     # ---- small adapters over pf_manager / mi_manager (all failure-tolerant) ----
@@ -246,6 +272,11 @@ class PlutoEngine(BaseModule):
         except Exception as e:
             logger.info("live price unavailable for %r: %s", name, e)
             return None
+
+    @staticmethod
+    def _fx_rate(src: str, dst: str) -> float:
+        from core.free_apis import fx_rate
+        return fx_rate(src, dst)
 
     def _receipt_category(self, description: str, amount: float) -> str:
         return self.pf_manager._infer_category(description, amount)
@@ -259,6 +290,17 @@ class PlutoEngine(BaseModule):
     def _indicator_score(self, name: str) -> Optional[dict]:
         df = self.mi_manager.fetch_market_data(name.upper().strip())
         return self.mi_manager.generate_quant_score(df)
+
+    def check_price_alerts(self) -> Optional[str]:
+        """Heartbeat hook (#132): a sentence about big price moves or risky headlines, else None.
+
+        Never raises; opt-in (silent until set_price_alert has been used).
+        """
+        try:
+            return self.price_alerts.check()
+        except Exception:
+            logger.exception("check_price_alerts failed.")
+            return None
 
     @staticmethod
     def _export_dir(db: Any) -> Optional[Path]:
@@ -416,6 +458,14 @@ class PlutoEngine(BaseModule):
             return self.rebalancer.suggest(entities)
         if intent == "log_receipt":
             return self.receipts.ingest(entities)
+        if intent == "sync_broker":
+            return self.broker_sync.sync(entities)
+        if intent == "set_price_alert":
+            return self.price_alerts.configure(entities)
+        if intent == "set_holding_currency":
+            return self.networth.set_currency(entities)
+        if intent == "net_worth":
+            return self.networth.net_worth(entities)
         # data_source_status (#144)
         changes = {k: entities[k] for k in ("max_retries", "delay", "backoff", "jitter")
                    if entities.get(k) not in (None, "")}

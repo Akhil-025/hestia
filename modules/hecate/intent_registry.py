@@ -365,6 +365,10 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "dionysus_schedule_recharge": "dionysus",
     "dionysus_more_like_this": "dionysus",
     "dionysus_less_like_this": "dionysus",
+    # Backlog #148
+    "dionysus_set_outing_preferences": "dionysus",
+    "dionysus_plan_group_outing": "dionysus",
+    "dionysus_clear_group_outing": "dionysus",
 
     # --- Pluto (personal finance) ---
     "pluto_log_expense": "pluto",
@@ -398,6 +402,11 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "pluto_rebalance_portfolio": "pluto",
     "pluto_log_receipt": "pluto",
     "pluto_data_source_status": "pluto",
+    # Backlog #131, #132, #136
+    "pluto_sync_broker": "pluto",
+    "pluto_set_price_alert": "pluto",
+    "pluto_set_holding_currency": "pluto",
+    "pluto_net_worth": "pluto",
 
     # --- Hephaestus (browser automation) ---
     "hephaestus_browser_action": "hephaestus",

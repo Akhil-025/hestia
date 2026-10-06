@@ -12,6 +12,38 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Pluto broker sync, price/news alerts, multi-currency net worth; Dionysus group outings; receipt upload and score view (#131, #132, #136, #148; #137, #141, #145 extended)
+
+New tests: `tests/test_pluto_more.py` (83), `tests/test_dionysus_group.py` (25).
+Tested with fakes and fixtures; not against the live Kite or Yahoo endpoints,
+not in a browser. Nothing here makes a network call until you use it (price
+alerts are opt-in).
+
+### Added
+
+- **Broker sync (#131).** `sync_broker`: Zerodha through Kite Connect
+  (`KITE_API_KEY`, `KITE_ACCESS_TOKEN` from the environment, never from chat) or a
+  holdings CSV from any broker. Preview by default; `confirm` adds only the
+  shortfall as a new lot and never deletes. Read-only.
+- **Price and news alerts (#132).** `set_price_alert` and a heartbeat hook
+  (`check_price_alerts`). Percent-move threshold on held stocks plus a watchlist, and
+  keyword-matched recent headlines, deduplicated, quiet hours respected,
+  stops on a throttled response.
+- **Multi-currency net worth (#136).** `net_worth`, `set_holding_currency`; shown in
+  the Portfolio tab. Missing rates are named and make the total a floor.
+- **Group outings (#148).** `set_outing_preferences`, `plan_group_outing`,
+  `clear_group_outing` (new `outing_people` table, created in place).
+- **Web.** Portfolio tab: net worth, "Why this score?" (#145) and receipt upload
+  (#141, `POST /api/pluto/receipt`).
+
+### Changed
+
+- Tax export (#137): `tax_hint` also uses description keywords (donations, rent,
+  insurance, loans, tuition, NPS/PPF/ELSS). Still pointers, not deductions.
+- New intents are registered in `intent_registry.py`, `nlu_prompt.txt` and `intent_aliases.yaml`.
+
+---
+
 ## [Unreleased] — Hephaestus forms, browser pool, repo review; Iris breadboard check; step-export formats; heatmap layout (#102, #104, #107, #110, #119, #121)
 
 Registry version 2.25.0 (minor: `iris_check_circuit` added). New tests:

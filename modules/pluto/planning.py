@@ -471,6 +471,40 @@ _TAX_HINTS = {
     "education": "Children's tuition fees can matter for 80C; other courses usually don't.",
 }
 
+# Keyword hints on the description, for expenses whose category says little
+# ("Other", "Bills"). Each is a pointer to where a sum often matters, never a
+# decision: whether it is deductible depends on your regime, proof and limits.
+_DESCRIPTION_HINTS = (
+    (("donation", "donated", "charity", "ngo", "pm cares", "relief fund"),
+     "Donations to approved funds can matter for 80G; receipts and the fund's status decide."),
+    (("rent", "house rent", "landlord"),
+     "Rent can matter for HRA if you are salaried and get HRA, or 80GG otherwise; rent receipts and PAN of a high-rent landlord are usually needed."),
+    (("insurance premium", "health insurance", "mediclaim", "lic premium", "term plan"),
+     "Insurance premiums can matter for 80D (health) or 80C (life); check the policy and the regime you file under."),
+    (("education loan",),
+     "Interest on an education loan can matter for 80E; the lender's certificate decides."),
+    (("home loan", "housing loan"),
+     "Home-loan interest can matter under section 24(b) and principal under 80C; the lender's certificate decides."),
+    (("tuition", "school fee", "college fee"),
+     "Children's tuition fees can matter for 80C; other fees usually don't."),
+    (("nps", "ppf", "elss", "epf"),
+     "Contributions to these can matter for 80C / 80CCD; check the scheme and limits."),
+    (("professional", "software subscription", "internet bill", "coworking"),
+     "Work-related costs only matter if you are self-employed or have business income; keep invoices."),
+)
+
+
+def expense_hint(category: str, description: str) -> str:
+    """Pointer for the tax_hint column: the category hint, else a description keyword hint, else ''."""
+    hint = _TAX_HINTS.get(str(category).lower())
+    if hint:
+        return hint
+    text = f" {str(description).lower()} "
+    for words, text_hint in _DESCRIPTION_HINTS:
+        if any(f" {w}" in text or f" {w}s " in text for w in words):
+            return text_hint
+    return ""
+
 
 def csv_safe(value: Any) -> str:
     """Neutralise spreadsheet formulas: a cell starting with = + - @ is prefixed with '."""
@@ -501,7 +535,7 @@ def write_tax_csvs(directory: Path, fy_start: int, expenses: list[dict],
             cat = str(e.get("category", ""))
             w.writerow([str(e.get("logged_at"))[:10], csv_safe(e.get("description")),
                         csv_safe(cat), f"{float(e.get('amount', 0)):.2f}",
-                        _TAX_HINTS.get(cat.lower(), "")])
+                        expense_hint(cat, str(e.get("description", "")))])
     with open(inv_path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["date", "name", "type", "quantity", "buy_price", "cost", "tax_hint"])

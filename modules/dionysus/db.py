@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS recharge_routines (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS outing_people (
+    grp          TEXT NOT NULL COLLATE NOCASE,
+    person       TEXT NOT NULL COLLATE NOCASE,
+    availability TEXT NOT NULL DEFAULT '',
+    likes        TEXT NOT NULL DEFAULT '',
+    dislikes     TEXT NOT NULL DEFAULT '',
+    budget       REAL,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (grp, person)
+);
+
 CREATE INDEX IF NOT EXISTS idx_recs_type      ON recommendations(type);
 CREATE INDEX IF NOT EXISTS idx_recs_dismissed ON recommendations(dismissed);
 CREATE INDEX IF NOT EXISTS idx_recs_seen      ON recommendations(seen);
@@ -225,3 +236,34 @@ CREATE INDEX IF NOT EXISTS idx_recs_seen      ON recommendations(seen);
                 (type_, limit)
             )
             return [dict(r) for r in cur.fetchall()]
+
+    # ---- group outings (backlog #148) ----
+
+    def upsert_person(self, grp: str, person: str, fields: dict) -> None:
+        """Create or update one person; only the keys present in ``fields`` change."""
+        allowed = ("availability", "likes", "dislikes", "budget")
+        with self._lock, self._conn:
+            self._conn.execute("INSERT OR IGNORE INTO outing_people (grp, person) VALUES (?, ?)", (grp, person))
+            for key in allowed:
+                if key in fields:
+                    self._conn.execute(
+                        f"UPDATE outing_people SET {key} = ?, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE grp = ? AND person = ?", (fields[key], grp, person))
+
+    def get_group(self, grp: str) -> list[dict]:
+        cur = self._conn.execute(
+            "SELECT person, availability, likes, dislikes, budget FROM outing_people "
+            "WHERE grp = ? ORDER BY person", (grp,))
+        return [dict(r) for r in cur.fetchall()]
+
+    def count_group_people(self, grp: str) -> int:
+        return self._conn.execute("SELECT COUNT(*) FROM outing_people WHERE grp = ?", (grp,)).fetchone()[0]
+
+    def delete_person(self, grp: str, person: str) -> bool:
+        with self._lock, self._conn:
+            return self._conn.execute(
+                "DELETE FROM outing_people WHERE grp = ? AND person = ?", (grp, person)).rowcount > 0
+
+    def delete_group(self, grp: str) -> int:
+        with self._lock, self._conn:
+            return self._conn.execute("DELETE FROM outing_people WHERE grp = ?", (grp,)).rowcount

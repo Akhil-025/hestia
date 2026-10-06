@@ -644,6 +644,44 @@ class HestiaWebUI:
                 return jsonify({"error": "name is required"}), 400
             return _pluto_call("explain", lambda: self.pluto.explainer.explain({"name": name}))
 
+        @app.route("/api/pluto/networth")
+        def api_pluto_networth():
+            return _pluto_call("networth", lambda: self.pluto.networth.net_worth({}))
+
+        @app.route("/api/pluto/receipt", methods=["POST"])
+        def api_pluto_receipt():
+            """Upload a receipt photo (backlog #141). The browser's file name is never used on disk."""
+            import os
+            import tempfile
+            from modules.pluto.receipts import IMAGE_EXTENSIONS, MAX_IMAGE_BYTES
+            if not self.pluto:
+                return jsonify({"error": "Pluto disabled"}), 503
+            if (request.content_length or 0) > MAX_IMAGE_BYTES + 100_000:
+                return jsonify({"error": "That image is larger than 10 MB."}), 413
+            f = request.files.get("image")
+            if f is None or not f.filename:
+                return jsonify({"error": "Choose a photo first."}), 400
+            ext = os.path.splitext(f.filename)[1].lower()
+            if ext not in IMAGE_EXTENSIONS:
+                return jsonify({"error": "Use a jpg, png, webp, bmp or tiff photo."}), 400
+            fd, tmp = tempfile.mkstemp(suffix=ext, prefix="receipt_")
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    out.write(f.read(MAX_IMAGE_BYTES + 1))
+                entities = {"image_path": tmp}
+                for k in ("amount", "merchant", "confirm"):
+                    if request.form.get(k):
+                        entities[k] = request.form[k][:60]
+                return jsonify(self.pluto.receipts.ingest(entities))
+            except Exception:
+                logger.exception("[WebUI] pluto receipt error")
+                return jsonify({"error": "Failed"}), 500
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
     # ── ARTEMIS (habits/goals) ───────────────────────────
 
     def _register_artemis_routes(self) -> None:

@@ -89,6 +89,7 @@ class HestiaHeartbeat:
         self._maybe_run_mnemosyne_jobs()
         self._maybe_run_hephaestus_checks()
         self._maybe_run_pluto_budget_alerts()
+        self._maybe_run_pluto_price_alerts()
         self._maybe_run_hermes_digest()
 
         try:
@@ -152,6 +153,23 @@ class HestiaHeartbeat:
             text = hook()
         except Exception:
             logging.getLogger(__name__).exception("Pluto budget alert check failed.")
+            return
+        if isinstance(text, str) and text.strip():
+            bus.emit("speak", {"text": text})
+
+    def _maybe_run_pluto_price_alerts(self) -> None:
+        """Backlog #132: speak a price-move or headline alert for held/watched stocks.
+
+        Opt-in and self-throttled inside PlutoEngine (about every 30 minutes,
+        quiet hours respected), so this is safe on every tick.
+        """
+        hook = getattr(self.pluto, "check_price_alerts", None)
+        if not callable(hook):
+            return
+        try:
+            text = hook()
+        except Exception:
+            logging.getLogger(__name__).exception("Pluto price alert check failed.")
             return
         if isinstance(text, str) and text.strip():
             bus.emit("speak", {"text": text})

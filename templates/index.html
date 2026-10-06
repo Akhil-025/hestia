@@ -2062,6 +2062,26 @@
       <div class="health-note" id="sweep-summary"></div>
       <div style="overflow-x:auto"><div id="sweep-grid"></div></div>
 
+      <div class="section-subtitle">Net worth <span class="rule"></span></div>
+      <pre class="health-note" id="pluto-networth" style="white-space:pre-wrap">Loading…</pre>
+
+      <div class="section-subtitle">Why this score? <span class="rule"></span></div>
+      <div class="health-note">Shows how a ticker's quant score was built. It describes the number, not whether it is right.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <input type="text" id="qs-ticker" placeholder="Ticker, e.g. RELIANCE" aria-label="Ticker" style="flex:1;min-width:140px">
+        <button class="send-btn" id="qs-run" type="button">Explain score</button>
+      </div>
+      <pre class="health-note" id="qs-out" style="white-space:pre-wrap"></pre>
+
+      <div class="section-subtitle">Add a receipt <span class="rule"></span></div>
+      <div class="health-note">Upload a photo of a receipt. I read the total, shop and date, and only save when the total is clearly labelled; otherwise I'll say what I couldn't read.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <input type="file" id="rc-file" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff" aria-label="Receipt photo" style="flex:1;min-width:180px">
+        <input type="text" id="rc-amount" placeholder="Total (only if unreadable)" aria-label="Total override" style="width:170px">
+        <button class="send-btn" id="rc-run" type="button">Read receipt</button>
+      </div>
+      <pre class="health-note" id="rc-out" style="white-space:pre-wrap"></pre>
+
       <div class="section-subtitle">Data feeds <span class="rule"></span></div>
       <div class="health-note" id="pluto-feeds">Loading…</div>
     </section>
@@ -2621,6 +2641,9 @@
       note.textContent = r.response;
     }).catch(() => { document.getElementById('pluto-forecast-note').textContent = 'Forecast unavailable.'; });
 
+    fetchJSON('/api/pluto/networth').then(r => { document.getElementById('pluto-networth').textContent = r.response; })
+      .catch(() => { document.getElementById('pluto-networth').textContent = 'Net worth unavailable.'; });
+
     fetchJSON('/api/pluto/rebalance').then(r => { document.getElementById('pluto-rebalance').textContent = r.response; })
       .catch(() => { document.getElementById('pluto-rebalance').textContent = 'Rebalance check unavailable.'; });
 
@@ -2660,8 +2683,31 @@
       document.getElementById('sweep-grid').innerHTML = `<table class="health-note" style="border-collapse:collapse;width:100%"><thead><tr><th align="left">Fast/slow</th><th align="left">Return</th><th align="left">Max drawdown</th><th align="left">Sharpe</th><th align="left">Trades</th></tr></thead><tbody>${rows}</tbody></table>`;
     }).catch(e => { summary.textContent = 'Sweep failed: ' + e.message; });
   }
+  function runQuantScore() {
+    const t = document.getElementById('qs-ticker').value.trim(), out = document.getElementById('qs-out');
+    if (!t) { out.textContent = 'Enter a ticker first.'; return; }
+    out.textContent = 'Working…';
+    fetchJSON('/api/pluto/quant-score?' + new URLSearchParams({ ticker: t }))
+      .then(r => { out.textContent = r.response; })
+      .catch(e => { out.textContent = 'Could not explain that score: ' + e.message; });
+  }
+  function runReceipt() {
+    const f = document.getElementById('rc-file').files[0], out = document.getElementById('rc-out');
+    if (!f) { out.textContent = 'Choose a photo first.'; return; }
+    if (f.size > 10 * 1024 * 1024) { out.textContent = 'That image is larger than 10 MB.'; return; }
+    const fd = new FormData();
+    fd.append('image', f);
+    const amt = document.getElementById('rc-amount').value.trim();
+    if (amt) fd.append('amount', amt);
+    out.textContent = 'Reading…';
+    fetchJSON('/api/pluto/receipt', { method: 'POST', body: fd })
+      .then(r => { out.textContent = r.response; if (r.data && r.data.saved) { loadPlutoExtras(); } })
+      .catch(e => { out.textContent = 'Could not read that receipt: ' + e.message; });
+  }
   document.addEventListener('click', e => {
     if (e.target && e.target.id === 'sweep-run') runPlutoSweep();
+    if (e.target && e.target.id === 'qs-run') runQuantScore();
+    if (e.target && e.target.id === 'rc-run') runReceipt();
   });
 
   // ── Section loaders ──────────────────────────────────

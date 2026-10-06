@@ -21,6 +21,7 @@ from core.free_apis import (
 )
 from modules.base import BaseModule
 from .db import DionysusDB
+from . import group as group_mod
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +122,10 @@ class DionysusEngine(BaseModule):
         "schedule_recharge",
         "more_like_this",
         "less_like_this",
+        # Backlog #148
+        "set_outing_preferences",
+        "plan_group_outing",
+        "clear_group_outing",
     }
 
     def __init__(self, ollama_cfg: dict = None, browser_agent=None, memory=None, llm=None,
@@ -217,6 +222,12 @@ class DionysusEngine(BaseModule):
             return self._give_feedback(entities, +1)
         if intent == "less_like_this":
             return self._give_feedback(entities, -1)
+        if intent == "set_outing_preferences":
+            return self._set_outing_preferences(entities)
+        if intent == "plan_group_outing":
+            return self._plan_group_outing(entities)
+        if intent == "clear_group_outing":
+            return self._clear_group_outing(entities)
         return {"response": "Unknown Dionysus intent.", "data": {}, "confidence": 0.0}
 
     def get_context(self) -> dict:
@@ -773,6 +784,73 @@ class DionysusEngine(BaseModule):
         }
 
     # ── surprise_me (backlog #150) ────────────────────────────────────────────
+
+    # ---- group outings (backlog #148) ----
+
+    @staticmethod
+    def _group_name(entities: dict) -> str:
+        return (str(entities.get("group") or "friends").strip() or "friends")[:40]
+
+    def _set_outing_preferences(self, entities: dict) -> dict:
+        """Remember what one person said: availability, likes, dislikes, budget."""
+        grp = self._group_name(entities)
+        person = str(entities.get("person") or entities.get("name") or "me").strip()[:40]
+        if not person:
+            person = "me"
+        fields: dict = {}
+        if entities.get("availability"):
+            fields["availability"] = str(entities["availability"])[:group_mod.MAX_TEXT]
+        for key in ("likes", "dislikes"):
+            if entities.get(key):
+                fields[key] = ", ".join(group_mod.parse_list(entities[key]))
+        if entities.get("budget") not in (None, ""):
+            info = _parse_budget(entities["budget"])
+            amount = (info or {}).get("amount")
+            if not amount:
+                return {"response": "I couldn't read that budget. Try e.g. 'budget 800'.",
+                        "data": {}, "confidence": 0.4}
+            fields["budget"] = float(amount)
+        if not fields:
+            return {"response": f"What should I note for {person}? Their free times, likes, dislikes or budget.",
+                    "data": {}, "confidence": 0.5}
+        if (self.db.count_group_people(grp) >= group_mod.MAX_PEOPLE
+                and not any(r["person"].lower() == person.lower() for r in self.db.get_group(grp))):
+            return {"response": f"A group can hold {group_mod.MAX_PEOPLE} people at most.",
+                    "data": {}, "confidence": 0.5}
+        self.db.upsert_person(grp, person, fields)
+        note = ""
+        if "availability" in fields and not group_mod.parse_availability(fields["availability"]):
+            note = " I couldn't read those times though; try e.g. 'sat evening, sun afternoon'."
+        return {"response": f"Noted for {person} in '{grp}': {', '.join(sorted(fields))}.{note}",
+                "data": {"group": grp, "person": person, "saved": sorted(fields)}, "confidence": 0.9}
+
+    def _plan_group_outing(self, entities: dict) -> dict:
+        grp = self._group_name(entities)
+        rows = self.db.get_group(grp)
+        if not rows:
+            return {"response": f"I have nobody in '{grp}' yet. Tell me what a friend said, e.g. "
+                                "'Asha is free sat evening and likes thai'.", "data": {}, "confidence": 0.5}
+        people = {r["person"]: {"slots": group_mod.parse_availability(r["availability"]),
+                                "likes": group_mod.parse_list(r["likes"]),
+                                "dislikes": group_mod.parse_list(r["dislikes"]),
+                                "budget": r["budget"]} for r in rows}
+        result = group_mod.overlap(people)
+        return {"response": group_mod.render_plan(grp, people, result),
+                "data": {"group": grp, "everyone_free": [group_mod.format_slot(s) for s in result["everyone"]],
+                         "unreadable": result["unreadable"], "likes": result["likes"],
+                         "avoid": result["avoid"], "budget_cap": result["budget_cap"]},
+                "confidence": 0.85 if result["known"] else 0.5}
+
+    def _clear_group_outing(self, entities: dict) -> dict:
+        grp = self._group_name(entities)
+        person = str(entities.get("person") or "").strip()
+        if person:
+            ok = self.db.delete_person(grp, person)
+            return {"response": f"Removed {person} from '{grp}'." if ok else f"{person} isn't in '{grp}'.",
+                    "data": {}, "confidence": 0.9}
+        n = self.db.delete_group(grp)
+        return {"response": f"Cleared '{grp}' ({n} {'person' if n == 1 else 'people'})." if n
+                else f"'{grp}' was already empty.", "data": {}, "confidence": 0.9}
 
     def _surprise_me(self, entities: dict) -> dict:
         """Movies (default) or music picked on purpose from outside the user's
