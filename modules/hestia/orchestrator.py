@@ -331,6 +331,12 @@ class HestiaOrchestrator:
         # fallback — for a cooldown window instead of being called fresh
         # (and failing slowly) on every query that routes to it.
         self._breakers = CircuitBreakerRegistry()
+        # Backlog #10. Module-to-module events (core/module_events.py);
+        # None until attach_event_bus() is called.
+        self._events: Optional[Any] = None
+        # Backlog #16. Shadow-mode comparison of a new handler against the
+        # current one (core/shadow.py); None means off.
+        self._shadow: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Registration
@@ -366,11 +372,15 @@ class HestiaOrchestrator:
         self._modules[name] = module
         if name not in self._ctx.active_modules:
             self._ctx.active_modules.append(name)
+        if self._events is not None:
+            self._events.attach(module)
         logger.debug("Registered module: %s", name)
 
     def unregister(self, name: str) -> None:
         """Remove a module from the registry at runtime."""
         self._modules.pop(name, None)
+        if self._events is not None:
+            self._events.detach(name)
         if name in self._ctx.active_modules:
             self._ctx.active_modules.remove(name)
         logger.info("Unregistered module: %s", name)
@@ -395,6 +405,65 @@ class HestiaOrchestrator:
     def attach_whatif(self, whatif: Optional[Any]) -> None:
         """Install (or clear, with None) the what-if simulator (#160)."""
         self._whatif = whatif
+
+    def attach_event_bus(self, bus: Optional[Any]) -> Optional[Any]:
+        """Let modules publish and subscribe to each other's events (#10).
+
+        Gives every registered module (and any registered later) a ``.events``
+        publishing port and subscribes its ``EVENT_SUBSCRIPTIONS``; see
+        core/module_events.py. Pass None to turn it off. Returns the wiring
+        (its ``.ledger`` is the record of what was published).
+        """
+        from core.module_events import ModuleEventWiring
+        if self._events is not None:
+            for name in list(self._events.subscriptions()):
+                self._events.detach(name)
+        if bus is None:
+            self._events = None
+            return None
+        breakers = self._breakers
+
+        class _Guard:
+            @staticmethod
+            def before(name): breakers.before_call(name)
+            @staticmethod
+            def success(name): breakers.record_success(name)
+            @staticmethod
+            def failure(name): breakers.record_failure(name)
+
+        self._events = ModuleEventWiring(bus, _Guard)
+        for mod in self._modules.values():
+            self._events.attach(mod)
+        return self._events
+
+    def attach_classifier(self, classifier: Optional[Any]) -> None:
+        """Give Hecate the trained intent classifier (#4); None removes it."""
+        if self._hecate is not None:
+            self._hecate.attach_classifier(classifier)
+
+    def attach_shadow(self, recorder: Optional[Any]) -> None:
+        """Install (or clear, with None) the shadow-mode recorder (#16)."""
+        self._shadow = recorder
+        if recorder is not None:
+            recorder.set_runner(
+                lambda module, intent, entities, context:
+                self.call_module(module, intent, entities, context))
+
+    @property
+    def event_ledger(self) -> Optional[Any]:
+        return self._events.ledger if self._events is not None else None
+
+    def _publish_handled(self, module: str, intent: str, ok: bool, ms: float) -> None:
+        """Publish ``intent.handled`` (never raises)."""
+        if self._events is None:
+            return
+        try:
+            from core.module_events import make_envelope, publish_envelope
+            env = make_envelope("intent.handled", "orchestrator",
+                                {"module": module, "intent": intent, "ok": ok, "ms": round(ms, 1)})
+            publish_envelope(self._events.bus, self._events.ledger, env)
+        except Exception:
+            logger.debug("Could not publish intent.handled.", exc_info=True)
 
     def call_module(
         self, name: str, intent: str, entities: dict, context: Optional[dict] = None,
@@ -512,6 +581,23 @@ class HestiaOrchestrator:
             context = self._ctx.as_dict()
         context, secondary_ctx_cache = self._enrich_context(context, secondary_names)
 
+        # Shadow mode (#16): for an intent with a rule, either serve the
+        # baseline and compare the candidate off-path, or serve the candidate
+        # and compare the baseline, or (live) just serve the candidate.
+        shadow_rule = None
+        baseline_target = (primary_name, intent)
+        if self._shadow is not None:
+            try:
+                shadow_rule = self._shadow.rules.rule_for(intent)
+            except Exception:
+                shadow_rule = None
+        candidate_target = None
+        if shadow_rule is not None:
+            candidate_target = (shadow_rule.candidate_module, shadow_rule.candidate_intent)
+            if shadow_rule.mode in ("canary", "live"):
+                primary_name, intent = candidate_target
+
+        t_primary = time.perf_counter()
         # Primary dispatch
         response = self._dispatch_primary(
             primary_name=primary_name,
@@ -522,6 +608,20 @@ class HestiaOrchestrator:
             raw_query=raw_query,
             nlu_result=nlu_result,
         )
+        if shadow_rule is not None and shadow_rule.mode in ("shadow", "canary"):
+            try:
+                served_text = response.response if isinstance(response, DispatchResult) else str(response)
+                served_ms = (time.perf_counter() - t_primary) * 1000
+                if shadow_rule.mode == "shadow":
+                    served_by, other = "baseline", candidate_target
+                else:
+                    served_by, other = "candidate", baseline_target
+                self._shadow.observe(
+                    shadow_rule, query=raw_query, entities=dict(entities), context=dict(context),
+                    served_by=served_by, served_target=(primary_name, intent),
+                    served_text=served_text, served_ms=served_ms, other_target=other)
+            except Exception:
+                logger.exception("Shadow comparison failed; reply unaffected.")
 
         if isinstance(response, DispatchResult) and response.needs_confirmation:
             # The module validated the request but deliberately did NOT
@@ -1067,6 +1167,7 @@ class HestiaOrchestrator:
                 confidence=0.3,
             )
 
+        t_call = time.perf_counter()
         try:
             raw_result = mod.handle(intent, entities, context)
         except NotImplementedError:
@@ -1088,9 +1189,11 @@ class HestiaOrchestrator:
                 intent,
             )
             self._breakers.record_failure(primary_name)
+            self._publish_handled(primary_name, intent, False, (time.perf_counter() - t_call) * 1000)
             return _GENERIC_ERROR
 
         self._breakers.record_success(primary_name)
+        self._publish_handled(primary_name, intent, True, (time.perf_counter() - t_call) * 1000)
         return _to_dispatch_result(raw_result)
 
     def _find_alternate_module(

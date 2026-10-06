@@ -147,6 +147,14 @@ from core.consensus import ConsensusEngine
 from core.conference import Conference, ollama_synthesizer
 from core.whatif import WhatIfEngine
 from core.db_maintenance import DBMaintenance
+from core.intent_classifier import ClassifierService
+from core.classifier_data import make_examples_fn
+from core.shadow import ShadowRecorder, ShadowRules
+from core.event_queue import EventBridge, EventQueue
+from core.process_split import (
+    CoreQueryServer, RoleProfile, SAY_TOPIC, Supervisor, VoiceFrontend,
+    profile_for, queue_path,
+)
 from core.llm import HestiaLLM
 from core.nlu import HestiaNLU
 from core.ollama_manager import OllamaManager
@@ -207,6 +215,10 @@ _RECENT_CONTEXT_TURNS = 5
 # HestiaBuilder
 # ---------------------------------------------------------------------------
 
+class _Skipped(Exception):
+    """Internal: a component this process role doesn't build."""
+
+
 class HestiaBuilder:
     """
     Constructs Hestia's subsystems from configuration.
@@ -250,6 +262,42 @@ class HestiaBuilder:
             ollama_manager.port,
             self.ollama_cfg.get("model", "mistral"),
         )
+
+    def build_classifier(self) -> Optional[ClassifierService]:
+        """The trained intent classifier (backlog #4), or None when off.
+
+        Off unless ``classifier.mode`` is ``assist`` or ``primary``: it changes
+        routing, so it is opt-in. Training runs on a background thread the
+        first time, so startup is never delayed.
+        """
+        cfg = self.config.get("classifier") or {}
+        raw_mode = cfg.get("mode", "off")
+        # YAML 1.1 reads a bare `off` as boolean False; treat that as "off".
+        mode = "off" if raw_mode in (False, None) else str(raw_mode).lower()
+        if mode not in ("assist", "primary"):
+            if mode != "off":
+                logger.warning("classifier.mode %r is not off/assist/primary; classifier left off.", raw_mode)
+            return None
+        from modules.hecate.intent_registry import ALL_INTENTS
+        svc = ClassifierService(
+            model_path=cfg.get("model_path", "data/intent_classifier.npz"),
+            mode=mode,
+            min_prob=float(cfg.get("min_probability", 0.30)),
+            min_margin=float(cfg.get("min_margin", 0.12)),
+            examples_fn=make_examples_fn(),
+            valid_intents=ALL_INTENTS,
+        )
+        svc.ensure_ready(background=True)
+        return svc
+
+    def build_shadow(self) -> Optional[ShadowRecorder]:
+        """Shadow-mode recorder (backlog #16), or None when no rules are enabled."""
+        rules = ShadowRules.from_config(self.config.get("shadow"))
+        for bad in rules.rejected:
+            logger.warning("Shadow rule rejected: %s", bad)
+        if not rules.enabled or not rules.rules:
+            return None
+        return ShadowRecorder(rules)
 
     def build_nlu(self) -> HestiaNLU:
         # NLU classification and general reasoning are different workloads
@@ -662,6 +710,7 @@ class HestiaBuilder:
 
     def build_io(
         self,
+        only: Optional[frozenset] = None,
     ) -> tuple[
         Optional[HestiaSTT],
         "HestiaTTS | NullTTS",
@@ -682,6 +731,8 @@ class HestiaBuilder:
         wake_cfg = self.config.get("wake_word", {})
         barge_in_cfg = self.config.get("barge_in", {})
         self.io_errors: dict[str, str] = {}
+        # Process roles (#20) build only some components; None builds all.
+        want = (lambda name: only is None or name in only)
 
         # Saved per-device calibration (backlog #174): fills in only the
         # settings the config leaves unset, and is ignored if it was made
@@ -702,6 +753,8 @@ class HestiaBuilder:
 
         stt: Optional[HestiaSTT] = None
         try:
+            if not want("stt"):
+                raise _Skipped()
             stt = HestiaSTT(
                 model_size=stt_cfg.get("model_size", "base.en"),
                 device=stt_cfg.get("device", "cuda"),
@@ -711,6 +764,8 @@ class HestiaBuilder:
                 silence_frames=stt_cfg.get("silence_frames", 33),
                 vad_aggressiveness=stt_cfg.get("vad_aggressiveness", calib_vad),
             )
+        except _Skipped:
+            pass
         except Exception as exc:
             self.io_errors["stt"] = str(exc) or exc.__class__.__name__
             logger.warning("Speech-to-text unavailable: %s", self.io_errors["stt"])
@@ -730,6 +785,8 @@ class HestiaBuilder:
                 )
 
         try:
+            if not want("tts"):
+                raise _Skipped()
             tts = HestiaTTS(
                 engine=tts_cfg.get("engine", "pyttsx3"),
                 rate=tts_cfg.get("rate", 175),
@@ -738,6 +795,8 @@ class HestiaBuilder:
                 voices=tts_cfg.get("voices"),
                 echo_reference=echo_reference,
             )
+        except _Skipped:
+            tts = NullTTS()
         except Exception as exc:
             tts = NullTTS()
             self.io_errors["tts"] = str(exc) or exc.__class__.__name__
@@ -752,6 +811,8 @@ class HestiaBuilder:
 
         wake_detector: Optional[WakeWordDetector] = None
         try:
+            if not want("wake"):
+                raise _Skipped()
             wake_detector = WakeWordDetector(
                 model_path=wake_cfg.get("model_path", "models/vosk-model-small-en-us-0.15"),
                 wake_words=wake_cfg.get("wake_words"),
@@ -759,6 +820,8 @@ class HestiaBuilder:
                     "sensitivity", calib["wake_sensitivity"] if calib else "normal"
                 ),
             )
+        except _Skipped:
+            pass
         except Exception as exc:
             self.io_errors["wake_word"] = str(exc) or exc.__class__.__name__
             logger.warning("Wake-word detection unavailable: %s", self.io_errors["wake_word"])
@@ -769,6 +832,8 @@ class HestiaBuilder:
         # the user never interrupts, and lets them the moment they do.
         barge_in: Optional[BargeInListener] = None
         try:
+            if not want("barge"):
+                raise _Skipped()
             canceller = None
             if echo_reference is not None:
                 canceller = NLMSEchoCanceller(
@@ -797,6 +862,8 @@ class HestiaBuilder:
                 max_capture_seconds=barge_in_cfg.get("max_capture_seconds", 12.0),
                 echo_canceller=canceller,
             )
+        except _Skipped:
+            pass
         except Exception as exc:
             self.io_errors["barge_in"] = str(exc) or exc.__class__.__name__
             logger.warning("Barge-in unavailable: %s", self.io_errors["barge_in"])
@@ -808,7 +875,7 @@ class HestiaBuilder:
     def build_heartbeat(
         self, mnemosyne: MnemosyneEngine, diagnostics: Any = None,
         apollo: Any = None, artemis: Any = None, hephaestus: Any = None,
-        pluto: Any = None,
+        pluto: Any = None, classifier: Any = None,
     ) -> HestiaHeartbeat:
         # diagnostics powers the nightly low-confidence review (backlog
         # #6); optional, so a heartbeat built without one just never runs
@@ -824,7 +891,7 @@ class HestiaBuilder:
         return HestiaHeartbeat(
             interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics,
             apollo=apollo, maintenance=maintenance, artemis=artemis,
-            hephaestus=hephaestus, pluto=pluto,
+            hephaestus=hephaestus, pluto=pluto, classifier=classifier,
         )
 
     def build_web_ui(
@@ -1036,8 +1103,22 @@ class Hestia:
             self.__dict__["_voice_state"] = vs
         return vs
 
-    def __init__(self, config_path: str | Path = _DEFAULT_CONFIG, headed: bool = False) -> None:
+    # Class-level defaults so a bare/stand-in instance behaves as the original
+    # single process (backlog #20).
+    role: str = "all"
+    profile: Optional[RoleProfile] = None
+    _queue: Optional[EventQueue] = None
+
+    def __init__(self, config_path: str | Path = _DEFAULT_CONFIG, headed: bool = False,
+                 role: str = "all") -> None:
         logger.info("Initialising Hestia…")
+        # Process role (backlog #20). "all" is the original single process; "core"
+        # and "jobs" build only their half (see core/process_split.py).
+        self.role: str = role
+        self.profile: RoleProfile = profile_for(role)
+        self._queue: Optional[EventQueue] = None
+        self._bridge: Optional[EventBridge] = None
+        self._query_server: Optional[CoreQueryServer] = None
         self._config_path = Path(config_path)
         self.config = _load_config(self._config_path)
         if headed:
@@ -1058,6 +1139,11 @@ class Hestia:
 
         self.llm = builder.build_llm(self.ollama_manager)
         self.nlu = builder.build_nlu()
+        # Trained intent classifier (backlog #4): off unless classifier.mode is set.
+        self.classifier = builder.build_classifier()
+        self.nlu.attach_classifier(self.classifier)
+        if role != "all":
+            self._queue = EventQueue(queue_path(self.config), origin=role)
 
         self.mnemosyne = builder.build_mnemosyne(self.llm)
         self.nlu.set_memory(self.mnemosyne)
@@ -1098,8 +1184,18 @@ class Hestia:
             )
         )
         self.diagnostics.bind_orchestrator(self.orchestrator)
+        self.orchestrator.attach_classifier(self.classifier)          # backlog #4
+        self.orchestrator.attach_event_bus(bus)                       # backlog #10
+        self.shadow = builder.build_shadow()                          # backlog #16
+        if self.shadow is not None:
+            self.orchestrator.attach_shadow(self.shadow)
+            logger.info("Shadow mode on for %d rule(s).", len(self.shadow.rules.rules))
 
-        self.stt, self.tts, self.wake_detector, self.barge_in = builder.build_io()
+        prof = self.profile
+        io_parts = frozenset(
+            name for name, on in (("stt", prof.stt), ("tts", prof.tts),
+                                  ("wake", prof.wake_word), ("barge", prof.barge_in)) if on)
+        self.stt, self.tts, self.wake_detector, self.barge_in = builder.build_io(only=io_parts)
         self._voice_io_errors = dict(getattr(builder, "io_errors", {}) or {})
         # Barge-in needs a working listener; if it failed to build there is
         # simply nothing to arm (see build_io).
@@ -1115,13 +1211,14 @@ class Hestia:
         self.heartbeat = builder.build_heartbeat(
             self.mnemosyne, diagnostics=self.diagnostics, apollo=self.apollo,
             artemis=self.artemis, hephaestus=self.hephaestus, pluto=self.pluto,
+            classifier=self.classifier,
         )
         # Chronos owns reminder delivery (recurring, snooze, location and the
         # missed-reminder catch-up on startup - backlog #81-#89). When its
         # scheduler is running the heartbeat must not also fire one-shot
         # reminders, or each would be announced twice.
         chronos_cfg = self.config.get("chronos", {}) or {}
-        if chronos_cfg.get("scheduler_enabled", True):
+        if chronos_cfg.get("scheduler_enabled", True) and prof.chronos_scheduler:
             try:
                 started = self.chronos.start_scheduler(
                     chronos_cfg.get("scheduler_interval_seconds")
@@ -1132,10 +1229,13 @@ class Hestia:
             if started:
                 self.heartbeat.handle_reminders = False
                 logger.info("Chronos scheduler started; heartbeat reminders disabled.")
-        self.heartbeat.start()
-        logger.info("Heartbeat started (interval=1800 s).")
+        if prof.heartbeat:
+            self.heartbeat.start()
+            logger.info("Heartbeat started (interval=1800 s).")
+        else:
+            logger.info("Heartbeat not started in the %s process.", role)
 
-        self.web_ui = builder.build_web_ui(
+        self.web_ui = None if not prof.web_ui else builder.build_web_ui(
             self.mnemosyne,
             self.process_text,
             self.apollo,
@@ -1150,7 +1250,7 @@ class Hestia:
             voice_state=self.voice_state,
         )
 
-        self.telegram_bot = builder.build_telegram_bot(
+        self.telegram_bot = None if not prof.telegram else builder.build_telegram_bot(
             self.process_text, self.stt, self.mnemosyne,
             classify_fn=self._classify_for_telegram,
             pending_fn=self._has_pending_confirmation,
@@ -1160,9 +1260,22 @@ class Hestia:
             should_push_fn=lambda: not self.voice_state.dnd_active(),
         )
 
-        builder.start_sync_api(
-            self.mnemosyne, diagnostics=self.diagnostics, nlu=self.nlu
-        )
+        if prof.sync_api:
+            builder.start_sync_api(
+                self.mnemosyne, diagnostics=self.diagnostics, nlu=self.nlu
+            )
+
+        # Cross-process wiring (backlog #20): bridge chosen bus topics to the
+        # local queue, and let the voice process ask this one questions.
+        if self._queue is not None:
+            self._bridge = EventBridge(
+                bus, self._queue, consumer=f"bridge.{role}",
+                export=prof.export_topics, imports=prof.import_topics)
+            self._bridge.start()
+            if prof.serve_queries:
+                self._query_server = CoreQueryServer(self._queue, self.process_text)
+                self._query_server.start()
+            logger.info("Process role %r connected to the queue at %s.", role, self._queue.path)
 
         self._start_hot_reload_watchers()
 
@@ -1216,7 +1329,8 @@ class Hestia:
             except Exception:
                 logger.exception("speak handler failed.")
 
-        bus.on("speak", _on_speak)
+        if self.role != "jobs":
+            bus.on("speak", _on_speak)
 
         # Morning brief
         bus.on(
@@ -1248,7 +1362,17 @@ class Hestia:
 
     def _speak(self, text: str, voice: Optional[str] = None) -> None:
         """tts.speak(), adding ``voice=`` only when a profile was chosen so
-        the default call stays exactly ``speak(text)``."""
+        the default call stays exactly ``speak(text)``.
+
+        In split mode (#20) there is no speaker here: the jobs process hands
+        the text to core as a ``speak`` notification (core applies
+        do-not-disturb), and core queues it for the voice process."""
+        if self.role == "jobs":
+            bus.emit("speak", {"text": text, "voice": voice} if voice else {"text": text})
+            return
+        if self.profile is not None and self.profile.speak_via_queue and self._queue is not None:
+            self._queue.publish(SAY_TOPIC, {"text": text, "voice": voice})
+            return
         if voice:
             self.tts.speak(text, voice=voice)
         else:
@@ -1410,7 +1534,7 @@ class Hestia:
             if voice_turn:
                 self._speak_with_barge_in(response)
             else:
-                self.tts.speak(response)
+                self._speak(response)
         except Exception:
             logger.exception("TTS failed.")
 
@@ -2252,6 +2376,19 @@ class Hestia:
                 break
             self.process_text(user_input)
 
+    def run_headless(self) -> None:
+        """Run without a terminal or microphone (the core and jobs roles, #20):
+        stay alive until SIGTERM/SIGINT, which ``install_signal_handlers`` turns
+        into a clean shutdown."""
+        logger.info("Running headless as the %s process; waiting for work.", self.role)
+        try:
+            while True:
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            logger.info("Headless run interrupted.")
+        finally:
+            self._shutdown()
+
     def run_cli_loop(self) -> None:
         """Accept text queries from stdin."""
         logger.info("CLI loop started. Type 'exit' to quit.")
@@ -2298,6 +2435,13 @@ class Hestia:
             self.heartbeat.stop()
         except Exception:
             logger.debug("heartbeat.stop() raised; ignoring.")
+
+        for part in (getattr(self, "_query_server", None), getattr(self, "_bridge", None)):
+            try:
+                if part is not None:
+                    part.stop()
+            except Exception:
+                logger.debug("%r.stop() raised; ignoring.", part)
 
         # Close the browsers (and the monitor worker thread) so no Chromium
         # process outlives Hestia.
@@ -2475,6 +2619,39 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "what browser automation is doing. Page monitors stay headless."
         ),
     )
+    # Backlog #20: process roles.
+    parser.add_argument(
+        "--role",
+        choices=["all", "core", "voice", "jobs", "supervisor"],
+        default="all",
+        help=(
+            "Which process to run. 'all' (default) is the original single "
+            "process. 'supervisor' starts and restarts core + jobs + voice; "
+            "the others run one part on its own (see core/process_split.py)."
+        ),
+    )
+    # Backlog #4: the trained intent classifier.
+    parser.add_argument(
+        "--train-classifier",
+        action="store_true",
+        help=(
+            "Train the intent classifier from the prompt examples, aliases, "
+            "your labels and confident log lines, score it on the held-out "
+            "golden prompts, save it, and exit."
+        ),
+    )
+    parser.add_argument(
+        "--label",
+        nargs=2,
+        metavar=("QUERY", "INTENT"),
+        help="Record that QUERY should be classified as INTENT (used by --train-classifier), then exit.",
+    )
+    # Backlog #16: shadow mode.
+    parser.add_argument(
+        "--shadow-report",
+        action="store_true",
+        help="Print how each shadow-mode candidate handler compares with the current one, then exit.",
+    )
     # Backlog #275.
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument(
@@ -2567,6 +2744,103 @@ def _run_calibrate_mic(path: str) -> int:
     return 0
 
 
+def _run_train_classifier(path: str) -> int:
+    """``--train-classifier``: train, score on the held-out golden prompts, save."""
+    from core.classifier_data import evaluate_on_golden
+    from modules.hecate.intent_registry import ALL_INTENTS
+    try:
+        cfg = _load_config(Path(path))
+    except Exception as exc:
+        print(f"Could not read config: {exc}", file=sys.stderr)
+        return 1
+    ccfg = cfg.get("classifier") or {}
+    svc = ClassifierService(
+        model_path=ccfg.get("model_path", "data/intent_classifier.npz"),
+        mode="assist", examples_fn=make_examples_fn(), valid_intents=ALL_INTENTS)
+    result = svc.train()
+    if not result.get("ok"):
+        print(f"Training failed: {result.get('error')}", file=sys.stderr)
+        return 1
+    st = result["stats"]
+    print(f"Trained on {st.examples} examples across {st.classes} intents "
+          f"in {st.seconds:.1f}s; sources: {dict(st.sources)}")
+    print(f"Saved to {svc.model_path}")
+    ev = evaluate_on_golden(svc)
+    print(f"Held-out golden prompts: answered {ev['answered']}/{ev['cases']} "
+          f"({ev['coverage']:.0%}), right {ev['right']}/{ev['answered']} "
+          f"({ev['precision']:.0%} of the ones it answered)")
+    for w in ev["wrong"][:10]:
+        print(f"  wrong: {w['prompt']!r} expected {w['expected']!r}, got {w['got']!r}")
+    print("It declines the rest, which then follow the normal routing tiers.")
+    return 0
+
+
+def _run_label(query: str, intent: str) -> int:
+    from core.classifier_data import add_label
+    if add_label(query, intent):
+        print(f"Recorded: {query!r} -> {intent}. Run --train-classifier to use it.")
+        return 0
+    print(f"{intent!r} is not a registered intent (or the query is empty); nothing recorded.",
+          file=sys.stderr)
+    return 1
+
+
+def _run_shadow_report(path: str) -> int:
+    try:
+        cfg = _load_config(Path(path))
+    except Exception as exc:
+        print(f"Could not read config: {exc}", file=sys.stderr)
+        return 1
+    rules = ShadowRules.from_config(cfg.get("shadow"))
+    print(ShadowRecorder(rules).summary())
+    return 0
+
+
+def _run_voice_role(path: str) -> int:
+    """``--role voice``: just the microphone/speaker side (core/process_split.py)."""
+    try:
+        cfg = _load_config(Path(path))
+    except Exception as exc:
+        print(f"Could not read config: {exc}", file=sys.stderr)
+        return 1
+    builder = HestiaBuilder(cfg)
+    stt, tts, wake, barge = builder.build_io()
+    queue = EventQueue(queue_path(cfg), origin="voice")
+    frontend = VoiceFrontend(stt, tts, wake, barge, queue)
+
+    def _term(signum, _frame):
+        frontend.stop()
+        raise SystemExit(0)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _term)
+        except (ValueError, OSError, AttributeError):
+            pass
+    try:
+        frontend.run()
+    except RuntimeError as exc:
+        print(f"Voice process cannot run: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _run_supervisor(args: argparse.Namespace) -> int:
+    try:
+        cfg = _load_config(Path(args.config))
+    except Exception as exc:
+        print(f"Could not read config: {exc}", file=sys.stderr)
+        return 1
+    roles = (cfg.get("processes") or {}).get("roles") or ["core", "jobs", "voice"]
+    base = [sys.executable, str(Path(__file__).resolve()), "--config", args.config]
+    if getattr(args, "verbose", False):
+        base.append("--verbose")
+    elif getattr(args, "quiet", False):
+        base.append("--quiet")
+    sup = Supervisor(roles=roles, base_command=base)
+    logger.info("Supervisor starting roles: %s", ", ".join(roles))
+    return sup.run_forever()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -2582,8 +2856,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.calibrate_mic:
         return _run_calibrate_mic(args.config)
 
+    if args.label:
+        return _run_label(*args.label)
+    if args.train_classifier:
+        return _run_train_classifier(args.config)
+    if args.shadow_report:
+        return _run_shadow_report(args.config)
+    if args.role == "supervisor":
+        return _run_supervisor(args)
+    if args.role == "voice":
+        return _run_voice_role(args.config)
+
     try:
-        hestia = Hestia(config_path=args.config, headed=args.headed)
+        hestia = Hestia(config_path=args.config, headed=args.headed, role=args.role)
     except ConfigError as exc:
         # Already fully formatted by the validator; a traceback here would
         # bury the one thing the user needs to read.
@@ -2598,7 +2883,9 @@ def main(argv: list[str] | None = None) -> int:
         hestia._shutdown()
         return 0
 
-    if args.voice:
+    if args.role in ("core", "jobs"):
+        hestia.run_headless()
+    elif args.voice:
         hestia.run_voice_loop()
     else:
         hestia.run_cli_loop()

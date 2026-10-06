@@ -14,8 +14,12 @@ logger = logging.getLogger(__name__)
 class HestiaHeartbeat:
     def __init__(self, interval: int = 1800, mnemosyne=None, diagnostics=None,
                  apollo=None, maintenance=None, artemis=None, hephaestus=None,
-                 pluto=None):
+                 pluto=None, classifier=None, jobs_only=False):
         self.interval = interval
+        # Backlog #4: the trained intent classifier is retrained weekly from
+        # new labels and confident log lines. Optional, like the rest.
+        self.classifier = classifier
+        self._last_classifier_retrain_date = None
         self.mnemosyne = mnemosyne
         # Backlog #6. Optional: a heartbeat built without one (as in the
         # existing tests) simply never runs the review job, same as any
@@ -75,6 +79,7 @@ class HestiaHeartbeat:
         # shouldn't depend on remembering to add a line for it.
         self._maybe_run_low_confidence_review()
         self._maybe_run_weekly_accuracy_review()
+        self._maybe_retrain_classifier()
         self._maybe_run_apollo_checkins()
         self._maybe_run_artemis_checkins()
         self._maybe_run_db_maintenance()
@@ -325,6 +330,27 @@ class HestiaHeartbeat:
             )
         else:
             logger.debug("Nightly review: nothing new to queue.")
+
+    def _maybe_retrain_classifier(self) -> None:
+        """Retrain the intent classifier at most once every 7 days, off-peak
+        (backlog #4). Skipped quietly when there is no classifier or too
+        little new data; a failed run leaves the previous model serving."""
+        if self.classifier is None or not getattr(self.classifier, "enabled", False):
+            return
+        now = datetime.now()
+        if not (0 <= now.hour <= 5):
+            return
+        today = date.today()
+        last = self._last_classifier_retrain_date
+        if last is not None and (today - last).days < 7:
+            return
+        self._last_classifier_retrain_date = today
+        try:
+            result = self.classifier.retrain_if_needed()
+        except Exception:
+            logger.exception("Classifier retrain job failed.")
+            return
+        logger.info("Classifier retrain check: %s", result.get("skipped") or result)
 
     def _maybe_run_weekly_accuracy_review(self) -> None:
         """

@@ -72,6 +72,38 @@ class HecateEngine(BaseModule):
     # special handling here.
     _CLARIFY_CONFIDENCE_THRESHOLD = 0.45
 
+    # Trained-classifier hook (backlog #4). In "primary" mode the classifier
+    # gets a say before the hand-written text triggers whenever the NLU was
+    # unsure or said "chat"; in "assist" mode only after every tier has failed.
+    # Below this NLU confidence the NLU is treated as "unsure".
+    _CLASSIFIER_UNSURE_BELOW = 0.6
+
+    def __init__(self, classifier=None) -> None:
+        self._classifier = classifier
+
+    def attach_classifier(self, classifier) -> None:
+        """Install (or clear, with None) a ``ClassifierService``."""
+        self._classifier = classifier
+
+    def _classifier_pick(self, query: str, active_modules: list, trace: list):
+        """A (intent, probability) the classifier is confident about for a
+        registered intent whose module is active, else None. Never raises."""
+        clf = self._classifier
+        if clf is None or not getattr(clf, "enabled", False):
+            return None
+        try:
+            pred = clf.classify(query)
+        except Exception:
+            return None
+        if pred is None:
+            trace.append("classifier: not confident enough to answer")
+            return None
+        module = INTENT_MODULE_MAP.get(pred.intent)
+        if not module or module not in active_modules or pred.intent == "chat":
+            trace.append(f"classifier: suggested '{pred.intent}' but it can't be dispatched here")
+            return None
+        return pred.intent, pred.probability
+
     # --- Tier 2 data: raw-text triggers ---------------------------------
     # Moved verbatim from the original tiered implementation — these exist
     # specifically because the NLU intent can't be trusted for these
@@ -285,6 +317,31 @@ class HecateEngine(BaseModule):
                 intent="conference",
             )
 
+        # --- Tier 0.8: trained classifier, "primary" mode (backlog #4) --
+        # Only when the NLU didn't produce a dispatchable intent or was
+        # unsure. Placed BEFORE Tier 1 because Tier 1 dispatches any
+        # registered intent unconditionally, which would hide exactly the
+        # registered-but-unsure case. The text triggers stay as the backstop.
+        clf = self._classifier
+        if (
+            clf is not None
+            and getattr(clf, "mode", "") == "primary"
+            and (intent == "chat" or intent not in INTENT_MODULE_MAP
+                 or confidence < self._CLASSIFIER_UNSURE_BELOW)
+        ):
+            picked = self._classifier_pick(q, active_modules, trace)
+            if picked:
+                c_intent, prob = picked
+                c_module = INTENT_MODULE_MAP[c_intent]
+                trace.append(
+                    f"classifier (primary): '{c_intent}' at {prob:.0%} -> {c_module}"
+                )
+                return self._route(
+                    c_module, [], max(prob, 0.9),
+                    f"trained classifier: '{c_intent}' -> {c_module}",
+                    intent=strip_module_prefix(c_intent),
+                )
+
         # --- Tier 1: Registry-driven direct dispatch ------------------
         # Replaces the old Tier 1 (Chronos/Hermes exact-match), Tier 1.5
         # (Athena/Iris exact-match), Tier X (apollo_/ares_/orpheus_/metis_/
@@ -408,6 +465,25 @@ class HecateEngine(BaseModule):
                     "cross-module: athena+mnemosyne",
                     synthesize=True,
                     intent="search",
+                )
+
+        # --- Tier 4.9: trained classifier, "assist" mode (backlog #4) ----
+        # Last resort before the generic confidence fallbacks: every
+        # hand-written tier has already declined.
+        if clf is not None and getattr(clf, "mode", "") == "assist" and (
+            intent == "chat" or intent not in INTENT_MODULE_MAP
+        ):
+            picked = self._classifier_pick(q, active_modules, trace)
+            if picked:
+                c_intent, prob = picked
+                c_module = INTENT_MODULE_MAP[c_intent]
+                trace.append(
+                    f"classifier (assist): '{c_intent}' at {prob:.0%} -> {c_module}"
+                )
+                return self._route(
+                    c_module, [], max(prob, 0.9),
+                    f"trained classifier: '{c_intent}' -> {c_module}",
+                    intent=strip_module_prefix(c_intent),
                 )
 
         # --- Tier 5: High-confidence NLU non-chat intent -----------------

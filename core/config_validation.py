@@ -190,6 +190,18 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("conference.llm_summary", (bool,), False),
     ("whatif", (dict,), False),
     ("whatif.enabled", (bool,), False),
+    # Backlog #4 / #16 / #20: trained classifier, shadow mode, process split.
+    ("classifier", (dict,), False),
+    ("classifier.mode", (str,), False),
+    ("classifier.model_path", (str,), False),
+    ("classifier.min_probability", (int, float), False),
+    ("classifier.min_margin", (int, float), False),
+    ("shadow", (dict,), False),
+    ("shadow.enabled", (bool,), False),
+    ("shadow.rules", (list,), False),
+    ("processes", (dict,), False),
+    ("processes.roles", (list,), False),
+    ("processes.queue_path", (str,), False),
     ("maintenance", (dict,), False),
     ("maintenance.enabled", (bool,), False),
     ("maintenance.free_ratio_threshold", (int, float), False),
@@ -205,6 +217,7 @@ _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
     "tts", "wake_word", "barge_in", "scheduler", "heartbeat", "skills",
     "hephaestus", "pluto", "dionysus", "apollo", "artemis", "logging",
     "observability", "writing", "consensus", "conference", "whatif", "maintenance",
+    "classifier", "shadow", "processes",
 })
 
 

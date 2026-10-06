@@ -12,6 +12,38 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Trained classifier, module events, shadow mode, process split (#4, #10, #16, #20)
+
+These were the four `[L]` items left in #1–20. New tests: `test_classifier_wiring.py`, `test_module_events.py`,
+`test_shadow.py`, `test_event_queue.py`, `test_process_split.py`, `test_main_roles.py` (130 tests, all passing here).
+Existing suites touched by the edits (Hecate, orchestrator, heartbeat, main, NLU, config validation) fail exactly the
+same tests as the original zip, in this sandbox, which lacks pytest (a small shim was used), `dateparser` and PortAudio.
+Not exercised here: a real `Hestia(role=...)` boot, the voice process with real audio, and the supervisor with real
+subprocesses, because there is no Ollama or audio hardware in the sandbox.
+
+### Added
+
+- **Trained intent classifier wired in (#4).** `core/intent_classifier.py` existed but nothing used it and its
+  `core/classifier_data.py` was missing. Now: training data from the NLU prompt examples, aliases, your labels
+  (`--label QUERY INTENT`) and confident, un-flagged routing-log lines, with the golden prompts held out. Hecate
+  consults it in `primary` mode (Tier 0.8, before registry dispatch, when the NLU said chat or was unsure) or `assist`
+  mode (Tier 4.9, last resort); the NLU uses it when Ollama is unreachable or fails. `--train-classifier` trains,
+  saves and scores it; the heartbeat retrains weekly. Off by default (`classifier.mode`). Measured on held-out golden
+  prompts: answers ~58%, right on ~95% of those. The module docstring's earlier figures (~90% / 98%) did not
+  reproduce and were corrected.
+- **Module-to-module events (#10).** `core/module_events.py`; see the backlog note for the finding that modules
+  previously never used the bus. `intent.handled` is published for every dispatch.
+- **Shadow mode (#16).** `core/shadow.py`, `shadow:` config, `--shadow-report`.
+- **Process split (#20).** `core/event_queue.py` (durable SQLite queue, request/reply, bus bridge),
+  `core/process_split.py` (role profiles, voice frontend, supervisor), `--role all|core|voice|jobs|supervisor`.
+
+### Changed
+
+- `Hestia.__init__` takes `role`; `build_io` takes `only=` (components to build); `HestiaHeartbeat` takes `classifier`.
+- Non-voice local commands (do-not-disturb etc.) now speak through `_speak()` instead of `tts.speak()` directly, so
+  split mode can route them; behaviour in `--role all` is identical.
+- Config validation knows the `classifier`, `shadow` and `processes` blocks.
+
 ## [Unreleased] — Hecate decision engine: conference, what-if, routing audit, weekly focus (#158, #160, #162, #163)
 
 Registry 2.22.0 → 2.23.0: new intents `audit_routing`, `conference`, `what_if` (core) and `weekly_focus` (Chronos).

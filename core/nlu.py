@@ -184,6 +184,34 @@ class HestiaNLU:
                 self._aliases.count, alias_path,
             )
         self._cache = NLUCache(ttl_seconds=cache_ttl_seconds)
+        # Trained classifier (backlog #4/#25): stands in for the LLM only when
+        # the LLM can't answer. Attached by main.py; None means off.
+        self._classifier = None
+
+    def attach_classifier(self, classifier) -> None:
+        """Install (or clear, with None) a ``ClassifierService``."""
+        self._classifier = classifier
+
+    def _classifier_fallback(self, text: str):
+        """An intent-only result from the trained classifier, or None.
+
+        Entities are empty on purpose (it doesn't extract them); the modules'
+        own slot-filling asks for whatever is missing, as it does for aliases.
+        """
+        clf = self._classifier
+        if clf is None or not getattr(clf, "enabled", False):
+            return None
+        try:
+            pred = clf.classify(text or "")
+        except Exception:
+            return None
+        if pred is None:
+            return None
+        return {
+            "intent": pred.intent, "entities": {}, "entity_confidence": {},
+            "response": "", "confidence": min(0.9, max(0.5, pred.probability + 0.3)),
+            "source": "classifier",
+        }
 
     def reload_prompt(self, path: Optional[str] = None) -> bool:
         """
@@ -430,6 +458,10 @@ class HestiaNLU:
 
         if not self._health_check():
             print("[NLU] Ollama unreachable", file=sys.stderr)
+            fallback = self._classifier_fallback(text)
+            if fallback is not None:
+                print(f"[NLU] Trained classifier -> {fallback['intent']!r}", file=sys.stderr)
+                return fallback
             return {
                 "intent": "chat", "entities": {}, "entity_confidence": {},
                 "response": "My backend isn't responding right now.", "confidence": 0.0,
@@ -520,6 +552,10 @@ class HestiaNLU:
             self._cache.put(text, parsed, context)
             return parsed
 
+        fallback = self._classifier_fallback(text)
+        if fallback is not None:
+            print(f"[NLU] LLM failed; trained classifier -> {fallback['intent']!r}", file=sys.stderr)
+            return fallback
         return {"intent": "chat", "entities": {}, "response": "Sorry, I had trouble understanding that.", "confidence": 0.5}
 
     # ------------------------------------------------------------------

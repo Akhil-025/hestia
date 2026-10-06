@@ -434,3 +434,39 @@ iris:
 
 sync:
   enabled: false   # set true to enable multi-device sync API on port 5001
+
+
+# Trained intent classifier (backlog #4). OFF by default because it changes
+# routing. "assist" = only when every hand-written routing tier has declined;
+# "primary" = also overrides a chat/low-confidence NLU guess. It also stands in
+# for the LLM when Ollama can't answer. Train/score it with:
+#   python main.py --train-classifier
+# and correct it with:  python main.py --label "put me down for 8 hours" apollo_track_sleep
+classifier:
+  mode: "off"                  # "off" | "assist" | "primary" (quote off: bare off is YAML for false)
+  model_path: data/intent_classifier.npz
+  min_probability: 0.30
+  min_margin: 0.12
+
+# Shadow mode for new handlers (backlog #16). Each rule routes one NLU intent to a
+# candidate handler. shadow = you get the old answer, the candidate runs invisibly
+# and is compared; canary = you get the candidate, the old one is compared;
+# live = candidate only. shadow/canary run BOTH handlers, so they are only
+# accepted for rules that declare read_only: true (neither handler writes).
+# Report: python main.py --shadow-report
+shadow:
+  enabled: false
+  rules: []
+  #  - name: weather_v2
+  #    intent: get_weather
+  #    candidate: {module: chronos, intent: get_weather_v2}
+  #    mode: shadow
+  #    read_only: true
+  #    min_samples: 20
+  #    agreement: 0.9
+
+# Process split (backlog #20), used by `python main.py --role supervisor`.
+# roles: which of core / jobs / voice to start (drop "voice" on a headless box).
+processes:
+  roles: [core, jobs, voice]
+  queue_path: data/ipc/events.db
