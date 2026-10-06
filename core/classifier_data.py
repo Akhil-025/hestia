@@ -211,9 +211,15 @@ def collect_examples(
     feedback_log: "str | Path" = "logs/feedback.jsonl",
     golden_path: "str | Path" = DEFAULT_GOLDEN_PATH,
     hold_out_golden: bool = True,
+    augment: bool = False,
+    augment_target: int = 6,
 ) -> list[Example]:
     """All training examples, golden prompts removed, exact duplicates merged
-    (the most trusted source wins, so a hand label overrides a log line)."""
+    (the most trusted source wins, so a hand label overrides a log line).
+
+    ``augment`` adds variants (typos, polite openers, Hinglish tails) for intents
+    with fewer than ``augment_target`` examples, see ``core/classifier_augment.py``.
+    The golden prompts are always passed to it as forbidden."""
     held = held_out_queries(golden_path) if hold_out_golden else set()
     ordered = (
         label_examples(labels_path)
@@ -229,7 +235,12 @@ def collect_examples(
         # A label for the same text always replaces a weaker source's answer.
         if key not in seen:
             seen[key] = ex
-    return list(seen.values())
+    out = list(seen.values())
+    if augment:
+        from core.classifier_augment import augment_examples
+        out += augment_examples(out, target_per_intent=augment_target,
+                                forbidden=held_out_queries(golden_path))
+    return out
 
 
 def make_examples_fn(**kwargs) -> Callable[[], list[Example]]:
@@ -274,3 +285,61 @@ def evaluate_on_golden(service, cases: Optional[Iterable] = None) -> dict:
         "precision": round(right / answered, 3) if answered else 0.0,
         "wrong": wrong,
     }
+
+
+# ---------------------------------------------------------------------------
+# Comparing two scored runs (the promotion gate for a fine-tuned model)
+# ---------------------------------------------------------------------------
+
+GATE_MIN_CASES = 50                # refuse to judge on a tiny golden set
+GATE_MIN_COVERAGE_GAIN = 0.05      # must answer at least 5 points more of the cases
+GATE_MAX_PRECISION_DROP = 0.02     # ... without being wrong more than 2 points more often
+GATE_MIN_PRECISION = 0.90          # ... and never below this in absolute terms
+
+
+def wilson_interval(right: int, answered: int, z: float = 1.96) -> tuple[float, float]:
+    """95% confidence interval for ``right / answered`` (Wilson score). With ~60
+    answered cases it is wide, which is the point of printing it."""
+    if answered <= 0:
+        return (0.0, 0.0)
+    p = right / answered
+    denom = 1 + z * z / answered
+    centre = (p + z * z / (2 * answered)) / denom
+    half = z * ((p * (1 - p) / answered + z * z / (4 * answered * answered)) ** 0.5) / denom
+    return (round(max(0.0, centre - half), 3), round(min(1.0, centre + half), 3))
+
+
+def gate_decision(baseline: dict, candidate: dict) -> tuple[bool, list[str]]:
+    """Should *candidate* (an ``evaluate_on_golden`` result) replace *baseline*?
+
+    All of: enough cases to judge (the same set for both); coverage up by at
+    least ``GATE_MIN_COVERAGE_GAIN``; precision not down by more than
+    ``GATE_MAX_PRECISION_DROP``; precision at least ``GATE_MIN_PRECISION``.
+    Returns ``(passed, reasons)``; reasons always explain the verdict. This is a
+    safety net against a worse model, not proof of a better one: the golden set
+    is small.
+    """
+    reasons: list[str] = []
+    n = int(candidate.get("cases", 0))
+    ok = True
+    if n < GATE_MIN_CASES or int(baseline.get("cases", 0)) != n:
+        ok = False
+        reasons.append(f"only {n} comparable golden cases (need {GATE_MIN_CASES}, same set for both)")
+    gain = candidate.get("coverage", 0.0) - baseline.get("coverage", 0.0)
+    if gain + 1e-9 < GATE_MIN_COVERAGE_GAIN:
+        ok = False
+        reasons.append(f"coverage {candidate.get('coverage', 0):.1%} vs baseline "
+                       f"{baseline.get('coverage', 0):.1%}: needs +{GATE_MIN_COVERAGE_GAIN:.0%}")
+    drop = baseline.get("precision", 0.0) - candidate.get("precision", 0.0)
+    if drop - 1e-9 > GATE_MAX_PRECISION_DROP:
+        ok = False
+        reasons.append(f"precision {candidate.get('precision', 0):.1%} vs baseline "
+                       f"{baseline.get('precision', 0):.1%}: may drop at most {GATE_MAX_PRECISION_DROP:.0%}")
+    if candidate.get("precision", 0.0) + 1e-9 < GATE_MIN_PRECISION:
+        ok = False
+        reasons.append(f"precision {candidate.get('precision', 0):.1%} is under the {GATE_MIN_PRECISION:.0%} floor")
+    if ok:
+        reasons.append(f"coverage {candidate['coverage']:.1%} (baseline {baseline['coverage']:.1%}), "
+                       f"precision {candidate['precision']:.1%} (baseline {baseline['precision']:.1%})")
+    return ok, reasons
+

@@ -196,6 +196,12 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("classifier.model_path", (str,), False),
     ("classifier.min_probability", (int, float), False),
     ("classifier.min_margin", (int, float), False),
+    # Backlog #25: backend choice, augmentation, embedding model, device.
+    ("classifier.backend", (str,), False),
+    ("classifier.augment", (bool,), False),
+    ("classifier.augment_target", (int,), False),
+    ("classifier.embedding_model", (str,), False),
+    ("classifier.device", (str,), False),
     ("shadow", (dict,), False),
     ("shadow.enabled", (bool,), False),
     ("shadow.rules", (list,), False),

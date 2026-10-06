@@ -12,6 +12,34 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Fine-tunable intent classifier: augmentation, embedding backend, gated distilbert (#25)
+
+Partial: everything is built and tested except the actual fine-tune, which needs `torch`, `transformers` and a
+model download that the build sandbox did not have. The training loop in `core/transformer_classifier.py` is
+therefore unrun; `scripts/finetune_classifier.py` gates what it keeps because of that.
+
+- **Backends** (`classifier.backend`): `tfidf` (default, unchanged), `embedding` (all-MiniLM-L6-v2 nearest
+  neighbours), `ensemble` (both averaged) and `transformer` (a fine-tuned model, loaded only). All decline through
+  one shared rule, `decide()`. Intent only, like before: no entity extraction.
+- **Thresholds** for the embedding and ensemble backends are chosen by k-fold cross-validation on the training
+  data (variants stay in their parent's fold) to reach 95% precision, never from the golden prompts.
+  Cross-validation is optimistic on this data, so expect real precision a little lower.
+- **Augmentation** (`classifier.augment`, off by default): typo / polite-opener / Hinglish-tail variants for intents
+  with fewer than 6 examples, lower weight, golden prompts forbidden. Measured on the golden prompts: answered
+  58% -> 61%, right 94.7% -> 95.0% (54/57 -> 57/60). Three more cases answered, so within noise on a 99-case set.
+- **`scripts/classifier_bench.py`**: scores backends with a 95% interval; `--save-baseline` records the TF-IDF
+  numbers. **`scripts/finetune_classifier.py`**: fine-tunes, calibrates on a validation split, and installs the
+  model only if it answers 5+ points more of the golden prompts without losing 2+ points of precision
+  (precision floor 90%). Otherwise it is left as `<out>.candidate` (exit code 3). Run it with
+  `--device cuda` on the RTX 4050 after installing a CUDA build of `torch`.
+- **`--train-classifier`** (existing command) now honours `classifier.backend` / `augment` and prints the
+  calibrated thresholds. `--label` is unchanged. Weekly retraining skips the transformer backend.
+- Not measured: the embedding, ensemble and fine-tuned backends on the real models. Run
+  `python scripts/classifier_bench.py --backends tfidf,embedding,ensemble --augment both --show-wrong`.
+- New tests: `test_classifier_backends.py` (47, fakes only: no network, torch or model download).
+
+---
+
 ## [Unreleased] — Trained classifier, module events, shadow mode, process split (#4, #10, #16, #20)
 
 These were the four `[L]` items left in #1–20. New tests: `test_classifier_wiring.py`, `test_module_events.py`,

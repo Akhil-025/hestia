@@ -450,8 +450,17 @@ sync:
 classifier:
   mode: "off"                  # "off" | "assist" | "primary" (quote off: bare off is YAML for false)
   model_path: data/intent_classifier.npz
-  min_probability: 0.30
-  min_margin: 0.12
+  # Backlog #25. Leave min_probability / min_margin unset to use each model's own
+  # calibrated thresholds; set them only to override.
+  backend: tfidf               # tfidf | embedding | ensemble | transformer
+  # augment: false             # add typo / polite-opener / Hinglish-tail variants for rare intents
+  # augment_target: 6
+  # embedding_model: all-MiniLM-L6-v2
+  # device: cpu                # cpu | cuda (transformer backend)
+  # min_probability: 0.30
+  # min_margin: 0.12
+  # backend: transformer       # after scripts/finetune_classifier.py promotes a model:
+  # model_path: data/intent_distilbert
 
 # Shadow mode for new handlers (backlog #16). Each rule routes one NLU intent to a
 # candidate handler. shadow = you get the old answer, the candidate runs invisibly

@@ -263,6 +263,32 @@ class HestiaBuilder:
             self.ollama_cfg.get("model", "mistral"),
         )
 
+    @staticmethod
+    def _classifier_kwargs(cfg: dict, mode: str) -> dict:
+        """``ClassifierService`` keyword arguments from the ``classifier:`` config
+        block (backlog #25). Thresholds left out of the config stay ``None`` so the
+        loaded model's own (calibrated) ones apply. An unknown backend falls back
+        to tfidf; the transformer backend reads a model DIRECTORY, so a leftover
+        ``.npz`` path from the tfidf setup is replaced by the default one."""
+        backend = str(cfg.get("backend") or "tfidf").lower()
+        if backend not in ("tfidf", "embedding", "ensemble", "transformer"):
+            logger.warning("classifier.backend %r is not tfidf/embedding/ensemble/transformer; using tfidf.",
+                           cfg.get("backend"))
+            backend = "tfidf"
+        model_path = cfg.get("model_path", "data/intent_classifier.npz")
+        if backend == "transformer" and str(model_path).endswith(".npz"):
+            model_path = "data/intent_distilbert"
+        mp, mm = cfg.get("min_probability"), cfg.get("min_margin")
+        return dict(
+            model_path=model_path, mode=mode, backend=backend,
+            min_prob=None if mp is None else float(mp),
+            min_margin=None if mm is None else float(mm),
+            examples_fn=make_examples_fn(augment=bool(cfg.get("augment", False)),
+                                         augment_target=int(cfg.get("augment_target", 6))),
+            embedding_model=cfg.get("embedding_model"),
+            device=str(cfg.get("device", "cpu")),
+        )
+
     def build_classifier(self) -> Optional[ClassifierService]:
         """The trained intent classifier (backlog #4), or None when off.
 
@@ -279,14 +305,7 @@ class HestiaBuilder:
                 logger.warning("classifier.mode %r is not off/assist/primary; classifier left off.", raw_mode)
             return None
         from modules.hecate.intent_registry import ALL_INTENTS
-        svc = ClassifierService(
-            model_path=cfg.get("model_path", "data/intent_classifier.npz"),
-            mode=mode,
-            min_prob=float(cfg.get("min_probability", 0.30)),
-            min_margin=float(cfg.get("min_margin", 0.12)),
-            examples_fn=make_examples_fn(),
-            valid_intents=ALL_INTENTS,
-        )
+        svc = ClassifierService(valid_intents=ALL_INTENTS, **self._classifier_kwargs(cfg, mode))
         svc.ensure_ready(background=True)
         return svc
 
@@ -2754,9 +2773,14 @@ def _run_train_classifier(path: str) -> int:
         print(f"Could not read config: {exc}", file=sys.stderr)
         return 1
     ccfg = cfg.get("classifier") or {}
-    svc = ClassifierService(
-        model_path=ccfg.get("model_path", "data/intent_classifier.npz"),
-        mode="assist", examples_fn=make_examples_fn(), valid_intents=ALL_INTENTS)
+    kwargs = HestiaBuilder._classifier_kwargs(ccfg, "assist")
+    if kwargs["backend"] == "transformer":
+        print("classifier.backend is 'transformer': that model is made by "
+              "scripts/finetune_classifier.py, not by --train-classifier.", file=sys.stderr)
+        return 1
+    svc = ClassifierService(valid_intents=ALL_INTENTS, **kwargs)
+    print(f"Backend: {kwargs['backend']}"
+          f"{' + augmentation' if ccfg.get('augment') else ''}")
     result = svc.train()
     if not result.get("ok"):
         print(f"Training failed: {result.get('error')}", file=sys.stderr)
@@ -2764,6 +2788,11 @@ def _run_train_classifier(path: str) -> int:
     st = result["stats"]
     print(f"Trained on {st.examples} examples across {st.classes} intents "
           f"in {st.seconds:.1f}s; sources: {dict(st.sources)}")
+    if st.calibration:
+        c = st.calibration
+        print(f"Calibrated on cross-validation: answer when probability >= {c.get('min_prob')} and "
+              f"margin >= {c.get('min_margin')} (target precision {c.get('target_precision'):.0%}, "
+              f"{'met' if c.get('met_target') else 'NOT met'})")
     print(f"Saved to {svc.model_path}")
     ev = evaluate_on_golden(svc)
     print(f"Held-out golden prompts: answered {ev['answered']}/{ev['cases']} "

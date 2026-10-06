@@ -116,6 +116,7 @@ class Example:
     intent: str
     weight: float = 1.0
     source: str = "unknown"
+    parent: str = ""        # augmented variants: the comparison key of the example they came from
 
 
 @dataclass
@@ -135,6 +136,24 @@ class TrainStats:
     train_accuracy: float = 0.0
     seconds: float = 0.0
     sources: dict = field(default_factory=dict)
+    backend: str = "tfidf"
+    calibration: dict = field(default_factory=dict)   # cross-validated thresholds (non-tfidf backends)
+
+
+def decide(
+    top: Sequence[tuple[str, float]], min_prob: float, min_margin: float,
+) -> Optional[Prediction]:
+    """The shared answer-or-decline rule: the best intent, or None when its
+    probability or its lead over the runner-up is too small. Every backend
+    uses this one function so they all decline the same way."""
+    if not top:
+        return None
+    best, p1 = top[0]
+    p2 = top[1][1] if len(top) > 1 else 0.0
+    if p1 < min_prob or (p1 - p2) < min_margin:
+        return None
+    return Prediction(intent=best, probability=round(p1, 4),
+                      margin=round(p1 - p2, 4), alternatives=list(top[1:]))
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +193,10 @@ class IntentClassifier:
     @property
     def classes(self) -> list[str]:
         return list(self._classes)
+
+    @property
+    def default_thresholds(self) -> tuple[float, float]:
+        return (DEFAULT_MIN_PROB, DEFAULT_MIN_MARGIN)
 
     # -- vectorising ---------------------------------------------------
 
@@ -308,20 +331,15 @@ class IntentClassifier:
     def classify(
         self,
         text: str,
-        min_prob: float = DEFAULT_MIN_PROB,
-        min_margin: float = DEFAULT_MIN_MARGIN,
+        min_prob: Optional[float] = None,
+        min_margin: Optional[float] = None,
     ) -> Optional[Prediction]:
         """The best intent, or None when it isn't sure enough to answer.
         Declining is the point: a wrong confident answer is worse than none."""
-        top = self.predict(text, k=3)
-        if not top:
-            return None
-        best, p1 = top[0]
-        p2 = top[1][1] if len(top) > 1 else 0.0
-        if p1 < min_prob or (p1 - p2) < min_margin:
-            return None
-        return Prediction(intent=best, probability=round(p1, 4),
-                          margin=round(p1 - p2, 4), alternatives=top[1:])
+        d_prob, d_margin = self.default_thresholds
+        return decide(self.predict(text, k=3),
+                      d_prob if min_prob is None else min_prob,
+                      d_margin if min_margin is None else min_margin)
 
     # -- persistence ---------------------------------------------------
 
@@ -418,28 +436,46 @@ class ClassifierService:
                      LLM is unreachable or fails.
       * ``primary``  Hecate also asks it BEFORE the hand-written text-trigger
                      tiers whenever the NLU said "chat"/something unroutable
-                     or was unsure, so the trained model, not the hand-tuned
-                     phrase lists, gets first say. Those tiers remain as the
-                     backstop when it declines.
+                     or was unsure. Those tiers remain the backstop.
+
+    ``backend`` (backlog #25), see ``core/classifier_backends.py``:
+      * ``tfidf``       word/char TF-IDF model (default; no downloads).
+      * ``embedding``   sentence-embedding nearest neighbours.
+      * ``ensemble``    both, averaged.
+      * ``transformer`` a fine-tuned distilbert-sized model made by
+                        ``scripts/finetune_classifier.py``. Never trained
+                        here (too heavy for a background retrain): ``model_path``
+                        is its directory; without one the classifier is simply
+                        unavailable.
+
+    ``min_prob`` / ``min_margin`` left as ``None`` use the loaded model's own
+    thresholds (fixed for tfidf, cross-validated for the others).
     """
 
     def __init__(
         self,
         model_path: "str | Path" = "data/intent_classifier.npz",
         mode: str = "assist",
-        min_prob: float = DEFAULT_MIN_PROB,
-        min_margin: float = DEFAULT_MIN_MARGIN,
+        min_prob: Optional[float] = None,
+        min_margin: Optional[float] = None,
         examples_fn=None,
         valid_intents: Optional[Iterable[str]] = None,
+        backend: str = "tfidf",
+        embedding_model: Optional[str] = None,
+        device: str = "cpu",
+        embedder=None,
     ) -> None:
         import threading
+        from core.classifier_backends import BACKENDS
         self.model_path = Path(model_path)
         self.mode = mode if mode in MODES else "assist"
-        self.min_prob = float(min_prob)
-        self.min_margin = float(min_margin)
+        self.backend = backend if backend in BACKENDS else "tfidf"
+        self.min_prob = None if min_prob is None else float(min_prob)
+        self.min_margin = None if min_margin is None else float(min_margin)
         self._examples_fn = examples_fn
         self._valid = frozenset(valid_intents) if valid_intents is not None else None
-        self._clf: Optional[IntentClassifier] = None
+        self._opts = {"embedding_model": embedding_model, "device": device, "embedder": embedder}
+        self._clf = None
         self._lock = threading.Lock()
         self._training = False
         self.last_error: Optional[str] = None
@@ -454,12 +490,18 @@ class ClassifierService:
     def ready(self) -> bool:
         return self._clf is not None and self._clf.trained
 
+    @property
+    def trainable(self) -> bool:
+        """False for the fine-tuned backend: it is produced by its own script."""
+        return self.backend != "transformer"
+
     def load(self) -> bool:
         """Load the saved model if there is a good one. Never raises."""
-        if not self.model_path.is_file():
+        if not self.model_path.exists():
             return False
         try:
-            clf = IntentClassifier.load(self.model_path)
+            from core.classifier_backends import load_classifier
+            clf = load_classifier(self.backend, self.model_path, **self._opts)
         except Exception as exc:
             self.last_error = f"couldn't load {self.model_path}: {exc}"
             logger.warning("[Classifier] %s", self.last_error)
@@ -472,6 +514,9 @@ class ClassifierService:
         """(Re)train from the configured examples, save, and swap the new model
         in. Returns a status dict; never raises (a failed retrain leaves the
         previous model serving)."""
+        if not self.trainable:
+            return {"ok": False, "error": "the transformer backend is trained with "
+                                          "scripts/finetune_classifier.py, not here"}
         if self._examples_fn is None:
             return {"ok": False, "error": "no training data source configured"}
         with self._lock:
@@ -479,8 +524,9 @@ class ClassifierService:
                 return {"ok": False, "error": "a training run is already in progress"}
             self._training = True
         try:
+            from core.classifier_backends import make_classifier
             examples = list(self._examples_fn())
-            clf = IntentClassifier()
+            clf = make_classifier(self.backend, **self._opts)
             stats = clf.fit(examples)
             try:
                 clf.save(self.model_path)
@@ -502,11 +548,11 @@ class ClassifierService:
 
     def retrain_if_needed(self, min_new: int = 20) -> dict:
         """Retrain when the training data has grown by at least *min_new*
-        examples since the loaded model was fitted (new hand labels, new
-        confident log lines). Cheap to call: it only counts examples first.
-        Never raises."""
+        examples since the loaded model was fitted. Cheap to call. Never raises."""
         if not self.enabled or self._examples_fn is None:
             return {"ok": False, "skipped": "classifier off or no data source"}
+        if not self.trainable:
+            return {"ok": True, "skipped": "transformer backend is retrained by hand"}
         try:
             have = len(list(self._examples_fn()))
         except Exception as exc:
@@ -522,6 +568,11 @@ class ClassifierService:
         if not self.enabled or self.ready:
             return
         if self.load():
+            return
+        if not self.trainable:
+            self.last_error = (f"no fine-tuned model at {self.model_path}; "
+                               f"run scripts/finetune_classifier.py")
+            logger.warning("[Classifier] %s", self.last_error)
             return
         if background:
             import threading
@@ -549,11 +600,13 @@ class ClassifierService:
     def status(self) -> dict:
         s = self._clf.stats if self.ready else None
         return {
-            "mode": self.mode, "ready": self.ready, "training": self._training,
+            "mode": self.mode, "backend": self.backend, "ready": self.ready,
+            "training": self._training,
             "model_path": str(self.model_path), "last_error": self.last_error,
             "examples": s.examples if s else 0, "classes": s.classes if s else 0,
             "train_accuracy": s.train_accuracy if s else None,
             "sources": dict(s.sources) if s else {},
+            "thresholds": list(self._clf.default_thresholds) if self.ready else None,
         }
 
 

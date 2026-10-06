@@ -10,12 +10,12 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 164 ✅ + 23 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 14 (Hecate, #158, #160, #162, #163; #159 and #161 are listed under Apollo cross-module), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 18 (Telegram Bot, #191–#196), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
+**Tally: 164 ✅ + 24 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 14 (Hecate, #158, #160, #162, #163; #159 and #161 are listed under Apollo cross-module), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 18 (Telegram Bot, #191–#196), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
 | 1. Core Architecture | 16 of 20 (the 4 `[L]` items are out of scope) |
-| 2. NLU | 9 of 10 (`#25` `[L]` out of scope) |
+| 2. NLU | 9 of 10 done, `#25` partial |
 | 3. Mnemosyne | 19 done, 1 partial (`#47`), of 20 |
 | 4. Athena | 20 of 20 |
 | 5. Iris | 10 of 10 (`#71`, `#72`, `#75`, `#77` done with the limits noted on each) |
@@ -69,7 +69,7 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 22. ✅ `[Q]` Add synonyms/aliases config so "log my sleep" and "I slept for" both map cleanly without prompt-engineering every phrasing.
 23. ✅ `[M]` Add entity extraction confidence scores, not just intent confidence, so "remind me tomorrow" with a garbled date can trigger a clarification instead of a wrong reminder.
 24. ✅ `[M]` Support intent chaining/pipelines ("summarize this paper and add it to my reading list" → athena_search + summarize + artemis-style tracking).
-25. `[L]` Fine-tune a small local classifier (distilbert-sized) on your own logged queries so NLU stops depending on Ollama's JSON-mode reliability.
+25. 🟡 `[L]` Fine-tune a small local classifier (distilbert-sized) on your own logged queries so NLU stops depending on Ollama's JSON-mode reliability. *(partial: `scripts/finetune_classifier.py` fine-tunes distilbert on your logged/labelled queries and installs it only if it beats the TF-IDF baseline on the held-out golden prompts; `classifier.backend: transformer` loads it. The training loop has not been run, because the build sandbox had no torch, GPU or network. Also added: data augmentation, an embedding backend, an ensemble, and cross-validated thresholds. Intent only: no entity extraction.)*
 26. ✅ `[Q]` Add a regression test that fails CI if `config/nlu_prompt.txt`'s intent list and `intent_registry.py`'s `ALL_INTENTS` ever drift (you already have the invariant — codify it).
 27. ✅ `[M]` Add multi-language support (start with Hindi/Hinglish given your context) at the NLU layer.
 28. ✅ `[Q]` Cache repeated identical queries' NLU classification for a short TTL to cut Ollama round-trips during rapid testing.
