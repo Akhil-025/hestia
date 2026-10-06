@@ -19,8 +19,14 @@ Design notes
   not expect (a send, an overlapping event) is held behind the orchestrator's
   confirmation mechanism and only executes on the second, ``_confirmed`` call.
 - Triage, inbox-zero and schedule-gap analysis are pure functions over the
-  agent's results (no extra Google scopes, no LLM needed); the LLM, if one is
-  injected, is used only to word email drafts.
+  agent's results (no LLM needed); the LLM, if one is injected, is used only to
+  word email drafts.
+- Things that change the outside world (booking + inviting, archiving mail)
+  are opt-in and always go through the confirm step first. Archiving also
+  needs the Gmail modify scope, which is only requested when
+  ``hermes.allow_mailbox_changes`` is on.
+- Todoist (#91) is a separate connection from Google: its intents work with a
+  Todoist token and no Google login, and vice versa.
 """
 from __future__ import annotations
 
@@ -28,9 +34,17 @@ import json
 import logging
 import re
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from core.todoist_agent import (
+    TodoistError,
+    TodoistTask,
+    find_matches,
+    rank_tasks,
+    select_due,
+)
 from modules.base import BaseModule
 
 logger = logging.getLogger(__name__)
@@ -59,6 +73,18 @@ _SLOT_STEP_MINUTES = 30
 _MAX_SLOTS_OFFERED = 3
 _DEFAULT_WORK_START = 9
 _DEFAULT_WORK_END = 18
+_SLOT_MEMORY_MINUTES = 30        # how long "book the first one" remembers proposed times
+_DIGEST_WINDOW_HOURS = 6         # a missed morning digest isn't sent late in the evening
+_MAX_ARCHIVE_BATCH = 25
+_TODOIST_SPOKEN = 5
+
+_TODOIST_INTENTS: frozenset[str] = frozenset(
+    {"todoist_list_tasks", "todoist_add_task", "todoist_complete_task", "todoist_prioritize"}
+)
+_TODOIST_NOT_CONNECTED = (
+    "Todoist isn't connected. Add your API token under todoist.api_token "
+    "(or the TODOIST_API_TOKEN environment variable) and restart me."
+)
 
 _NOT_CONNECTED = "Communication services are not connected. Ask me to reconnect Google."
 _UNHANDLED = "I can't handle that communication request."
@@ -107,6 +133,12 @@ class HermesEngine(BaseModule):
             "check_schedule_gaps",
             "find_meeting_slot",
             "inbox_zero",
+            # backlog #96 (booking + invites) and #91 (Todoist)
+            "book_meeting_slot",
+            "todoist_list_tasks",
+            "todoist_add_task",
+            "todoist_complete_task",
+            "todoist_prioritize",
         }
     )
 
@@ -159,6 +191,14 @@ class HermesEngine(BaseModule):
         "find_meeting_time": "find_meeting_slot",
         "find_free_slot": "find_meeting_slot",
         "schedule_meeting": "find_meeting_slot",
+        "book_slot": "book_meeting_slot",
+        "schedule_meeting": "book_meeting_slot",
+        "todoist_tasks": "todoist_list_tasks",
+        "todoist_add": "todoist_add_task",
+        "todoist_done": "todoist_complete_task",
+        "todoist_complete": "todoist_complete_task",
+        "todoist_priorities": "todoist_prioritize",
+        "todoist_sort": "todoist_prioritize",
         "inbox_zero_mode": "inbox_zero",
         "clean_inbox": "inbox_zero",
         "process_inbox": "inbox_zero",
@@ -175,6 +215,11 @@ class HermesEngine(BaseModule):
         work_hours: Optional[tuple[int, int]] = None,
         buffer_minutes: int = _DEFAULT_BUFFER_MINUTES,
         travel_minutes: int = _DEFAULT_TRAVEL_MINUTES,
+        travel: Any = None,
+        todoist: Any = None,
+        allow_mailbox_changes: bool = False,
+        digest_time: Optional[str] = None,
+        state_path: Optional[str] = None,
     ) -> None:
         """
         Optional keyword settings (all default to the previous behaviour):
@@ -190,9 +235,29 @@ class HermesEngine(BaseModule):
         buffer_minutes minimum gap between back-to-back events before
                        ``check_schedule_gaps`` flags them (#95).
         travel_minutes flat estimate added when consecutive events have
-                       different locations (#95). There is no maps lookup.
+                       different locations (#95), used whenever ``travel``
+                       can't give a better answer.
+        travel         object with ``estimate(origin, destination)`` returning
+                       something with ``.minutes`` / ``.source`` or ``None``
+                       (``core.travel_time.TravelTimeEstimator``). Optional.
+        todoist        ``core.todoist_agent.TodoistAgent`` (#91). Optional.
+        allow_mailbox_changes
+                       lets ``inbox_zero`` archive mail after a "yes" (#99).
+                       The Google agent must also hold the modify scope.
+        digest_time    ``"08:00"``: speak the email digest once a day from this
+                       time via the heartbeat (#92). ``None`` = off.
+        state_path     JSON file remembering the last digest date across
+                       restarts. ``None`` keeps it in memory only.
         """
         self._google = google_agent
+        self._travel = travel
+        self._todoist = todoist
+        self._allow_mailbox_changes = bool(allow_mailbox_changes)
+        self._digest_time = _parse_clock_setting(digest_time)
+        self._state_path = Path(state_path) if state_path else None
+        self._digest_state: dict[str, Any] = self._load_state()
+        self._last_slots: Optional[dict[str, Any]] = None
+        self._todoist_error = ""
         self._llm = llm
         self._contacts = {
             str(k).strip().lower(): str(v).strip()
@@ -241,7 +306,11 @@ class HermesEngine(BaseModule):
         Returns a "not connected" response when the Google agent is absent
         or unauthenticated.  Never raises.
         """
-        if not self._is_ready():
+        if self._INTENT_ALIASES.get(intent, intent) in _TODOIST_INTENTS:
+            if not self._todoist_ready():
+                logger.warning("handle(%r): Todoist not configured.", intent)
+                return _err(_TODOIST_NOT_CONNECTED)
+        elif not self._is_ready():
             logger.warning(
                 "handle(%r): Google agent not ready.", intent
             )
@@ -258,6 +327,7 @@ class HermesEngine(BaseModule):
     def get_context(self) -> dict:
         return {
             "hermes_connected": self._is_ready(),
+            "todoist_connected": self._todoist_ready(),
         }
 
     # ------------------------------------------------------------------
@@ -267,6 +337,9 @@ class HermesEngine(BaseModule):
     def _is_ready(self) -> bool:
         """Return True when the Google agent exists and is authenticated."""
         return bool(self._google and self._google.is_authenticated())
+
+    def _todoist_ready(self) -> bool:
+        return bool(self._todoist and self._todoist.is_ready())
 
     # ------------------------------------------------------------------
     # Private – dispatcher
@@ -296,6 +369,16 @@ class HermesEngine(BaseModule):
             return self._find_meeting_slot(entities)
         if intent == "inbox_zero":
             return self._inbox_zero(entities)
+        if intent == "book_meeting_slot":
+            return self._book_meeting_slot(entities)
+        if intent == "todoist_list_tasks":
+            return self._todoist_list(entities)
+        if intent == "todoist_add_task":
+            return self._todoist_add(entities)
+        if intent == "todoist_complete_task":
+            return self._todoist_complete(entities)
+        if intent == "todoist_prioritize":
+            return self._todoist_prioritize(entities)
         return _err(_UNHANDLED)
 
     # ------------------------------------------------------------------
@@ -688,14 +771,78 @@ class HermesEngine(BaseModule):
         logger.info("email_digest: %d email(s) triaged (%s).", total, counts)
         return _ok(" ".join(parts), data={"items": items, "counts": counts})
 
+    def check_email_digest(self, now: Optional[datetime] = None) -> Optional[str]:
+        """
+        Heartbeat hook (#92): the spoken digest, at most once a day.
+
+        Returns text to speak or ``None``. Quiet when the feature is off, it
+        is before ``digest_time`` or more than six hours past it, today's
+        digest was already given, Google isn't connected (retried on a later
+        tick), or there is nothing unread. Safe to call on every tick.
+        """
+        if self._digest_time is None:
+            return None
+        if now is None:
+            now = datetime.now(self._tz)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=self._tz)      # naive = already local wall-clock
+        else:
+            now = now.astimezone(self._tz)
+        due = datetime.combine(now.date(), self._digest_time, tzinfo=self._tz)
+        if now < due or now > due + timedelta(hours=_DIGEST_WINDOW_HOURS):
+            return None
+        today = now.date().isoformat()
+        if self._digest_state.get("last_digest") == today:
+            return None
+        if not self._is_ready():
+            return None
+        emails = self._fetch_unread(_DEFAULT_DIGEST_COUNT)
+        if emails is None:
+            return None                     # fetch failed: try again next tick
+        self._digest_state["last_digest"] = today
+        self._save_state()
+        if not emails:
+            return None
+        result = self._email_digest({"count": _DEFAULT_DIGEST_COUNT})
+        text = result.get("response") if result.get("confidence", 0) > 0 else None
+        return f"Morning email digest. {text}" if text else None
+
+    def _load_state(self) -> dict[str, Any]:
+        if not self._state_path:
+            return {}
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_state(self) -> None:
+        if not self._state_path:
+            return
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(json.dumps(self._digest_state), encoding="utf-8")
+        except OSError:
+            logger.exception("Couldn't save Hermes state to %s.", self._state_path)
+
     def _inbox_zero(self, entities: dict) -> dict:
         """
         Batch plan for unread mail: a suggested action per message.
 
-        Suggestion only — archiving needs Gmail's modify scope, which this
-        connection deliberately doesn't request, so nothing in the mailbox
-        is changed.
+        By default this is a plan only. With ``hermes.allow_mailbox_changes``
+        on (which also asks Google for the Gmail modify scope), "archive the
+        low-priority ones" archives the messages triaged as ``archive`` —
+        newsletters, promotions, receipts, automated mail — after a "yes".
+        Nothing is ever deleted (archived mail stays in All Mail), and mail
+        triaged as read/reply is never touched. Snooze stays a suggestion:
+        Gmail's API has no snooze.
         """
+        if entities.get("_confirmed") and entities.get("apply"):
+            return self._archive_confirmed(entities)
+
+        want_apply = _truthy(entities.get("apply")) or str(
+            entities.get("action") or ""
+        ).strip().lower() in ("archive", "apply", "do it", "clean")
         count = _clamp_int(
             entities.get("count", _DEFAULT_INBOX_ZERO_COUNT), 1, _MAX_INBOX_ZERO_COUNT
         )
@@ -710,6 +857,9 @@ class HermesEngine(BaseModule):
         for i in items:
             by_action[i["action"]] = by_action.get(i["action"], 0) + 1
 
+        if want_apply:
+            return self._archive_preview(items)
+
         order = ("read", "reply", "snooze", "archive")
         summary = ", ".join(
             f"{by_action[a]} to {a}" for a in order if by_action.get(a)
@@ -722,8 +872,85 @@ class HermesEngine(BaseModule):
                 f"{n}. From {_sender_name(i['email']['sender'])}: "
                 f"{i['email']['subject']} — {i['action']}."
             )
-        lines.append("I haven't changed anything in your mailbox.")
+        if self._can_change_mailbox() and by_action.get("archive"):
+            lines.append(
+                f"Say \"archive the low-priority ones\" and I'll archive the "
+                f"{by_action['archive']} marked archive, after you confirm."
+            )
+        else:
+            lines.append("I haven't changed anything in your mailbox.")
         return _ok(" ".join(lines), data={"items": items, "by_action": by_action})
+
+    def _can_change_mailbox(self) -> bool:
+        return bool(
+            self._allow_mailbox_changes
+            and callable(getattr(self._google, "archive_emails", None))
+            and getattr(self._google, "can_modify_mailbox", True)
+        )
+
+    def _archive_preview(self, items: list[dict[str, Any]]) -> dict:
+        if not self._can_change_mailbox():
+            return _ok(
+                "I can only suggest actions right now. To let me archive mail, set "
+                "hermes.allow_mailbox_changes to true in your config and reconnect Google "
+                "once so it can ask for that permission.",
+                data={"items": items}, confidence=0.7,
+            )
+        targets = [
+            i for i in items
+            if i["action"] == "archive" and i["email"].get("message_id")
+        ][:_MAX_ARCHIVE_BATCH]
+        if not targets:
+            return _ok(
+                "Nothing in your unread looks safe to archive.",
+                data={"items": items}, confidence=0.8,
+            )
+        senders = []
+        for t in targets:
+            name = _sender_name(t["email"]["sender"])
+            if name not in senders:
+                senders.append(name)
+        sample = ", ".join(senders[:3]) + (f" and {len(senders) - 3} more" if len(senders) > 3 else "")
+        ids = [t["email"]["message_id"] for t in targets]
+        n = len(ids)
+        return {
+            "response": (
+                f"Archive {n} {'email' if n == 1 else 'emails'} (from {sample})? "
+                "They stay in All Mail and nothing is deleted. Say yes to archive."
+            ),
+            "data": {"ids": ids, "count": n},
+            "confidence": 0.9,
+            "needs_confirmation": True,
+            "confirm_intent": "inbox_zero",
+            "confirm_entities": {"apply": True, "ids": ids},
+            "confirm_label": f"archive {n} low-priority {'email' if n == 1 else 'emails'}",
+        }
+
+    def _archive_confirmed(self, entities: dict) -> dict:
+        if not self._can_change_mailbox():
+            return _err("Mailbox changes aren't enabled, so I archived nothing.")
+        ids = [
+            str(i) for i in (entities.get("ids") or [])
+            if isinstance(i, (str, int)) and str(i).strip()
+        ][:_MAX_ARCHIVE_BATCH]
+        if not ids:
+            return _err("I lost track of which emails to archive. Ask me again.")
+        try:
+            done = int(self._google.archive_emails(ids))
+        except Exception:
+            logger.exception("archive_emails() raised.")
+            return _err("I couldn't archive those emails due to an unexpected error.")
+        if done <= 0:
+            return _err("I couldn't archive those emails.")
+        if done < len(ids):
+            return _ok(f"Archived {done} of {len(ids)} emails; the rest didn't go through.",
+                       data={"archived": done}, confidence=0.7)
+        logger.info("inbox_zero: archived %d message(s).", done)
+        return _ok(
+            f"Archived {done} {'email' if done == 1 else 'emails'}. "
+            "They're still in All Mail if you need them.",
+            data={"archived": done}, confidence=0.9,
+        )
 
     # ------------------------------------------------------------------
     # Private – drafting (backlog #93)
@@ -887,9 +1114,10 @@ class HermesEngine(BaseModule):
         """
         Flag overlapping and back-to-back events on one day.
 
-        When two consecutive events have different locations a flat
-        ``travel_minutes`` allowance is added to the buffer. That is an
-        estimate, not a route lookup — the reply says so.
+        When two consecutive events have different locations, travel time is
+        added to the buffer: a driving-time lookup when a travel provider is
+        configured (``hermes.travel.provider``), otherwise (or if the lookup
+        fails) a flat ``travel_minutes`` allowance. The reply says which.
         """
         date_str = (entities.get("date") or "today").strip()
         try:
@@ -929,7 +1157,14 @@ class HermesEngine(BaseModule):
             a_loc = (getattr(a, "location", "") or "").strip().lower()
             b_loc = (getattr(b, "location", "") or "").strip().lower()
             travel = bool(a_loc and b_loc and a_loc != b_loc)
-            needed = buffer_min + (self._travel_minutes if travel else 0)
+            travel_min, travel_src = 0, ""
+            if travel:
+                est = self._lookup_travel(a_loc, b_loc)
+                if est is not None:
+                    travel_min, travel_src = est
+                else:
+                    travel_min, travel_src = self._travel_minutes, "flat"
+            needed = buffer_min + travel_min
             if gap >= needed:
                 continue
             if gap < 0:
@@ -941,6 +1176,7 @@ class HermesEngine(BaseModule):
             flags.append({
                 "first": a.title, "second": b.title, "gap_minutes": gap,
                 "needed_minutes": needed, "kind": kind,
+                "travel_minutes": travel_min, "travel_source": travel_src,
             })
 
         if not flags:
@@ -953,6 +1189,12 @@ class HermesEngine(BaseModule):
             if f["kind"] == "overlap":
                 return f"{f['first']!r} and {f['second']!r} overlap by {-f['gap_minutes']} minutes"
             if f["kind"] == "travel":
+                if f["travel_source"] not in ("", "flat"):
+                    return (
+                        f"only {f['gap_minutes']} minutes between {f['first']!r} and "
+                        f"{f['second']!r}, which are about {f['travel_minutes']} minutes "
+                        f"apart by car"
+                    )
                 return (
                     f"only {f['gap_minutes']} minutes between {f['first']!r} and "
                     f"{f['second']!r}, which are in different places"
@@ -965,11 +1207,36 @@ class HermesEngine(BaseModule):
             lines.append(f"{i}. {_sentence(f).capitalize()}.")
         if n > 3:
             lines.append(f"And {n - 3} more.")
-        if any(f["kind"] == "travel" for f in flags):
+        if any(f["kind"] == "travel" and f["travel_source"] in ("", "flat") for f in flags):
             lines.append(
                 f"Travel is a flat {self._travel_minutes}-minute estimate, not a route lookup."
             )
+        sources = sorted({
+            f["travel_source"] for f in flags
+            if f["kind"] == "travel" and f["travel_source"] not in ("", "flat")
+        })
+        if sources:
+            lines.append(
+                f"Drive times come from {' and '.join(sources)} and don't include traffic."
+            )
         return _ok(" ".join(lines), data={"flags": flags, "events": len(timed)})
+
+    def _lookup_travel(self, origin: str, destination: str) -> Optional[tuple[int, str]]:
+        """(minutes, source) from the travel estimator, or None to use the flat
+        allowance. Never raises."""
+        if self._travel is None:
+            return None
+        try:
+            est = self._travel.estimate(origin, destination)
+        except Exception:
+            logger.exception("travel estimate failed; using the flat allowance.")
+            return None
+        if est is None:
+            return None
+        try:
+            return max(0, int(est.minutes)), str(est.source)
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     # ------------------------------------------------------------------
     # Private – meeting slots (backlog #96)
@@ -1079,11 +1346,277 @@ class HermesEngine(BaseModule):
         for i, t in enumerate(slots, start=1):
             lines.append(f"{i}. {t:%A} {t.day} {t:%B} at {t:%H:%M}.")
         lines.extend(notes)
+        # Remembered briefly so "book the first one" can follow (#96).
+        self._last_slots = {
+            "slots": list(slots), "duration": duration, "attendees": list(emails),
+            "unchecked": list(unknown), "at": datetime.now(self._tz),
+        }
+        lines.append("Say \"book the first one\" and I'll add it to your calendar"
+                     + (" and invite them." if emails else "."))
         return _ok(
             " ".join(lines),
             data={"slots": [t.isoformat() for t in slots], "duration_minutes": duration,
                   "unchecked": unknown + unresolved},
         )
+
+
+    # ------------------------------------------------------------------
+    # Private – Todoist (backlog #91)
+    # ------------------------------------------------------------------
+
+    def _todoist_tasks(self) -> Optional[list[TodoistTask]]:
+        try:
+            return list(self._todoist.list_tasks())
+        except TodoistError as exc:
+            logger.warning("Todoist list failed: %s", exc)
+            self._todoist_error = str(exc)
+            return None
+        except Exception:
+            logger.exception("Todoist list raised.")
+            self._todoist_error = "Something went wrong talking to Todoist."
+            return None
+
+    def _todoist_fail(self) -> dict:
+        msg = self._todoist_error or "I couldn't reach Todoist right now."
+        return _err(msg if msg.startswith(("Todoist", "Something", "I ")) else f"Todoist: {msg}")
+
+    def _today(self) -> date:
+        return datetime.now(self._tz).date()
+
+    @staticmethod
+    def _task_phrase(t: TodoistTask, today: date) -> str:
+        bits = []
+        if t.due_date and t.due_date < today:
+            days = (today - t.due_date).days
+            bits.append("overdue" if days <= 1 else f"{days} days overdue")
+        elif t.due_date == today:
+            bits.append("due today")
+        elif t.due_date:
+            bits.append(f"due {t.due_date:%A} {t.due_date.day} {t.due_date:%B}")
+        if t.priority >= 3:
+            bits.append(f"p{t.ui_priority}")
+        return f"{t.content}" + (f" ({', '.join(bits)})" if bits else "")
+
+    def _todoist_list(self, entities: dict) -> dict:
+        scope = str(
+            entities.get("scope") or entities.get("when") or entities.get("filter")
+            or entities.get("date") or "today"
+        ).strip().lower()
+        tasks = self._todoist_tasks()
+        if tasks is None:
+            return self._todoist_fail()
+        today = self._today()
+        chosen = rank_tasks(select_due(tasks, today, scope), today)
+        label = {"overdue": "overdue", "week": "due this week", "all": "open"}.get(
+            scope, "due today or overdue"
+        )
+        if not chosen:
+            extra = f" You have {len(tasks)} open in total." if tasks and scope != "all" else ""
+            return _ok(f"Nothing {label} in Todoist.{extra}",
+                       data={"tasks": [], "open_total": len(tasks)})
+        n = len(chosen)
+        lines = [f"{n} {'task' if n == 1 else 'tasks'} {label}."]
+        for i, t in enumerate(chosen[:_TODOIST_SPOKEN], start=1):
+            lines.append(f"{i}. {self._task_phrase(t, today)}.")
+        if n > _TODOIST_SPOKEN:
+            lines.append(f"And {n - _TODOIST_SPOKEN} more.")
+        return _ok(" ".join(lines), data={
+            "tasks": [t.to_dict() for t in chosen], "open_total": len(tasks)})
+
+    def _todoist_prioritize(self, entities: dict) -> dict:
+        """Rank everything open: overdue, then due today, then by Todoist
+        priority. Read-only: it doesn't change anything in Todoist."""
+        tasks = self._todoist_tasks()
+        if tasks is None:
+            return self._todoist_fail()
+        if not tasks:
+            return _ok("Your Todoist is empty. Nothing to prioritise.", data={"tasks": []})
+        today = self._today()
+        ranked = rank_tasks(tasks, today)
+        top = ranked[:3]
+        overdue = sum(1 for t in tasks if t.due_date and t.due_date < today)
+        due_today = sum(1 for t in tasks if t.due_date == today)
+        head = f"You have {len(tasks)} open tasks"
+        if overdue or due_today:
+            parts = []
+            if overdue:
+                parts.append(f"{overdue} overdue")
+            if due_today:
+                parts.append(f"{due_today} due today")
+            head += f", {' and '.join(parts)}"
+        lines = [head + ". Start with:"]
+        for i, t in enumerate(top, start=1):
+            lines.append(f"{i}. {self._task_phrase(t, today)}.")
+        return _ok(" ".join(lines), data={
+            "tasks": [t.to_dict() for t in ranked[:10]],
+            "overdue": overdue, "due_today": due_today, "open_total": len(tasks)})
+
+    def _todoist_add(self, entities: dict) -> dict:
+        content = str(
+            entities.get("task") or entities.get("content") or entities.get("title")
+            or entities.get("text") or ""
+        ).strip()
+        if not content:
+            return _clarify("What should the task say?", slot="task", entities=entities)
+        due = str(entities.get("due") or entities.get("date") or entities.get("when") or "").strip()
+        priority = _parse_todoist_priority(entities.get("priority"))
+        try:
+            task = self._todoist.add_task(content, due_string=due, priority=priority)
+        except TodoistError as exc:
+            logger.warning("Todoist add failed: %s", exc)
+            return _err(str(exc))
+        except Exception:
+            logger.exception("Todoist add raised.")
+            return _err("I couldn't add that task due to an unexpected error.")
+        when = f", due {task.due_string or due}" if (task.due_string or due) else ""
+        pr = f", priority {task.ui_priority}" if task.priority >= 2 else ""
+        return _ok(f"Added {task.content!r} to Todoist{when}{pr}.",
+                   data={"task": task.to_dict()}, confidence=0.9)
+
+    def _todoist_complete(self, entities: dict) -> dict:
+        query = str(
+            entities.get("task") or entities.get("content") or entities.get("name")
+            or entities.get("title") or entities.get("text") or ""
+        ).strip()
+        if not query:
+            return _clarify("Which task did you finish?", slot="task", entities=entities)
+        tasks = self._todoist_tasks()
+        if tasks is None:
+            return self._todoist_fail()
+        matches = find_matches(tasks, query)
+        if not matches:
+            return _ok(f"I couldn't find an open Todoist task matching {query!r}.",
+                       data={"matches": []}, confidence=0.6)
+        if len(matches) > 1:
+            names = "; ".join(repr(m.content) for m in matches[:3])
+            more = f" and {len(matches) - 3} more" if len(matches) > 3 else ""
+            return _clarify(
+                f"That matches {len(matches)} tasks: {names}{more}. Which one?",
+                slot="task", entities=entities,
+            )
+        target = matches[0]
+        try:
+            self._todoist.complete_task(target.id)
+        except TodoistError as exc:
+            logger.warning("Todoist complete failed: %s", exc)
+            return _err(str(exc))
+        except Exception:
+            logger.exception("Todoist complete raised.")
+            return _err("I couldn't complete that task due to an unexpected error.")
+        return _ok(f"Marked {target.content!r} as done in Todoist.",
+                   data={"task": target.to_dict()}, confidence=0.9)
+
+    def _book_meeting_slot(self, entities: dict) -> dict:
+        """
+        Put one of the times ``find_meeting_slot`` just proposed on the
+        calendar and invite the attendees (backlog #96).
+
+        Two-phase like ``send_email``: the first call previews, only the
+        confirmed second call creates the event (which makes Google email the
+        invitations). The slot is re-checked against your calendar first.
+        """
+        if entities.get("_confirmed"):
+            return self._book_confirmed(entities)
+
+        mem = self._last_slots
+        now = datetime.now(self._tz)
+        if (
+            not mem or not mem.get("slots")
+            or (now - mem["at"]) > timedelta(minutes=_SLOT_MEMORY_MINUTES)
+        ):
+            return _ok(
+                "I don't have any proposed times to book. Ask me to find a time first.",
+                confidence=0.6,
+            )
+        slots = mem["slots"]
+        raw_choice = next(
+            (entities[k] for k in ("choice", "slot", "number", "which", "option")
+             if entities.get(k) not in (None, "")),
+            None,
+        )
+        if raw_choice is None:
+            if len(slots) > 1:
+                return _clarify(
+                    f"Which one — 1 to {len(slots)}?", slot="choice", entities=entities
+                )
+            idx = 0
+        else:
+            idx = _parse_choice(raw_choice, len(slots))
+            if idx is None:
+                return _clarify(
+                    f"Which one — 1 to {len(slots)}?", slot="choice", entities=entities
+                )
+
+        start: datetime = slots[idx]
+        duration: int = int(mem["duration"])
+        attendees: list[str] = list(mem["attendees"])
+        title = (
+            entities.get("title") or entities.get("task") or entities.get("event") or ""
+        ).strip() or ("Meeting" if not attendees else f"Meeting with {', '.join(attendees)}")
+        when = f"{start:%A} {start.day} {start:%B} at {start:%H:%M}"
+        invite = f" and invite {', '.join(attendees)}" if attendees else ""
+        caveat = ""
+        if mem.get("unchecked"):
+            caveat = (
+                " I couldn't see " + ", ".join(mem["unchecked"])
+                + "'s calendar, so I don't know if that time suits them."
+            )
+        return {
+            "response": (
+                f"Book {title!r} for {when} ({duration} minutes){invite}? "
+                f"Say yes to book it.{caveat}"
+            ),
+            "data": {"start": start.isoformat(), "duration": duration, "attendees": attendees},
+            "confidence": 0.9,
+            "needs_confirmation": True,
+            "confirm_intent": "book_meeting_slot",
+            "confirm_entities": {
+                "start": start.isoformat(), "duration": duration,
+                "attendees": attendees, "title": title,
+            },
+            "confirm_label": f"book {title} on {when}",
+        }
+
+    def _book_confirmed(self, entities: dict) -> dict:
+        try:
+            start = datetime.fromisoformat(str(entities.get("start")))
+            duration = int(entities.get("duration"))
+        except (TypeError, ValueError):
+            return _err("I lost track of which time you picked. Ask me to find a time again.")
+        if not 5 <= duration <= 480:
+            return _err("That meeting length doesn't look right. Ask me to find a time again.")
+        attendees = [
+            a for a in (entities.get("attendees") or [])
+            if isinstance(a, str) and _EMAIL_RE.match(a.strip())
+        ]
+        title = str(entities.get("title") or "Meeting").strip() or "Meeting"
+        end = start + timedelta(minutes=duration)
+
+        clashes = self._conflicts_for(start, end)
+        if clashes:
+            names = ", ".join(f"{c.title!r}" for c in clashes[:2])
+            return _err(f"That time has since filled up ({names}). Ask me to find another.")
+
+        kwargs: dict[str, Any] = {
+            "title": title,
+            "start_dt": start.replace(tzinfo=None) if start.tzinfo else start,
+            "end_dt": (end.replace(tzinfo=None) if end.tzinfo else end),
+        }
+        if attendees:
+            kwargs["attendees"] = attendees
+        try:
+            ok = self._google.create_event(**kwargs)
+        except Exception:
+            logger.exception("book_meeting_slot: create_event raised for %r.", title)
+            return _err("I couldn't book that meeting due to an unexpected error.")
+        if not ok:
+            return _err("I couldn't book that meeting.")
+        self._last_slots = None
+        when = f"{start:%A} {start.day} {start:%B} at {start:%H:%M}"
+        sent = f" Invitations are on their way to {', '.join(attendees)}." if attendees else ""
+        logger.info("book_meeting_slot: %r booked at %s (%d invitee(s)).",
+                    title, start.isoformat(), len(attendees))
+        return _ok(f"Booked {title!r} for {when}.{sent}", confidence=0.9)
 
 
 # ---------------------------------------------------------------------------
@@ -1246,6 +1779,65 @@ def _clamp_int(value: Any, lo: int, hi: int) -> int:
         return max(lo, min(hi, int(value)))
     except (TypeError, ValueError):
         return lo
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on", "apply", "do it")
+
+
+def _parse_clock_setting(value: Any) -> Optional[time]:
+    """'08:30' / '8:30' / '8' -> time; anything unreadable disables the feature."""
+    if value in (None, "", False):
+        return None
+    m = re.fullmatch(r"\s*(\d{1,2})(?::(\d{2}))?\s*", str(value))
+    if not m:
+        logger.warning("Ignoring unreadable time setting %r (use HH:MM).", value)
+        return None
+    h, mi = int(m.group(1)), int(m.group(2) or 0)
+    if not (0 <= h <= 23 and 0 <= mi <= 59):
+        logger.warning("Ignoring out-of-range time setting %r.", value)
+        return None
+    return time(h, mi)
+
+
+_ORDINALS = {
+    "first": 0, "1st": 0, "one": 0, "1": 0,
+    "second": 1, "2nd": 1, "two": 1, "2": 1,
+    "third": 2, "3rd": 2, "three": 2, "3": 2,
+}
+
+
+def _parse_choice(value: Any, n: int) -> Optional[int]:
+    """'first', 'the second one', 2, 'last' -> zero-based index within n slots."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value - 1 if 1 <= value <= n else None
+    t = str(value).strip().lower()
+    if re.search(r"\blast\b", t):
+        return n - 1
+    for word in re.findall(r"[a-z0-9]+", t):
+        if word in _ORDINALS:
+            idx = _ORDINALS[word]
+            return idx if idx < n else None
+    return None
+
+
+def _parse_todoist_priority(value: Any) -> Optional[int]:
+    """Words or p1-p4 (as shown in the Todoist app) -> API priority (4 = urgent).
+    Unknown or missing -> None (leave Todoist's default)."""
+    if value in (None, ""):
+        return None
+    t = str(value).strip().lower()
+    table = {
+        "p1": 4, "1": 4, "urgent": 4, "highest": 4, "critical": 4,
+        "p2": 3, "2": 3, "high": 3, "important": 3,
+        "p3": 2, "3": 2, "medium": 2, "normal": 2,
+        "p4": 1, "4": 1, "low": 1, "lowest": 1,
+    }
+    return table.get(t)
 
 
 def _email_to_dict(email: Any) -> dict[str, str]:

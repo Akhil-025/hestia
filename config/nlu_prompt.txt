@@ -94,6 +94,7 @@ hephaestus_watch_page, hephaestus_list_watches, hephaestus_stop_watching, hephae
 hephaestus_fill_form, hephaestus_summarize_repo,
 read_email, send_email, list_events, create_event, delete_events,
 email_digest, draft_email, search_email, check_schedule_gaps, find_meeting_slot, inbox_zero,
+book_meeting_slot, todoist_list_tasks, todoist_add_task, todoist_complete_task, todoist_prioritize,
 modules_status, explain_routing, audit_routing, report_mistake, clarify_intent,
 conference, what_if, weekly_focus
 
@@ -1491,6 +1492,33 @@ User: when am I free this week for an hour
 User: help me get to inbox zero
 {"intent": "inbox_zero", "entities": {}, "response": "Building your inbox plan.", "confidence": 0.93}
 
+User: archive the low priority emails in my inbox
+{"intent": "inbox_zero", "entities": {"apply": true}, "response": "Checking which emails are safe to archive.", "confidence": 0.9}
+
+User: book the first one
+{"intent": "book_meeting_slot", "entities": {"choice": "first"}, "response": "Booking that time.", "confidence": 0.92}
+
+User: go with the second slot and call it project sync
+{"intent": "book_meeting_slot", "entities": {"choice": "second", "title": "project sync"}, "response": "Booking that time.", "confidence": 0.9}
+
+User: what's on my todoist today
+{"intent": "todoist_list_tasks", "entities": {"scope": "today"}, "response": "Checking Todoist.", "confidence": 0.93}
+
+User: any overdue tasks in todoist
+{"intent": "todoist_list_tasks", "entities": {"scope": "overdue"}, "response": "Checking Todoist.", "confidence": 0.92}
+
+User: add buy printer ink to todoist for tomorrow
+{"intent": "todoist_add_task", "entities": {"task": "buy printer ink", "due": "tomorrow"}, "response": "Adding that to Todoist.", "confidence": 0.93}
+
+User: add a task to todoist to call the bank, priority 1
+{"intent": "todoist_add_task", "entities": {"task": "call the bank", "priority": "p1"}, "response": "Adding that to Todoist.", "confidence": 0.9}
+
+User: mark call the bank as done in todoist
+{"intent": "todoist_complete_task", "entities": {"task": "call the bank"}, "response": "Marking that done in Todoist.", "confidence": 0.92}
+
+User: what should I tackle first in todoist
+{"intent": "todoist_prioritize", "entities": {}, "response": "Ranking your Todoist tasks.", "confidence": 0.9}
+
 ---
 
 IMPORTANT:
@@ -1519,7 +1547,9 @@ STRICT RULES:
 - search_email → looking for mail by sender, subject or date, including read mail. NOT read_email.
 - draft_email → the user wants wording written for them; send_email is for a message they already dictated.
 - check_schedule_gaps → "back to back", "do I have time between", "any tight spots"; find_meeting_slot → "find a time", "when am I free"; neither creates an event.
-- inbox_zero → "inbox zero", "clean up my inbox", "go through my unread" (a plan, nothing is deleted).
+- inbox_zero → "inbox zero", "clean up my inbox", "go through my unread" (a plan, nothing is deleted). "archive the low priority ones" is the same intent with apply=true (it asks for a yes first).
+- book_meeting_slot → picking one of the times find_meeting_slot just offered ("book the first one", "go with the second"). NOT create_event, which is for a time the user states themselves.
+- todoist_* → ONLY when the user says Todoist or "my tasks/task list" in the sense of that app. todoist_list_tasks = what's due; todoist_prioritize = "what should I do first / rank my tasks"; todoist_add_task = new task; todoist_complete_task = finished/tick off. Reminders at a time ("remind me at 5pm") stay with Chronos; habits and goals stay with Artemis.
 
 - hephaestus_browser_action → browser automation only: opening a URL, or a
   named browser action. Does NOT launch desktop applications.

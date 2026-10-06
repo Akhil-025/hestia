@@ -48,6 +48,10 @@ _CALENDAR_SCOPES = frozenset(
     }
 )
 SCOPES: list[str] = sorted(_GMAIL_SCOPES | _CALENDAR_SCOPES)
+# Opt-in (backlog #99): lets Hestia archive / mark-read mail. Not part of SCOPES,
+# so an existing token keeps working and nothing can change your mailbox unless
+# you turn it on (``hermes.allow_mailbox_changes``) and re-authorise once.
+GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 
 _MAX_EMAIL_RESULTS = 50
 _MAX_EVENT_RESULTS = 50
@@ -176,7 +180,12 @@ class HestiaGoogleAgent:
         credentials_path: str | Path = _DEFAULT_CREDENTIALS_PATH,
         token_path: str | Path = _DEFAULT_TOKEN_PATH,
         timezone: str = _DEFAULT_TIMEZONE,
+        allow_mailbox_changes: bool = False,
     ) -> None:
+        self._allow_modify = bool(allow_mailbox_changes)
+        self._scopes: list[str] = (
+            sorted(set(SCOPES) | {GMAIL_MODIFY_SCOPE}) if self._allow_modify else list(SCOPES)
+        )
         self._credentials_path = Path(credentials_path).resolve()
         self._token_path = Path(token_path).resolve()
         self._timezone = timezone
@@ -309,6 +318,47 @@ class HestiaGoogleAgent:
             logger.exception("read_emails failed.")
             return []
 
+    @property
+    def can_modify_mailbox(self) -> bool:
+        """True when mailbox changes were enabled in config (backlog #99)."""
+        return self._allow_modify
+
+    def archive_emails(self, message_ids: list[str]) -> int:
+        """
+        Archive messages (remove the INBOX label). Returns how many were
+        changed; ``0`` on failure. Nothing is deleted and archived mail stays
+        searchable. Needs ``allow_mailbox_changes`` and the gmail.modify scope.
+        """
+        return self._modify_labels(message_ids, remove=["INBOX"])
+
+    def mark_emails_read(self, message_ids: list[str]) -> int:
+        """Mark messages as read (remove the UNREAD label)."""
+        return self._modify_labels(message_ids, remove=["UNREAD"])
+
+    def _modify_labels(self, message_ids: list[str], *, remove: list[str]) -> int:
+        if not self._allow_modify:
+            raise AuthenticationError(
+                "Mailbox changes are not enabled (hermes.allow_mailbox_changes)."
+            )
+        self._require_auth()
+        ids = [str(i) for i in (message_ids or []) if i]
+        if not ids:
+            return 0
+        done = 0
+        try:
+            # batchModify accepts up to 1000 ids per call.
+            for start in range(0, len(ids), 1000):
+                chunk = ids[start:start + 1000]
+                self._gmail.users().messages().batchModify(
+                    userId="me", body={"ids": chunk, "removeLabelIds": remove}
+                ).execute()
+                done += len(chunk)
+            logger.info("modify_labels: %d message(s), removed %s.", done, remove)
+            return done
+        except Exception:
+            logger.exception("batchModify failed after %d message(s).", done)
+            return done
+
     def send_email(self, to: str, subject: str, body: str) -> bool:
         """
         Send a plain-text email via Gmail.
@@ -415,6 +465,7 @@ class HestiaGoogleAgent:
         location: str = "",
         description: str = "",
         recurrence: Optional[list[str]] = None,
+        attendees: Optional[list[str]] = None,
     ) -> bool:
         """
         Create a new calendar event.
@@ -434,6 +485,9 @@ class HestiaGoogleAgent:
         recurrence:
             Optional list of RFC 5545 lines (e.g. ``["RRULE:FREQ=WEEKLY"]``)
             that makes the event repeat (backlog #98).
+        attendees:
+            Optional list of email addresses to invite (backlog #96). Google
+            emails each of them an invitation when this is given.
 
         Returns
         -------
@@ -466,11 +520,19 @@ class HestiaGoogleAgent:
         }
         if recurrence:
             body["recurrence"] = list(recurrence)
+        invitees = [a.strip() for a in (attendees or []) if a and a.strip()]
+        if invitees:
+            body["attendees"] = [{"email": a} for a in invitees]
 
         try:
-            self._calendar.events().insert(
-                calendarId="primary", body=body
-            ).execute()
+            if invitees:
+                self._calendar.events().insert(
+                    calendarId="primary", body=body, sendUpdates="all"
+                ).execute()
+            else:
+                self._calendar.events().insert(
+                    calendarId="primary", body=body
+                ).execute()
             logger.info(
                 "create_event: %r created at %s (%s).",
                 title,
@@ -659,9 +721,17 @@ class HestiaGoogleAgent:
         if not self._token_path.exists():
             return None
         try:
-            return Credentials.from_authorized_user_file(
-                str(self._token_path), SCOPES
+            creds = Credentials.from_authorized_user_file(
+                str(self._token_path), self._scopes
             )
+            # A token issued before mailbox changes were enabled lacks the
+            # modify scope; treat it as absent so the consent flow runs once.
+            if self._allow_modify:
+                has = getattr(creds, "has_scopes", None)
+                if callable(has) and not has([GMAIL_MODIFY_SCOPE]):
+                    logger.info("Cached token lacks gmail.modify; re-authorising.")
+                    return None
+            return creds
         except Exception:
             logger.warning(
                 "Cached token at %s could not be loaded; re-authorising.",
@@ -695,7 +765,7 @@ class HestiaGoogleAgent:
             )
 
         flow = InstalledAppFlow.from_client_secrets_file(
-            str(self._credentials_path), SCOPES
+            str(self._credentials_path), self._scopes
         )
         creds = flow.run_local_server(port=0)
         logger.info("OAuth2 authorisation completed.")

@@ -84,6 +84,32 @@ hermes:
   # places. travel_minutes is an estimate, not a route lookup.
   buffer_minutes: 10
   travel_minutes: 30
+  # Real driving times for that check instead of the flat allowance (#95).
+  #   flat   (default) never contacts anyone.
+  #   osrm   Nominatim + the public OSRM demo server. No key. Sends your event
+  #          locations to those services; throttled and cached; no traffic.
+  #   google Google Distance Matrix; needs google_api_key. Also sends locations out.
+  # A failed lookup falls back to travel_minutes.
+  travel:
+    provider: flat
+    google_api_key: ""
+  # Speak a once-a-day email digest from this time (24h "HH:MM"), via the
+  # heartbeat (#92). Skipped silently if nothing is unread or if the laptop was
+  # asleep until more than 6 hours after this time. Leave unset to turn off.
+  # digest_time: "08:30"
+  state_path: "data/hermes_state.json"   # remembers the last digest date across restarts
+  # Let "archive the low priority ones" actually archive after you say yes (#99).
+  # Needs the Gmail modify scope, so Google will ask you to approve once more
+  # (delete data/google_token.json if it doesn't). Never deletes anything.
+  allow_mailbox_changes: false
+
+# Todoist (#91). Create a token under Todoist > Settings > Integrations >
+# Developer, then put it here or in the TODOIST_API_TOKEN environment variable
+# (the environment variable is safer: this file is easy to commit by accident).
+todoist:
+  enabled: false
+  api_token: ""
+  timeout_seconds: 10
 
 # General
 database:

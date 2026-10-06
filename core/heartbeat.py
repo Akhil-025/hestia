@@ -14,8 +14,11 @@ logger = logging.getLogger(__name__)
 class HestiaHeartbeat:
     def __init__(self, interval: int = 1800, mnemosyne=None, diagnostics=None,
                  apollo=None, maintenance=None, artemis=None, hephaestus=None,
-                 pluto=None, classifier=None, jobs_only=False):
+                 pluto=None, classifier=None, jobs_only=False, hermes=None):
         self.interval = interval
+        # Backlog #92: HermesEngine gives a once-a-day email digest. Optional,
+        # like artemis: a heartbeat built without it never runs the check.
+        self.hermes = hermes
         # Backlog #4: the trained intent classifier is retrained weekly from
         # new labels and confident log lines. Optional, like the rest.
         self.classifier = classifier
@@ -86,6 +89,7 @@ class HestiaHeartbeat:
         self._maybe_run_mnemosyne_jobs()
         self._maybe_run_hephaestus_checks()
         self._maybe_run_pluto_budget_alerts()
+        self._maybe_run_hermes_digest()
 
         try:
             root = os.path.dirname(os.path.abspath(__file__))
@@ -148,6 +152,24 @@ class HestiaHeartbeat:
             text = hook()
         except Exception:
             logging.getLogger(__name__).exception("Pluto budget alert check failed.")
+            return
+        if isinstance(text, str) and text.strip():
+            bus.emit("speak", {"text": text})
+
+    def _maybe_run_hermes_digest(self) -> None:
+        """Backlog #92: speak the morning email digest once a day.
+
+        HermesEngine keeps the schedule (digest_time, once per day, a window
+        so a late laptop start doesn't read a "morning" digest at night), so
+        this is safe to call on every tick. Off unless hermes.digest_time is set.
+        """
+        hook = getattr(self.hermes, "check_email_digest", None)
+        if not callable(hook):
+            return
+        try:
+            text = hook()
+        except Exception:
+            logging.getLogger(__name__).exception("Hermes email digest check failed.")
             return
         if isinstance(text, str) and text.strip():
             bus.emit("speak", {"text": text})

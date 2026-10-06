@@ -337,7 +337,9 @@ def _hourly_slots(forecast: dict[str, Any], tz: Any) -> list[tuple[datetime, int
     -> [(aware hour start, precipitation probability %, weather code)]."""
     times = forecast.get("time") or []
     probs = forecast.get("precipitation_probability") or []
-    codes = forecast.get("weathercode") or []
+    # Open-Meteo is moving from "weathercode" to "weather_code"; accept both so
+    # a rename on their side can't silently turn every forecast into "no rain".
+    codes = forecast.get("weathercode") or forecast.get("weather_code") or []
     slots = []
     for i, t in enumerate(times):
         try:

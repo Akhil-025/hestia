@@ -182,6 +182,12 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "check_schedule_gaps": "hermes",
     "find_meeting_slot": "hermes",
     "inbox_zero": "hermes",
+    # backlog #96 (book a proposed slot + invite) and #91 (Todoist tasks)
+    "book_meeting_slot": "hermes",
+    "todoist_list_tasks": "hermes",
+    "todoist_add_task": "hermes",
+    "todoist_complete_task": "hermes",
+    "todoist_prioritize": "hermes",
 
     # --- Athena (document / RAG search) ---
     "athena_search": "athena",
@@ -439,7 +445,7 @@ ALL_INTENTS: frozenset[str] = frozenset(INTENT_MODULE_MAP)
 # Bump REGISTRY_VERSION in the same commit that edits INTENT_MODULE_MAP.
 # tests/test_registry_contract.py asserts the version is well-formed and
 # that the fingerprint is stable across imports.
-REGISTRY_VERSION: str = "2.23.0"
+REGISTRY_VERSION: str = "2.24.0"
 
 
 def registry_fingerprint() -> str:

@@ -45,7 +45,7 @@ reportlab                 # Athena PDF export
 pillow
 imagehash
 opencv-python-headless  # Iris video frames and optional face grouping (skipped gracefully if absent)
-ultralytics               # optional, heavy (pulls in torch): Iris camera object detection
+# ultralytics               # optional, heavy (pulls in torch): Iris camera object detection
 pytesseract               # OCR; also needs the Tesseract binary installed
 easyocr                   # optional GPU OCR (heavy); Athena falls back without it
 

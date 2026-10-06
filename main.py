@@ -156,6 +156,8 @@ from core.process_split import (
     profile_for, queue_path,
 )
 from core.llm import HestiaLLM
+from core.todoist_agent import TodoistAgent
+from core.travel_time import TravelTimeEstimator
 from core.nlu import HestiaNLU
 from core.ollama_manager import OllamaManager
 from core.stt import HestiaSTT
@@ -414,6 +416,12 @@ class HestiaBuilder:
                         "timezone",
                         self.config.get("chronos", {}).get("timezone", "Asia/Kolkata"),
                     ),
+                    # Opt-in (#99): also requests the Gmail modify scope so
+                    # inbox-zero can archive mail after a "yes". Off by default;
+                    # turning it on needs one re-authorisation.
+                    allow_mailbox_changes=bool(
+                        (self.config.get("hermes", {}) or {}).get("allow_mailbox_changes", False)
+                    ),
                 )
                 agent.authenticate()
                 modules["google_agent"] = agent
@@ -523,7 +531,21 @@ class HestiaBuilder:
         orchestrator.register(artemis)
 
         hermes = None
-        if google_agent:
+        # Todoist (#91) is independent of Google: a token alone is enough to
+        # get Hermes' task intents.
+        todoist_cfg = self.config.get("todoist", {}) or {}
+        todoist_agent = None
+        if todoist_cfg.get("enabled", False):
+            todoist_agent = TodoistAgent(
+                token=todoist_cfg.get("api_token"),
+                timeout=float(todoist_cfg.get("timeout_seconds", 10)),
+            )
+            if not todoist_agent.is_ready():
+                logger.warning(
+                    "todoist.enabled is true but no token is set (todoist.api_token "
+                    "or TODOIST_API_TOKEN); Todoist intents will say it isn't connected."
+                )
+        if google_agent or todoist_agent is not None:
             # Same config key ChronosEngine uses above — without this,
             # HermesEngine defaults to UTC and every created event lands
             # offset by the difference between UTC and the user's real
@@ -533,6 +555,14 @@ class HestiaBuilder:
             # config/laptop_config.example.yaml.
             hermes_cfg = self.config.get("hermes", {}) or {}
             work_hours = hermes_cfg.get("work_hours")
+            # Driving-time lookups for "back-to-back" checks (#95). The default
+            # provider "flat" never calls out; osrm/google send event
+            # locations to that service.
+            travel_cfg = hermes_cfg.get("travel") or {}
+            travel = TravelTimeEstimator(
+                provider=str(travel_cfg.get("provider", "flat")),
+                google_api_key=str(travel_cfg.get("google_api_key") or ""),
+            )
             hermes = HermesEngine(
                 google_agent,
                 timezone_name=hermes_tz,
@@ -542,6 +572,11 @@ class HestiaBuilder:
                 work_hours=tuple(work_hours) if work_hours else None,
                 buffer_minutes=hermes_cfg.get("buffer_minutes", 10),
                 travel_minutes=hermes_cfg.get("travel_minutes", 30),
+                travel=travel,
+                todoist=todoist_agent,
+                allow_mailbox_changes=bool(hermes_cfg.get("allow_mailbox_changes", False)),
+                digest_time=hermes_cfg.get("digest_time"),
+                state_path=hermes_cfg.get("state_path", "data/hermes_state.json"),
             )
             orchestrator.register(hermes)
 
@@ -894,7 +929,7 @@ class HestiaBuilder:
     def build_heartbeat(
         self, mnemosyne: MnemosyneEngine, diagnostics: Any = None,
         apollo: Any = None, artemis: Any = None, hephaestus: Any = None,
-        pluto: Any = None, classifier: Any = None,
+        pluto: Any = None, classifier: Any = None, hermes: Any = None,
     ) -> HestiaHeartbeat:
         # diagnostics powers the nightly low-confidence review (backlog
         # #6); optional, so a heartbeat built without one just never runs
@@ -911,6 +946,7 @@ class HestiaBuilder:
             interval=1800, mnemosyne=mnemosyne, diagnostics=diagnostics,
             apollo=apollo, maintenance=maintenance, artemis=artemis,
             hephaestus=hephaestus, pluto=pluto, classifier=classifier,
+            hermes=hermes,
         )
 
     def build_web_ui(
@@ -1227,10 +1263,11 @@ class Hestia:
         self._init_event_bus()
 
         self.hephaestus = getattr(self.orchestrator, "_modules", {}).get("hephaestus")
+        self.hermes = getattr(self.orchestrator, "_modules", {}).get("hermes")
         self.heartbeat = builder.build_heartbeat(
             self.mnemosyne, diagnostics=self.diagnostics, apollo=self.apollo,
             artemis=self.artemis, hephaestus=self.hephaestus, pluto=self.pluto,
-            classifier=self.classifier,
+            classifier=self.classifier, hermes=self.hermes,
         )
         # Chronos owns reminder delivery (recurring, snooze, location and the
         # missed-reminder catch-up on startup - backlog #81-#89). When its

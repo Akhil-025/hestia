@@ -10,7 +10,7 @@ Each item is a single sentence so you can copy rows straight into an issue track
 - 🟡 = partially done (see note on the item)
 - no mark = not done, or not mentioned in the changelog
 
-**Tally: 164 ✅ + 24 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 14 (Hecate, #158, #160, #162, #163; #159 and #161 are listed under Apollo cross-module), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 18 (Telegram Bot, #191–#196), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
+**Tally: 169 ✅ + 20 🟡 out of 280.** Every mark falls in sections 1–5 (Athena: all), 6 (Chronos, #81–#90), 7 (Hermes, #92–#100), 8 (Hephaestus, #101–#103, #105–#110), 9 (Apollo, #111–#120), 11 (Pluto, #133–#135, #137–#145), 12 (Dionysus, #146, #147, #150, #151, #152), 13 (Ares, #153–#157), 14 (Hecate, #158, #160, #162, #163; #159 and #161 are listed under Apollo cross-module), 15 (Metis & Orpheus, #164–#169), 16 (Voice Pipeline, #170–#176, #178, #179), 18 (Telegram Bot, #191–#196), 20 (Testing & QA, #207–#215) and 26, plus #121, #122, #123, #124, #125, #126, #127, #128, #129, #130, #149, #159, #161, #183, #233, #259, #266, #269, #270 and #275.
 
 | Section | Done |
 |---|---|
@@ -19,8 +19,8 @@ Each item is a single sentence so you can copy rows straight into an issue track
 | 3. Mnemosyne | 19 done, 1 partial (`#47`), of 20 |
 | 4. Athena | 20 of 20 |
 | 5. Iris | 10 of 10 (`#71`, `#72`, `#75`, `#77` done with the limits noted on each) |
-| 6. Chronos | 9 done, 1 partial (`#88`), of 10 |
-| 7. Hermes | 5 done (`#93`, `#94`, `#97`, `#98`, `#100`), 4 partial (`#92`, `#95`, `#96`, `#99`), of 10 (`#91` Todoist not done) |
+| 6. Chronos | 9 done, 1 partial (`#88`: parser now accepts both Open-Meteo weather-code field names, but the live call is unverified; run `python scripts/check_weather.py`), of 10 |
+| 7. Hermes | 10 of 10 (`#91`–`#100`; `#91`, `#92`, `#95`, `#96`, `#99` completed in the latest pass, tested against fakes only) |
 | 8. Hephaestus | 6 done (`#101`, `#103`, `#105`, `#106`, `#108`, `#109`), 3 partial (`#102`, `#107`, `#110`), of 10 (`#104` not done) |
 | 9. Apollo | 9 done, 1 partial (`#119`), of 10 |
 | 11. Pluto | 7 done (`#133`–`#135`, `#138`, `#139`, `#142`, `#144`), 5 partial (`#137`, `#140`, `#141`, `#143`, `#145`), of 15 (`#131`, `#132`, `#136` not done); plus `#266` |
@@ -150,15 +150,15 @@ Items the changelog explicitly **deferred**, with the reason it gave: #53 (needs
 
 ## 7. Hermes — Communication & Scheduling
 
-91. `[L]` Add Todoist integration (explicitly in `HEARTH.txt`, currently absent) for task prioritization and sorting.
-92. 🟡 `[M]` Add email prioritization/triage — classify inbox by urgency using the same NLU/LLM stack, surface a daily digest. *(partial: on-request digest ranked by a keyword heuristic over sender/subject/snippet, with an optional VIP list. Not scheduled into the heartbeat, and not tuned on real mail.)*
+91. ✅ `[L]` Add Todoist integration (explicitly in `HEARTH.txt`, currently absent) for task prioritization and sorting. *(`core/todoist_agent.py` + four Hermes intents: `todoist_list_tasks`, `todoist_add_task`, `todoist_complete_task`, `todoist_prioritize`. Uses Todoist's API v1 (the old `/rest/v2` is shut down). Needs `todoist.enabled` and a token (`todoist.api_token` or `TODOIST_API_TOKEN`); works without Google. Ranking is overdue, then today, then by priority; prioritising changes nothing in Todoist. Tested against a fake transport only, never a real account.)*
+92. ✅ `[M]` Add email prioritization/triage — classify inbox by urgency using the same NLU/LLM stack, surface a daily digest. *(on-request digest ranked by a keyword heuristic, plus a scheduled one: set `hermes.digest_time` and the heartbeat speaks it once a day, skipping an empty inbox and anything more than 6 hours late. Last-sent date survives restarts. Heuristic not tuned on real mail; fake agent only.)*
 93. ✅ `[M]` Add email draft generation from a short instruction ("reply saying I can't make it, suggest Thursday instead"). *(wording comes from the LLM when one is configured, else a template covering decline/late/thanks/follow-up; either way the draft goes through the send confirmation and never sends by itself.)*
 94. ✅ `[Q]` Add email search by sender/subject/date range as a distinct intent from generic reading.
-95. 🟡 `[M]` Add travel-time estimation between calendar events (flag back-to-back meetings with no buffer). *(partial: flags overlaps and gaps under a configurable buffer; travel is a flat configurable allowance when locations differ, not a maps lookup.)*
-96. 🟡 `[M]` Add smart meeting scheduling — given a set of attendees/constraints, propose slots (needs free/busy lookups you may already get from Google Calendar API). *(partial: uses Google free/busy for you and attendees whose calendars you can see, falls back to your own events, and says which attendees it couldn't check. Tested with a fake agent only, not the live API. Proposes slots; doesn't create the event or send invites.)*
+95. ✅ `[M]` Add travel-time estimation between calendar events (flag back-to-back meetings with no buffer). *(`core/travel_time.py`: `hermes.travel.provider` = `flat` (default, nothing leaves the machine), `osrm` (Nominatim + public OSRM, no key, cached and throttled) or `google` (Distance Matrix, needs a key). A failed lookup falls back to the flat allowance and the reply says which was used. Driving only, no traffic. Not run against the real services; fake transport only.)*
+96. ✅ `[M]` Add smart meeting scheduling — given a set of attendees/constraints, propose slots (needs free/busy lookups you may already get from Google Calendar API). *(`find_meeting_slot` now remembers the offered times; `book_meeting_slot` ("book the first one") previews, waits for a yes, re-checks your calendar, then creates the event and Google emails the invitations. Fake agent only, not the live Calendar API.)*
 97. ✅ `[Q]` Add calendar conflict detection when creating a new event. *(held behind the same confirm step as send_email.)*
 98. ✅ `[M]` Add recurring event support if not already covered by `_create_event`. *("every weekday", "weekly", "every Monday and Wednesday", "every other week", monthly/yearly, with optional count or end date.)*
-99. 🟡 `[L]` Add a unified "inbox zero" mode: batch-process unread emails with suggested actions (archive/reply/snooze/delegate). *(partial: produces a suggested action per unread message (read/reply/snooze/archive) but doesn't act — archiving would need Gmail's modify scope, which isn't requested.)*
+99. ✅ `[L]` Add a unified "inbox zero" mode: batch-process unread emails with suggested actions (archive/reply/snooze/delegate). *(opt-in: `hermes.allow_mailbox_changes: true` adds the Gmail modify scope (one re-authorisation). "Archive the low-priority ones" previews, waits for a yes and archives only mail triaged as archive; nothing is deleted; snooze stays a suggestion because Gmail has no snooze API. Fake agent only.)*
 100. ✅ `[Q]` Add a dry-run/confirmation step before `send_email` actually sends, surfaced clearly in voice mode where a misfire is costly. *(the confirm-before-send step already existed; this pass also refuses to send to a recipient that isn't an address or a configured contact, asking for the address instead.)*
 
 ## 8. Hephaestus — Automation & (Currently) Browser

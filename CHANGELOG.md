@@ -12,6 +12,58 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Hermes: Todoist, scheduled digest, travel times, meeting booking, inbox archiving (#91, #92, #95, #96, #99, #88)
+
+Registry version 2.24.0 (minor: 5 intents added). New tests:
+`tests/test_hermes_remaining.py` (86). Every new setting is optional and off
+by default; an existing config behaves as before. Everything below was tested
+against fakes only, not live Todoist, Google, OSRM or Open-Meteo.
+
+### Added
+
+- **Todoist (#91).** `core/todoist_agent.py` (Todoist API v1, standard-library
+  HTTP) and intents `todoist_list_tasks`, `todoist_add_task`,
+  `todoist_complete_task`, `todoist_prioritize`. Enable with `todoist.enabled`
+  and a token (`todoist.api_token` or `TODOIST_API_TOKEN`). Works without
+  Google. Tasks rank overdue, then today, then by priority. Completing a task
+  that matches several asks which one instead of guessing.
+- **Scheduled email digest (#92).** `hermes.digest_time: "08:30"` makes the
+  heartbeat speak the digest once a day (`HermesEngine.check_email_digest`).
+  Silent for an empty inbox or when more than 6 hours past the time; retried
+  if Google or the fetch fails; last date kept in `hermes.state_path`.
+- **Real travel times (#95).** `core/travel_time.py`; `hermes.travel.provider`
+  is `flat` (default), `osrm` or `google`. The last two send event locations
+  to that service. Results are cached, OSRM geocoding is throttled to 1/s, and
+  any failure falls back to the flat `travel_minutes` allowance. The reply says
+  which source it used.
+- **Book a proposed slot (#96).** `book_meeting_slot` ("book the first one")
+  after `find_meeting_slot`: preview, wait for yes, re-check the calendar,
+  create the event, and have Google email invitations. `create_event` gained
+  an optional `attendees` argument.
+- **Inbox-zero archiving (#99).** With `hermes.allow_mailbox_changes: true`
+  the Google agent also requests `gmail.modify` (one re-authorisation) and
+  "archive the low-priority ones" archives only mail triaged as archive, after
+  a yes. Nothing is deleted. Off by default; the default scopes are unchanged.
+- **`scripts/check_weather.py` (#88).** One-time live check of the Open-Meteo
+  calls.
+
+### Changed
+
+- Open-Meteo weather-code parsing accepts both `weathercode` and
+  `weather_code` (#88).
+- `HermesEngine` is built when either Google or Todoist is available.
+- `config/nlu_prompt.txt`, `intent_registry.py`, `heartbeat.py`, `main.py` and
+  `laptop_config.example.yaml` updated for the above.
+
+### Known gaps
+
+- **#88 stays partial** until `python scripts/check_weather.py` succeeds on a
+  machine that can reach Open-Meteo.
+- Snooze remains a suggestion (Gmail has no snooze API).
+- Email triage is a keyword heuristic and is not tuned on real mail.
+
+---
+
 ## [Unreleased] — Fine-tunable intent classifier: augmentation, embedding backend, gated distilbert (#25)
 
 Partial: everything is built and tested except the actual fine-tune, which needs `torch`, `transformers` and a

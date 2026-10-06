@@ -536,7 +536,9 @@ class ChronosEngine(BaseModule):
             logger.exception("Weather fetch failed for location=%r.", location)
             return _err("I couldn't fetch the weather right now.")
 
-        condition = _WMO_CODES.get(weather.get("weathercode", -1), "")
+        condition = _WMO_CODES.get(
+            weather.get("weathercode", weather.get("weather_code", -1)), ""
+        )
         condition_str = f", {condition}" if condition else ""
         temp = weather.get("temperature", "?")
         wind = weather.get("windspeed", "?")
