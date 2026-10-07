@@ -4,12 +4,23 @@ web_ui.py — Hestia local Flask dashboard (Mnemosyne-compatible).
 
 import collections
 import datetime
+import hmac
+import json
 import logging
+import re
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import quote, urlparse
 
-from flask import Flask, Response, jsonify, request, render_template, stream_with_context
+from flask import (
+    Flask, Response, jsonify, redirect, render_template, request, session,
+    stream_with_context,
+)
+
+from core.web_auth import PasswordAuth, resolve_secret_key, safe_next
+from core.web_live import LiveHub
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +49,17 @@ class HestiaWebUI:
         stt=None,  # HestiaSTT | None — powers /api/stt
         tts=None,  # HestiaTTS | None — powers /api/tts
         voice_state=None,  # core.voice_state.VoiceState | None — powers /api/voice/*
+        iris=None,  # IrisEngine | None — photos in the cross-module search
+        live_hub: Optional[LiveHub] = None,  # live updates (#187); one is made if omitted
+        process_traced_fn: Optional[Callable] = None,  # text -> (reply, routing record) (#189)
+        config_path=None,  # laptop_config.yaml, for the settings page (#188)
+        password: Optional[str] = None,  # login (#186) — plain text; prefer password_hash
+        password_hash: Optional[str] = None,
+        secret_key: Optional[str] = None,  # signs session cookies
+        session_hours: float = 12.0,
+        cookie_secure: bool = False,
+        allowed_origins=None,  # extra Origins allowed to POST (reverse proxies)
+        session_key_file=None,  # where a generated cookie-signing key is kept
     ) -> None:
         self.memory = memory
         self.skill_loader = skill_loader
@@ -52,6 +74,18 @@ class HestiaWebUI:
         self.stt = stt
         self.tts = tts
         self.voice_state = voice_state
+        self.iris = iris
+        self.live_hub = live_hub or LiveHub()
+        self.process_traced_fn = process_traced_fn
+        self.config_path = Path(config_path) if config_path else None
+        self.auth = PasswordAuth(password=password, password_hash=password_hash)
+        self._secret_key = secret_key
+        self._session_hours = max(0.1, float(session_hours))
+        self._cookie_secure = bool(cookie_secure)
+        self._allowed_origins = {str(o).rstrip("/") for o in (allowed_origins or [])}
+        self._session_key_file = session_key_file
+        self._settings_lock = threading.Lock()
+        self._dash_cache: tuple = (0.0, None)
         # Optional shared-secret auth for /api/*. If unset, the API is
         # unauthenticated (fine for strictly-localhost, single-user use —
         # but anything reachable beyond localhost should set this).
@@ -76,6 +110,12 @@ class HestiaWebUI:
         self._register_chronos_routes()
         self._register_athena_routes()
         self._register_mnemosyne_routes()
+        self._register_login_routes()
+        self._register_dashboard_routes()
+        self._register_live_routes()
+        self._register_search_routes()
+        self._register_settings_routes()
+        self._register_export_routes()
 
     # ── Startup ─────────────────────────────────────────
 
@@ -93,45 +133,111 @@ class HestiaWebUI:
     # reachable by other devices/users.
     _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
-    def _register_auth_guard(self) -> None:
-        """If api_key is configured, require it (via X-API-Key header or
-        ?api_key= query param) on every /api/* request. The UI page itself
-        (/) and static assets remain open so the dashboard can load.
+    _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-        If NO api_key is configured, this used to just log a warning and
-        run fully open regardless of host — meaning a config typo like
-        host: "0.0.0.0" (to make the dashboard reachable from a phone on
-        the same LAN, say) would silently expose every /api/* endpoint
-        (including memory/notes/chat) to anyone on that network with no
-        authentication at all. Now: unauthenticated access is only ever
-        allowed when bound to loopback; anything else without an api_key
-        fails fast at startup instead of quietly running open.
-        """
+    def _auth_mode(self) -> str:
+        if self.auth.enabled:
+            return "password"
+        return "api_key" if self.api_key else "none"
+
+    def _api_key_ok(self) -> bool:
         if not self.api_key:
+            return False
+        supplied = request.headers.get("X-API-Key") or request.args.get("api_key") or ""
+        return hmac.compare_digest(supplied.encode("utf-8"), self.api_key.encode("utf-8"))
+
+    def _is_authenticated(self) -> bool:
+        if self._api_key_ok():
+            return True
+        return bool(self.auth.enabled and session.get("auth") is True)
+
+    def _origin_ok(self) -> bool:
+        """Browsers send Origin on cross-site POSTs. Reject one that is not us.
+
+        A cookie login makes cross-site request forgery possible (another
+        page makes your browser POST to this one); SameSite=Lax already stops
+        most of it and this closes the rest. No Origin header (curl, scripts)
+        is fine: a script has no ambient cookie to abuse.
+        """
+        origin = request.headers.get("Origin")
+        if not origin or origin == "null":
+            return origin is None
+        origin = origin.rstrip("/")
+        if origin in self._allowed_origins:
+            return True
+        return urlparse(origin).netloc == request.host
+
+    def _register_auth_guard(self) -> None:
+        """Gate /api/* (and the page itself, when a password is set).
+
+        Three modes, chosen by what is configured:
+
+        * password (#186)  a login page and a signed session cookie. The page
+          and every /api/* call need a session; the API key, if one is also
+          set, still works for scripts.
+        * api_key          /api/* needs X-API-Key (or ?api_key=); the page is
+          open so it can show its key prompt (the original behaviour).
+        * none             unauthenticated, allowed only on a loopback host.
+          Binding to a LAN address with neither configured is refused at
+          start-up rather than run open by accident.
+        """
+        password_on = self.auth.enabled
+        if not self.api_key and not password_on:
             if self.host not in self._LOOPBACK_HOSTS:
                 raise ValueError(
                     f"[WebUI] Refusing to start: host={self.host!r} is not "
-                    "loopback-only and no api_key is configured. Set "
-                    "api_key in your config, or bind host to 127.0.0.1 for "
+                    "loopback-only and no password or api_key is configured. "
+                    "Set webui.password_hash (python scripts/hash_web_password.py) "
+                    "or webui.api_key, or bind host to 127.0.0.1 for "
                     "strictly-local use."
                 )
             logger.warning(
-                "[WebUI] No api_key configured — /api/* endpoints are "
+                "[WebUI] No password or api_key configured — /api/* endpoints are "
                 "unauthenticated. This is only safe because host=%r is "
                 "loopback-only.", self.host,
             )
             return
 
+        if password_on:
+            from datetime import timedelta
+            app = self.app
+            app.config.update(
+                SECRET_KEY=resolve_secret_key(
+                    self._secret_key,
+                    self._session_key_file or "data/web_session.key",
+                ),
+                SESSION_COOKIE_NAME="hestia_session",
+                SESSION_COOKIE_HTTPONLY=True,
+                SESSION_COOKIE_SAMESITE="Lax",
+                SESSION_COOKIE_SECURE=self._cookie_secure,
+                PERMANENT_SESSION_LIFETIME=timedelta(hours=self._session_hours),
+            )
+
         @self.app.before_request
-        def _check_api_key():
-            if not request.path.startswith("/api/"):
+        def _guard():
+            path = request.path
+            if path.startswith("/static/") or path == "/api/auth/status":
                 return None
-            supplied = request.headers.get("X-API-Key") or request.args.get("api_key")
-            if supplied != self.api_key:
-                return jsonify({"error": "Unauthorized"}), 401
+            if password_on and request.method not in self._SAFE_METHODS \
+                    and not self._origin_ok():
+                return jsonify({"error": "Cross-origin request refused"}), 403
+            if path in ("/login", "/logout"):
+                return None
+            if self._is_authenticated():
+                return None
+            if path.startswith("/api/"):
+                return jsonify({"error": "Unauthorized", "login": password_on}), 401
+            if password_on:
+                nxt = request.full_path.rstrip("?")
+                return redirect("/login?next=" + quote(nxt))
             return None
 
     def start(self) -> None:
+        try:
+            from core.event_bus import bus
+            self.live_hub.attach_bus(bus)
+        except Exception:
+            logger.exception("[WebUI] live updates unavailable; pages will poll.")
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="HestiaWebUI"
         )
@@ -141,7 +247,9 @@ class HestiaWebUI:
     def _run(self) -> None:
         try:
             from waitress import serve
-            serve(self.app, host=self.host, port=self.port, threads=4)
+            # Each open live-update stream holds one thread, so leave room for
+            # ordinary requests beside the (capped) streams.
+            serve(self.app, host=self.host, port=self.port, threads=16)
         except ImportError:
             logging.getLogger("werkzeug").setLevel(logging.ERROR)
             self.app.run(host=self.host, port=self.port, debug=False, use_reloader=False)
@@ -151,7 +259,7 @@ class HestiaWebUI:
     def _register_ui_routes(self) -> None:
         @self.app.route("/")
         def index():
-            return render_template("index.html")
+            return render_template("index.html", auth_mode=self._auth_mode())
 
     # ── MEMORY ROUTES (FULLY FIXED) ─────────────────────
 
@@ -351,6 +459,28 @@ class HestiaWebUI:
         bucket.append(now)
         return True
 
+    def _run_chat(self, text: str) -> tuple:
+        """Run one chat turn. Returns ``(reply, routing_record_or_None)``.
+
+        The ``origin("web")`` tag lets the live feed tell this tab's own
+        messages from ones that arrived by voice or Telegram.
+        """
+        with self.live_hub.origin("web"):
+            if self.process_traced_fn is not None:
+                return self.process_traced_fn(text)
+            return self.process_fn(text), None
+
+    @staticmethod
+    def _public_trace(trace: Optional[dict]) -> Optional[dict]:
+        """The part of a routing record the "Why this answer?" panel shows."""
+        if not trace:
+            return None
+        out = {k: trace.get(k) for k in (
+            "module", "intent", "confidence", "source", "reason",
+            "latency_ms", "request_id")}
+        out["checked"] = [str(c)[:120] for c in list(trace.get("checked") or [])[:8]]
+        return out
+
     @staticmethod
     def _validate_chat_text(body: dict) -> tuple[Optional[str], Optional[tuple]]:
         """Returns (text, None) on success or (None, (error_body, status))
@@ -381,8 +511,9 @@ class HestiaWebUI:
                 return jsonify(error[0]), error[1]
 
             try:
-                response = self.process_fn(text)
-                return jsonify({"response": response or "..."})
+                response, trace = self._run_chat(text)
+                return jsonify({"response": response or "...",
+                                "trace": self._public_trace(trace)})
             except Exception:
                 logger.exception("[WebUI] chat error")
                 return jsonify({"error": "Failed"}), 500
@@ -404,16 +535,27 @@ class HestiaWebUI:
             if error:
                 return jsonify(error[0]), error[1]
 
-            def generate():
-                try:
-                    response = self.process_fn(text) or "..."
-                    for word in response.split(" "):
-                        yield word + " "
-                except Exception:
-                    logger.exception("[WebUI] chat stream error")
-                    yield "[error generating response]"
+            # The reply is produced before the response starts so the routing
+            # record (#189) can travel in a header; the words are still sent
+            # one at a time as before.
+            try:
+                response, trace = self._run_chat(text)
+                response = response or "..."
+            except Exception:
+                logger.exception("[WebUI] chat stream error")
+                return jsonify({"error": "Failed"}), 500
 
-            return Response(stream_with_context(generate()), mimetype="text/plain")
+            def generate():
+                for word in response.split(" "):
+                    yield word + " "
+
+            headers = {}
+            public = self._public_trace(trace)
+            if public:
+                headers["X-Hestia-Trace"] = json.dumps(
+                    public, ensure_ascii=True, separators=(",", ":"))
+            return Response(stream_with_context(generate()), mimetype="text/plain",
+                            headers=headers)
 
     # ── VOICE (STT / TTS) ────────────────────────────────
     # Wraps core/stt.py + core/tts.py for the web UI's mic button and
@@ -994,6 +1136,226 @@ class HestiaWebUI:
             except Exception:
                 logger.exception("[WebUI] mnemosyne learning error")
             return jsonify(out)
+
+    # ── LOGIN (#186) ────────────────────────────────────
+
+    def _register_login_routes(self) -> None:
+        app = self.app
+
+        @app.route("/api/auth/status")
+        def api_auth_status():
+            return jsonify({"mode": self._auth_mode(),
+                            "authenticated": self._is_authenticated()
+                            if self._auth_mode() != "none" else True})
+
+        @app.route("/login", methods=["GET", "POST"])
+        def login():
+            if not self.auth.enabled:
+                return redirect("/")
+            nxt = safe_next(request.values.get("next"))
+            if request.method == "GET":
+                if session.get("auth") is True:
+                    return redirect(nxt)
+                return render_template("login.html", error=None, next=nxt)
+
+            ip = request.remote_addr or "unknown"
+            wait = self.auth.locked_for(ip)
+            if wait:
+                resp = render_template(
+                    "login.html", next=nxt,
+                    error=f"Too many attempts. Try again in {wait} seconds.")
+                return Response(resp, status=429, headers={"Retry-After": str(wait)})
+
+            supplied = request.form.get("password")
+            if supplied is None and request.is_json:
+                supplied = (request.get_json(silent=True) or {}).get("password")
+            if not self.auth.verify(supplied or ""):
+                locked = self.auth.record_failure(ip)
+                logger.warning("[WebUI] failed login from %s", ip)
+                msg = ("Too many attempts. Try again in a minute." if locked
+                       else "That password is not right.")
+                return Response(render_template("login.html", error=msg, next=nxt),
+                                status=401)
+            self.auth.record_success(ip)
+            session.clear()           # fresh session: no fixation
+            session["auth"] = True
+            session.permanent = True
+            return redirect(nxt, code=303)
+
+        @app.route("/logout", methods=["POST"])
+        def logout():
+            session.clear()
+            return redirect("/login", code=303)
+
+    # ── TODAY + ACTIVITY (#180, #182) ───────────────────
+
+    _DASH_TTL = 20.0
+
+    @staticmethod
+    def _iso_utc(ts) -> Optional[str]:
+        """SQLite stores 'YYYY-MM-DD HH:MM:SS' in UTC; give browsers an
+        unambiguous ISO string (a bare one is read as *local* time)."""
+        if not ts:
+            return None
+        ts = str(ts)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", ts):
+            return ts.replace(" ", "T") + "Z"
+        return ts
+
+    @staticmethod
+    def _module_of(intent: str) -> str:
+        from core.web_live import module_for
+        return module_for(intent)
+
+    def _register_dashboard_routes(self) -> None:
+        app = self.app
+
+        @app.route("/api/dashboard/today")
+        def api_dashboard_today():
+            from core.web_dashboard import build_today
+            now = time.monotonic()
+            stamp, cached = self._dash_cache
+            if cached is not None and now - stamp < self._DASH_TTL \
+                    and not request.args.get("refresh"):
+                return jsonify(cached)
+            try:
+                data = build_today(self)
+            except Exception:
+                logger.exception("[WebUI] dashboard error")
+                return jsonify({"error": "Failed"}), 500
+            self._dash_cache = (now, data)
+            return jsonify(data)
+
+        @app.route("/api/activity")
+        def api_activity():
+            try:
+                limit = max(1, min(int(request.args.get("limit", 50)), 200))
+            except ValueError:
+                return jsonify({"error": "invalid limit"}), 400
+            module = (request.args.get("module") or "").strip().lower()
+            try:
+                rows = self.memory.db.get_recent_interactions(limit * 4 if module else limit)
+            except Exception:
+                logger.exception("[WebUI] activity error")
+                return jsonify({"error": "Failed"}), 500
+
+            items = []
+            for r in reversed(rows):
+                intent = r.get("intent") or "chat"
+                items.append({
+                    "kind": "message", "ts": self._iso_utc(r.get("pushed_at")),
+                    "query": r.get("query"), "response": (r.get("response") or "")[:800],
+                    "intent": intent, "module": self._module_of(intent),
+                })
+            for ev in self.live_hub.recent(100, ("reminder", "notification")):
+                default_module = "chronos" if ev["type"] == "reminder" else "core"
+                items.append({"kind": ev["type"], "ts": ev["ts"], "text": ev.get("text"),
+                              "module": ev.get("module") or default_module})
+            if module:
+                items = [i for i in items if i["module"] == module]
+            items.sort(key=lambda i: i.get("ts") or "", reverse=True)
+            return jsonify({
+                "items": items[:limit],
+                "modules": sorted({i["module"] for i in items}),
+            })
+
+    # ── LIVE UPDATES (#187) ─────────────────────────────
+
+    def _register_live_routes(self) -> None:
+        @self.app.route("/api/live/stream")
+        def api_live_stream():
+            sub = self.live_hub.subscribe(
+                request.headers.get("Last-Event-ID") or request.args.get("last_id"))
+            if sub is None:
+                return jsonify({"error": "Too many live connections"}), 429
+            return Response(
+                self.live_hub.stream(sub), mimetype="text/event-stream",
+                headers={"Cache-Control": "no-cache, no-transform",
+                         "X-Accel-Buffering": "no"})
+
+    # ── CROSS-MODULE SEARCH (#184) ──────────────────────
+
+    def _register_search_routes(self) -> None:
+        @self.app.route("/api/search")
+        def api_search():
+            from core.web_search import search_all, MAX_QUERY_LENGTH
+            q = (request.args.get("q") or "").strip()
+            if len(q) < 2:
+                return jsonify({"error": "Type at least 2 characters"}), 400
+            if len(q) > MAX_QUERY_LENGTH:
+                return jsonify({"error": "Query too long"}), 400
+            if not self._check_rate_limit("search:" + (request.remote_addr or "unknown")):
+                return jsonify({"error": "Rate limit exceeded"}), 429
+            try:
+                limit = int(request.args.get("limit", 8))
+            except ValueError:
+                limit = 8
+            return jsonify(search_all(self, q, limit))
+
+    # ── SETTINGS (#188) ─────────────────────────────────
+
+    def _register_settings_routes(self) -> None:
+        from core import web_settings
+
+        @self.app.route("/api/settings", methods=["GET", "POST"])
+        def api_settings():
+            if self.config_path is None or not self.config_path.exists():
+                return jsonify({"error": "Settings file not available"}), 503
+            if request.method == "GET":
+                try:
+                    return jsonify({"settings": web_settings.read_settings(self.config_path),
+                                    "file": self.config_path.name,
+                                    "restart_required": True})
+                except Exception:
+                    logger.exception("[WebUI] settings read error")
+                    return jsonify({"error": "Failed"}), 500
+            if not request.is_json:
+                return jsonify({"error": "JSON required"}), 415
+            changes = (request.get_json(silent=True) or {}).get("changes")
+            try:
+                with self._settings_lock:
+                    saved = web_settings.save_settings(self.config_path, changes)
+            except web_settings.SettingsError as exc:
+                return jsonify({"error": str(exc)}), 400
+            except Exception:
+                logger.exception("[WebUI] settings save error")
+                return jsonify({"error": "Failed"}), 500
+            logger.info("[WebUI] settings changed: %s", ", ".join(s["key"] for s in saved))
+            return jsonify({"saved": saved, "restart_required": True,
+                            "backup": self.config_path.name + ".bak"})
+
+    # ── DATA EXPORT (#190) ──────────────────────────────
+
+    def _register_export_routes(self) -> None:
+        from core import web_export
+
+        @self.app.route("/api/export/datasets")
+        def api_export_datasets():
+            return jsonify(web_export.available(self))
+
+        @self.app.route("/api/export/<module>/<dataset>")
+        def api_export_dataset(module: str, dataset: str):
+            fmt = (request.args.get("format") or "csv").lower()
+            if fmt not in ("csv", "json"):
+                return jsonify({"error": "format must be csv or json"}), 400
+            try:
+                rows = web_export.get_rows(self, module, dataset)
+            except Exception:
+                logger.exception("[WebUI] export error (%s/%s)", module, dataset)
+                return jsonify({"error": "Failed"}), 500
+            if rows is None:
+                return jsonify({"error": "Unknown or unavailable dataset"}), 404
+            body = (web_export.to_csv(rows) if fmt == "csv"
+                    else web_export.to_json(module, dataset, rows))
+            stamp = datetime.datetime.now().strftime("%Y%m%d")
+            return Response(
+                body,
+                mimetype="text/csv; charset=utf-8" if fmt == "csv" else "application/json",
+                headers={
+                    "Content-Disposition":
+                        f"attachment; filename=hestia_{module}_{dataset}_{stamp}.{fmt}",
+                    "Cache-Control": "no-store",
+                })
 
     # ── STATS ───────────────────────────────────────────
 

@@ -81,6 +81,15 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("webui.enabled", (bool,), False),
     ("webui.host", (str,), False),
     ("webui.port", (int,), False),
+    # Backlog #186: login for the web UI. Prefer the HESTIA_WEB_PASSWORD /
+    # HESTIA_WEB_SECRET environment variables over putting secrets here.
+    ("webui.password_hash", (str,), False),
+    ("webui.password", (str,), False),
+    ("webui.api_key", (str,), False),
+    ("webui.secret_key", (str,), False),
+    ("webui.session_hours", (int, float), False),
+    ("webui.cookie_secure", (bool,), False),
+    ("webui.allowed_origins", (list,), False),
     ("browser", (dict,), False),
     ("browser.enabled", (bool,), False),
     ("browser.headless", (bool,), False),

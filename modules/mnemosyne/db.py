@@ -107,6 +107,38 @@ class MnemosyneDB:
         )
         return [dict(row) for row in cur.fetchall()]
 
+    @staticmethod
+    def _like(term: str) -> str:
+        """LIKE pattern for a literal substring (escapes % and _)."""
+        t = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{t}%"
+
+    def search_facts(self, term: str, limit: int = 20) -> list[dict]:
+        """Facts whose key or value contains *term* (case-insensitive)."""
+        pat = self._like(term)
+        cur = self._conn.execute(
+            "SELECT key, value, source, confidence, created_at, updated_at FROM facts "
+            "WHERE key LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (pat, pat, max(1, int(limit))),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    def search_interactions(self, term: str, limit: int = 20) -> list[dict]:
+        """Past exchanges (notes included) whose text contains *term*, newest first."""
+        pat = self._like(term)
+        cur = self._conn.execute(
+            "SELECT user_text, hestia_response, intent, pushed_at FROM interaction_log "
+            "WHERE user_text LIKE ? ESCAPE '\\' OR hestia_response LIKE ? ESCAPE '\\' "
+            "ORDER BY id DESC LIMIT ?",
+            (pat, pat, max(1, int(limit))),
+        )
+        return [
+            {"query": r["user_text"], "response": r["hestia_response"],
+             "intent": r["intent"], "pushed_at": r["pushed_at"]}
+            for r in cur.fetchall()
+        ]
+
     def delete_fact(self, key) -> None:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM facts WHERE key = ?", (key,))

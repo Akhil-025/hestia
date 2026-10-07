@@ -719,6 +719,21 @@ class AthenaEngine(BaseModule):
         threading.Thread(target=_run, daemon=True, name="AthenaIngest").start()
         return True
 
+    def search_sources(self, query: str, n: int = 8) -> list[dict]:
+        """Matching document passages, with no answer written.
+
+        ``handle("search ...")`` retrieves and then asks the language model to
+        write an answer. The web UI's cross-module search (#184) only wants the
+        passages themselves, quickly, so this stops after retrieval.
+        """
+        from modules.athena.models import SearchResults
+
+        if not query or not query.strip():
+            return []
+        response = self.rag.search(query, n_results=max(1, int(n)))
+        docs = SearchResults.from_rag_response(response).to_source_documents()
+        return [d.to_dict() for d in docs]
+
     def stats(self) -> dict:
         """Return ChromaDB collection stats."""
         return self.rag.get_collection_stats()

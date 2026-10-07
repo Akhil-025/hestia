@@ -240,6 +240,20 @@ python web_ui.py
 # Access: http://localhost:5000
 ```
 
+Opens on a **Today** page (top priority, agenda, deadlines, habits, health,
+spending). Also: a live **Activity** feed, search across memory, documents and
+photos (press `/`), a "Why this answer?" panel on chat replies, CSV/JSON export per
+module, and a **Settings** page for the on/off switches in `laptop_config.yaml`.
+
+To reach it from a phone or another machine, bind to a LAN address *and* set a
+password (Hestia refuses to start otherwise):
+```bash
+python scripts/hash_web_password.py     # prints a webui.password_hash line for the config
+# laptop_config.yaml:  webui: { host: "0.0.0.0", port: 5000, password_hash: '...' }
+```
+It is plain HTTP; put it behind HTTPS (and set `cookie_secure: true`) before
+exposing it beyond your own network.
+
 **Voice Mode**
 ```bash
 python main.py --voice

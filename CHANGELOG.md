@@ -12,6 +12,59 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Web UI: Today dashboard, live feed, search, login, settings, explain panel, exports (#180–#190)
+
+New tests: `tests/test_web_section17.py` (62). The page was also exercised in
+headless Chromium (1280 px and 390 px) against seeded data; not on a real phone,
+Safari or Firefox. Search over Athena and Iris is tested with stand-ins for their
+vector stores.
+
+### Added
+
+- **Today page (#180).** The default landing view: do-this-first card with the
+  reason it was picked, agenda, deadlines, habits, health, spending, study cards,
+  latest activity. `GET /api/dashboard/today`, `core/web_dashboard.py`,
+  `ChronosEngine.dashboard_data()`.
+- **Activity page (#182)** with per-module filters, and **live updates (#187)**
+  over Server-Sent Events (`GET /api/live/stream`, `core/web_live.py`). Not a
+  WebSocket: waitress cannot upgrade connections and the page only needs
+  server-to-browser pushes. Falls back to polling. Max 6 open streams.
+- **Search (#184).** Top-bar box (`/` to focus) across Mnemosyne, Athena and Iris,
+  run in parallel, failures isolated. New retrieval-only methods:
+  `AthenaEngine.search_sources`, `IrisEngine.search_records`,
+  `MnemosyneDB.search_facts` / `search_interactions`.
+- **Login (#186).** `webui.password_hash` (`python scripts/hash_web_password.py`) or
+  `HESTIA_WEB_PASSWORD`; signed session cookie, lockout after 5 wrong guesses,
+  cross-site POST refusal, sign-out button. `core/web_auth.py`.
+- **Settings page (#188).** 29 whitelisted toggles written back to
+  `laptop_config.yaml` without losing comments (`core/web_settings.py`); restart
+  to apply.
+- **"Why this answer?" (#189).** Routing record per chat reply, via
+  `Hestia.process_text_traced` and the `X-Hestia-Trace` header.
+- **Exports (#190).** CSV/JSON per module table, `GET /api/export/<module>/<table>`
+  (`core/web_export.py`), formula-injection safe.
+
+### Fixed
+
+- **Phones had no navigation (#185).** The bottom tab bar's `display: none` came
+  after the media query that shows it, so below 700 px neither sidebar nor tab bar
+  appeared. Also: Facts table overflowed the screen; top-bar crowding.
+- **`webui.host` / `webui.port` were ignored.** They were validated but never passed
+  to the server. They are now. (`webui.enabled` is still not read; left alone.)
+- **Portfolio doughnut** filled the screen at full width (#183); capped at 340 px.
+- **Chat errors** came back as HTTP 200 with "[error generating response]"; they
+  are now HTTP 500 and the page already shows them as errors.
+- **History/Activity times** read UTC database timestamps as local time; the page
+  now treats them as UTC.
+- **Settings Save button** stayed disabled until the field lost focus.
+
+### Changed
+
+- waitress runs 16 threads (was 4) because each live stream holds one.
+- A non-loopback `webui.host` now needs a password *or* an API key (was: API key).
+
+---
+
 ## [Unreleased] — Pluto broker sync, price/news alerts, multi-currency net worth; Dionysus group outings; receipt upload and score view (#131, #132, #136, #148; #137, #141, #145 extended)
 
 New tests: `tests/test_pluto_more.py` (83), `tests/test_dionysus_group.py` (25).

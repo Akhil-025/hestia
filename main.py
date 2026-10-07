@@ -966,21 +966,41 @@ class HestiaBuilder:
         stt: Optional[HestiaSTT] = None,
         tts: Optional[HestiaTTS] = None,
         voice_state: Optional[Any] = None,
+        iris: Optional[Any] = None,
+        process_traced_fn=None,
+        config_path: Optional[Path] = None,
     ) -> Optional[Any]:
         try:
             from web_ui import HestiaWebUI
+
+            # `webui:` in laptop_config.yaml. host/port were validated but never
+            # passed on, so the page always bound to 127.0.0.1:5000. Secrets
+            # prefer the environment so they need not live in the YAML.
+            wcfg = self.config.get("webui") or {}
             web_ui = HestiaWebUI(
                 memory=mnemosyne,
                 process_fn=process_fn,
+                host=str(wcfg.get("host") or "127.0.0.1"),
+                port=int(wcfg.get("port") or 5000),
+                api_key=os.environ.get("HESTIA_WEB_API_KEY") or wcfg.get("api_key") or None,
+                password=os.environ.get("HESTIA_WEB_PASSWORD") or wcfg.get("password") or None,
+                password_hash=wcfg.get("password_hash") or None,
+                secret_key=os.environ.get("HESTIA_WEB_SECRET") or wcfg.get("secret_key") or None,
+                session_hours=float(wcfg.get("session_hours") or 12),
+                cookie_secure=bool(wcfg.get("cookie_secure", False)),
+                allowed_origins=wcfg.get("allowed_origins") or None,
                 apollo=apollo,
                 pluto=pluto,
                 artemis=artemis,
                 chronos=chronos,
                 athena=athena,
+                iris=iris,
                 skill_loader=skill_loader,
                 stt=stt,
                 tts=tts,
                 voice_state=voice_state,
+                process_traced_fn=process_traced_fn,
+                config_path=config_path,
             )
             web_ui.start()
             logger.info("Web UI started.")
@@ -1149,6 +1169,10 @@ class Hestia:
     # "repeat that" (backlog #171). Deliberately NOT updated by "Yes?" /
     # "I didn't catch that." / local-command acknowledgements.
     _last_spoken: str = ""
+    # Routing record of the query this thread handled last (see
+    # process_text_traced). Thread-local so concurrent web/Telegram/voice
+    # queries cannot read each other's.
+    _trace_local = threading.local()
     _voice_io_errors: dict = {}
 
     @property
@@ -1308,6 +1332,9 @@ class Hestia:
             # so /api/tts reports "not available" instead of failing per call.
             tts=self.tts if getattr(self.tts, "available", True) else None,
             voice_state=self.voice_state,
+            iris=self.iris,
+            process_traced_fn=self.process_text_traced,
+            config_path=self._config_path,
         )
 
         self.telegram_bot = None if not prof.telegram else builder.build_telegram_bot(
@@ -1681,6 +1708,7 @@ class Hestia:
 
         Never raises; errors produce a safe fallback string.
         """
+        self._trace_local.trace = None
         cleaned = _clean_input(text)
         if not cleaned:
             return ""
@@ -1689,6 +1717,11 @@ class Hestia:
         # for the voice pipeline itself, answered before NLU.
         local = self._try_local_command(cleaned, voice_turn=False)
         if local is not None:
+            self._trace_local.trace = {
+                "module": "core", "intent": "local_command", "confidence": 1.0,
+                "source": "local_command",
+                "reason": "A voice-control command, answered before language understanding.",
+            }
             return local
 
         # One id per query, attached to a contextvar and stamped onto every
@@ -1722,11 +1755,20 @@ class Hestia:
         # — _try_multi_intent already logged one record per segment, which
         # is the accurate picture; a third combined record here would just
         # misattribute two different routing decisions to one module.
+        trace = None
         if nlu_result.get("source") != "multi_intent":
             try:
-                self._log_routing(cleaned, nlu_result, turn_timer.ms)
+                trace = self._log_routing(cleaned, nlu_result, turn_timer.ms)
             except Exception:
                 logger.debug("Routing log failed; continuing.")
+        else:
+            trace = {
+                "module": "multiple", "intent": "multi_intent",
+                "confidence": nlu_result.get("confidence"), "source": "multi_intent",
+                "reason": "Split into two separate requests, each routed on its own.",
+                "latency_ms": round(turn_timer.ms, 1),
+            }
+        self._trace_local.trace = trace
 
         logger.info("Hestia: %s", response)
 
@@ -1752,6 +1794,17 @@ class Hestia:
         )
 
         return response
+
+    def process_text_traced(self, text: str) -> tuple[str, Optional[dict]]:
+        """``process_text`` plus how the query was routed (backlog #189).
+
+        Returns ``(response, trace)``. *trace* is the same record written to
+        the routing log: module, intent, confidence, source, reason, latency
+        and the tiers Hecate checked. It is None for an empty query. The web
+        UI shows it under "Why this answer?".
+        """
+        response = self.process_text(text)
+        return response, getattr(self._trace_local, "trace", None)
 
     # ------------------------------------------------------------------
     # Multi-intent queries (backlog #13)

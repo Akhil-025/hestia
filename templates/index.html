@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="hestia-auth" content="{{ auth_mode }}">
+  <meta name="theme-color" content="#f1e6d3">
   <title>Hestia</title>
+  <script>
+    // Apply the saved theme before first paint so a dark-mode user does not see a light flash.
+    try { var __t = localStorage.getItem("hestia_theme");
+      if (__t === "dark" || __t === "light") document.documentElement.setAttribute("data-theme", __t); } catch (e) {}
+  </script>
   <link rel="manifest" href="/static/manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
@@ -1586,6 +1593,7 @@
       .hero-title { font-size: 2rem; }
     }
 
+    .mobile-tabbar { display: none; }   /* must precede the media query below, or it hides the bar on phones too */
     @media (max-width: 700px) {
       .sidebar { display: none; }
       .section { padding: 18px 16px 32px; }
@@ -1602,8 +1610,8 @@
       .mobile-tabbar a.active { color: var(--accent2); }
       .mobile-tabbar img { width: 18px; height: 18px; }
       .main { padding-bottom: 64px; }
+      .toast-stack { bottom: calc(76px + env(safe-area-inset-bottom)); }
     }
-    .mobile-tabbar { display: none; }
 
     .toast-stack {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -1656,6 +1664,134 @@
   .hm-legend .hm-cell { display: inline-block; flex: none; width: 11px; vertical-align: -1px; margin-right: 4px; }
   .streak-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(127,127,127,0.18); font-size: 14px; }
   .health-note { font-size: 12px; opacity: 0.75; margin: 8px 0 18px; }
+
+    /* ═══ Section 17 additions: Today, Activity, Search, live, explain, prefs, export ═══ */
+    .topbar-search { flex: 1 1 220px; max-width: 340px; min-width: 0; }
+    .topbar-search input {
+      width: 100%; padding: 8px 12px; font: inherit; font-size: 13px;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 999px;
+    }
+    .topbar-search input:focus { outline: 2px solid var(--accent3); outline-offset: 1px; }
+    .signout-form { display: inline-flex; margin: 0; }
+    .signout-form button { font-size: 15px; }
+    .topbar-pill.live-on .status-dot { background: var(--green); }
+    .topbar-pill.live-off .status-dot { background: var(--yellow); }
+
+    /* Today is a launcher screen: keep the header slim so the cards fit in one view. */
+    #today .page-header { margin-bottom: 14px; }
+    #today .page-header::after { display: none; }
+    #today .page-figure { display: none; }
+    #today .page-title { font-size: 34px; }
+    #search-status { margin-bottom: 18px; }
+    .today-top {
+      background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+      border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow);
+    }
+    .t-eyebrow { font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 1px;
+                 text-transform: uppercase; color: var(--muted); }
+    .t-top-title { font-family: 'DM Serif Display', serif; font-size: 26px; margin: 4px 0 2px;
+                   overflow-wrap: anywhere; }
+    .t-top-why { color: var(--muted); font-size: 14px; }
+    .t-kind { display: inline-block; margin-top: 8px; padding: 2px 8px; border-radius: 999px;
+              font-family: 'DM Mono', monospace; font-size: 11px; background: var(--glow2); color: var(--accent2); }
+    .today-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 30px; }
+    .t-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+              padding: 14px 16px; min-width: 0; }
+    .t-card h3 { font-family: 'DM Mono', monospace; font-size: 11px; font-weight: 500; letter-spacing: 1px;
+                 text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+    .t-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; font-size: 14px;
+             border-bottom: 1px dashed var(--border); }
+    .t-row:last-child { border-bottom: 0; }
+    .t-row .t-when { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--muted); flex: 0 0 auto; min-width: 54px; }
+    .t-row .t-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+    .t-row .t-tag { flex: 0 0 auto; font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted); }
+    .t-row .t-tag.late { color: var(--red); font-weight: 500; }
+    .t-big { font-family: 'DM Serif Display', serif; font-size: 30px; line-height: 1.1; }
+    .t-sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+    .t-bar { height: 8px; border-radius: 999px; background: var(--surface2); border: 1px solid var(--border);
+             overflow: hidden; margin: 8px 0; }
+    .t-bar > i { display: block; height: 100%; background: var(--teal); }
+    .t-empty { color: var(--muted); font-size: 13px; }
+    .t-wide { grid-column: span 2; }
+
+    .feed-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+    .chip { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+            font: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
+    .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .feed-item { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+                 padding: 10px 14px; margin-bottom: 8px; }
+    .feed-item.fresh { animation: feedIn .6s ease-out; }
+    @keyframes feedIn { from { background: var(--glow2); } to { background: var(--surface); } }
+    .feed-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .feed-head .ts { margin-left: auto; }
+    .feed-q { margin-top: 6px; overflow-wrap: anywhere; }
+    .feed-a { margin-top: 4px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .mod-chip { font-family: 'DM Mono', monospace; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+                border: 1px solid var(--border2); color: var(--muted); }
+    .feed-item.notice { border-left: 4px solid var(--gold); }
+
+    .search-group { margin-bottom: 26px; }
+    .search-hit { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+                  padding: 10px 14px; margin-bottom: 8px; }
+    .search-hit .hit-title { font-weight: 500; overflow-wrap: anywhere; }
+    .search-hit .hit-snip { color: var(--muted); font-size: 14px; margin-top: 3px; overflow-wrap: anywhere; }
+    .search-hit .hit-meta { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .search-err { color: var(--red); font-size: 13px; }
+
+    details.explain { margin: 4px 0 0 44px; font-size: 13px; max-width: min(640px, 100%); }
+    details.explain > summary { cursor: pointer; color: var(--muted); list-style: none; display: inline-block;
+                                padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+    details.explain > summary::-webkit-details-marker { display: none; }
+    details.explain[open] > summary { color: var(--text); border-color: var(--border2); }
+    .explain-body { margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border);
+                    border-radius: 10px; background: var(--surface); }
+    .explain-body dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+    .explain-body dt { color: var(--muted); }
+    .explain-body dd { overflow-wrap: anywhere; }
+    .conf-bar { display: inline-block; vertical-align: middle; width: 90px; height: 8px; margin-right: 8px;
+                border-radius: 999px; background: var(--surface2); border: 1px solid var(--border); overflow: hidden; }
+    .conf-bar > i { display: block; height: 100%; background: var(--teal); }
+    .explain-body ol { margin: 4px 0 0 18px; color: var(--muted); }
+    .bubble-via { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted); }
+
+    .pref-group { margin-bottom: 14px; }
+    .pref-group h4 { font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 1px;
+                     text-transform: uppercase; color: var(--muted); margin: 14px 0 6px; }
+    .pref-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+    .pref-row label { flex: 1 1 auto; min-width: 0; font-size: 14px; }
+    .pref-row .pref-help { display: block; color: var(--muted); font-size: 12px; }
+    .pref-row input[type=number], .pref-row select {
+      width: 110px; padding: 6px 8px; font: inherit; background: var(--surface2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; }
+    .pref-row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+    .pref-row.changed label { font-weight: 500; }
+    .export-group { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .export-group select { padding: 6px 8px; font: inherit; font-size: 13px; background: var(--surface);
+                           color: var(--text); border: 1px solid var(--border); border-radius: 6px; max-width: 180px; }
+    .export-list { display: grid; gap: 8px; }
+    .export-list .export-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+
+    /* Phones (#185): the search box gets the room the clock and "Jump to" used to take. */
+    @media (max-width: 700px) {
+      .topbar { gap: 10px; }
+      .topbar-right { flex: 1 1 auto; min-width: 0; gap: 8px; }
+      .topbar-clock { display: none; }
+      .topbar-search { flex: 1 1 auto; max-width: none; }
+      .theme-toggle { flex: 0 0 30px; }
+      #livePillText { display: none; }
+      .topbar-pill { padding: 4px 8px; }
+      .facts-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .page-actions { flex-wrap: wrap; }
+      .feed-head .ts { margin-left: 0; }
+    }
+    @media (max-width: 900px) { .today-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 580px) {
+      .today-grid { grid-template-columns: minmax(0, 1fr); }
+      .t-wide { grid-column: auto; }
+      .t-top-title { font-size: 22px; }
+      details.explain { margin-left: 0; }
+    }
   </style>
 </head>
 <body>
@@ -1679,8 +1815,17 @@
 
   <nav class="nav" role="tablist" aria-label="Sections">
     <div class="nav-label">Navigate</div>
-    <a href="#" class="active" role="tab" aria-selected="true" data-section="overview">
+    <a href="#" class="active" role="tab" aria-selected="true" data-section="today">
+      <span class="nav-icon"><img src="/static/img/motifs/sun.png" alt=""></span> Today
+    </a>
+    <a href="#" role="tab" aria-selected="false" data-section="overview">
       <span class="nav-icon"><img src="/static/img/motifs/torch_alt.png" alt=""></span> Overview
+    </a>
+    <a href="#" role="tab" aria-selected="false" data-section="activity">
+      <span class="nav-icon"><img src="/static/img/motifs/torch_alt.png" alt=""></span> Activity
+    </a>
+    <a href="#" role="tab" aria-selected="false" data-section="search">
+      <span class="nav-icon"><img src="/static/img/motifs/book_man.png" alt=""></span> Search
     </a>
     <a href="#" role="tab" aria-selected="false" data-section="history">
       <span class="nav-icon"><img src="/static/img/motifs/sun.png" alt=""></span> History
@@ -1749,7 +1894,7 @@
 
 <!-- ── Mobile tab bar ───────────────────────────────────── -->
 <nav class="mobile-tabbar" id="mobileTabbar" aria-label="Sections (mobile)">
-  <a href="#" class="active" data-section="overview"><img src="/static/img/motifs/torch_alt.png" alt=""><span>Home</span></a>
+  <a href="#" class="active" data-section="today"><img src="/static/img/motifs/sun.png" alt=""><span>Today</span></a>
   <a href="#" data-section="history"><img src="/static/img/motifs/sun.png" alt=""><span>History</span></a>
   <a href="#" data-section="chat"><img src="/static/img/motifs/lyre_alt.png" alt=""><span>Chat</span></a>
   <a href="#" data-section="notes"><img src="/static/img/motifs/book_man.png" alt=""><span>Notes</span></a>
@@ -1761,8 +1906,25 @@
   <div class="topbar">
     <div class="topbar-greet" id="topbar-greet">Welcome back.</div>
     <div class="topbar-right">
-      <div class="topbar-pill"><span class="status-dot"></span> Online</div>
-      <button class="theme-toggle" id="themeToggle" type="button" title="Toggle light/dark">🌙</button>
+      <form class="topbar-search" id="globalSearchForm" role="search" autocomplete="off">
+        <input type="search" id="globalSearch" placeholder="Search everything…  ( / )" aria-label="Search memory, documents and photos" maxlength="200">
+      </form>
+      <div class="topbar-pill" id="livePill"><span class="status-dot"></span> <span id="livePillText">Online</span></div>
+      <button class="theme-toggle" id="themeToggle" type="button" title="Toggle light/dark" aria-label="Toggle light or dark theme">🌙</button>
+      <form
+        class="signout-form"
+        id="signoutForm"
+        method="post"
+        action="/logout"
+        hidden
+      >
+        <button
+          class="theme-toggle"
+          type="submit"
+          title="Sign out"
+          aria-label="Sign out"
+        >⎋</button>
+      </form>
       <button class="cmdk-hint" id="cmdkHint" type="button" title="Jump to a section">Jump to <kbd>⌘K</kbd></button>
       <div class="topbar-clock" id="topbar-clock">—</div>
     </div>
@@ -1770,8 +1932,29 @@
 
   <main class="main">
 
+    <!-- Today (backlog #180) -->
+    <section id="today" class="section active show">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow" id="today-eyebrow">Today</div>
+          <h1 class="page-title">Your <em>Day</em></h1>
+        </div>
+        <div class="page-actions">
+          <button class="export-btn" id="todayRefresh" type="button">↻ Refresh</button>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/hearth.png" alt="">
+        </div>
+      </div>
+      <div class="today-top" id="today-top">
+        <div class="t-eyebrow">Do this first</div>
+        <div class="t-top-title">Loading…</div>
+      </div>
+      <div class="today-grid" id="today-grid"></div>
+    </section>
+
     <!-- Overview -->
-    <section id="overview" class="section active show">
+    <section id="overview" class="section">
       <div class="hero" id="heroBanner">
         <div class="hero-parallax" id="heroParallax" aria-hidden="true">
           <img class="hp-figure hp-1" data-depth="14" src="/static/figures/brown_blue/r0c4.png" alt="">
@@ -1846,7 +2029,7 @@
           <h1 class="page-title"><em>Interaction</em> History</h1>
         </div>
         <div class="page-actions">
-          <button class="export-btn" id="exportHistoryBtn" type="button">Export ↓</button>
+          <div class="export-group" data-export-widget="mnemosyne" data-datasets="history" hidden></div>
         </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/underworld.png" alt="">
@@ -1869,7 +2052,7 @@
           <h1 class="page-title">Your <em>Notes</em></h1>
         </div>
         <div class="page-actions">
-          <button class="export-btn" id="exportNotesBtn" type="button">Export ↓</button>
+          <div class="export-group" data-export-widget="mnemosyne" data-datasets="notes" hidden></div>
         </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/muse.png" alt="">
@@ -1914,7 +2097,7 @@
           <h1 class="page-title">Known <em>Facts</em></h1>
         </div>
         <div class="page-actions">
-          <button class="export-btn" id="exportFactsBtn" type="button">Export ↓</button>
+          <div class="export-group" data-export-widget="mnemosyne" data-datasets="facts" hidden></div>
         </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/athena.png" alt="">
@@ -1979,6 +2162,9 @@
           <div class="page-eyebrow">Apollo</div>
           <h1 class="page-title">Health <em>Trends</em></h1>
         </div>
+        <div class="page-actions">
+          <div class="export-group" data-export-widget="apollo" hidden></div>
+        </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/dionysus.png" alt="">
         </div>
@@ -2006,6 +2192,9 @@
           <div class="page-eyebrow">Artemis</div>
           <h1 class="page-title">Habit <em>Heatmap</em></h1>
         </div>
+        <div class="page-actions">
+          <div class="export-group" data-export-widget="artemis" hidden></div>
+        </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/underworld.png" alt="">
         </div>
@@ -2024,6 +2213,9 @@
         <div class="page-header-text">
           <div class="page-eyebrow">Pluto</div>
           <h1 class="page-title">Finance <em>Portfolio</em></h1>
+        </div>
+        <div class="page-actions">
+          <div class="export-group" data-export-widget="pluto" hidden></div>
         </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/underworld.png" alt="">
@@ -2093,6 +2285,9 @@
           <div class="page-eyebrow">Artemis</div>
           <h1 class="page-title">Habits &amp; <em>Goals</em></h1>
         </div>
+        <div class="page-actions">
+          <div class="export-group" data-export-widget="artemis" hidden></div>
+        </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/athena.png" alt="">
         </div>
@@ -2116,6 +2311,9 @@
         <div class="page-header-text">
           <div class="page-eyebrow">Athena</div>
           <h1 class="page-title">Ask Your <em>Documents</em></h1>
+        </div>
+        <div class="page-actions">
+          <div class="export-group" data-export-widget="athena" hidden></div>
         </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/athena.png" alt="">
@@ -2151,6 +2349,9 @@
         <div class="page-header-text">
           <div class="page-eyebrow">Chronos</div>
           <h1 class="page-title">Time &amp; <em>Weather</em></h1>
+        </div>
+        <div class="page-actions">
+          <div class="export-group" data-export-widget="chronos" hidden></div>
         </div>
         <div class="page-figure" aria-hidden="true">
           <img src="/static/img/gods/zeus.png" alt="">
@@ -2189,6 +2390,37 @@
       </div>
     </section>
 
+    <!-- Activity feed (backlog #182) -->
+    <section id="activity" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow" id="activity-live">Live feed</div>
+          <h1 class="page-title">Recent <em>Activity</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/orpheus.png" alt="">
+        </div>
+      </div>
+      <div class="feed-toolbar" id="feed-filters" role="group" aria-label="Filter by module"></div>
+      <div id="feed-list"></div>
+      <div class="feed-toolbar"><button class="export-btn" id="feedMore" type="button">Show more</button></div>
+    </section>
+
+    <!-- Search across Mnemosyne + Athena + Iris (backlog #184) -->
+    <section id="search" class="section">
+      <div class="page-header">
+        <div class="page-header-text">
+          <div class="page-eyebrow">Mnemosyne · Athena · Iris</div>
+          <h1 class="page-title">Find <em>Everything</em></h1>
+        </div>
+        <div class="page-figure" aria-hidden="true">
+          <img src="/static/img/gods/muse.png" alt="">
+        </div>
+      </div>
+      <div id="search-status" class="t-sub" role="status" aria-live="polite"></div>
+      <div id="search-results"></div>
+    </section>
+
     <!-- Settings -->
     <section id="settings" class="section">
       <div class="page-header">
@@ -2211,6 +2443,16 @@
       </div>
 
       <div class="settings-block">
+        <h3>Preferences</h3>
+        <p class="settings-note" id="prefs-note">These are the on/off switches and numbers from <code>laptop_config.yaml</code>. Changes are written to that file (comments kept, a <code>.bak</code> copy made) and apply the next time Hestia starts.</p>
+        <div id="prefs-root"><div class="t-empty">Loading…</div></div>
+        <div class="settings-row" id="prefs-actions" hidden>
+          <button class="action-btn" id="prefsSave" type="button" disabled>Save changes</button>
+          <button class="action-btn" id="prefsReset" type="button" disabled>Discard</button>
+        </div>
+      </div>
+
+      <div class="settings-block">
         <h3>Skills</h3>
         <div class="settings-row">
           <button class="action-btn" id="reloadSkillsBtn" type="button">↻ Reload Skills</button>
@@ -2222,6 +2464,8 @@
         <div class="settings-row">
           <button class="action-btn" id="exportAllBtn" type="button">Export All Data ↓</button>
         </div>
+        <p class="settings-note">Or one table at a time, as CSV (opens in Excel or Sheets) or JSON:</p>
+        <div class="export-list" id="export-list"></div>
       </div>
 
       <div class="settings-block">
@@ -2263,6 +2507,7 @@
 <script>
   // ── API key + fetch wrapper (adds X-API-Key, surfaces JSON errors) ──
   let apiKey = sessionStorage.getItem('hestia_api_key') || '';
+  const AUTH_MODE = (document.querySelector('meta[name="hestia-auth"]') || {}).content || 'none';
 
   function toast(msg) {
     let stack = document.querySelector('.toast-stack');
@@ -2283,8 +2528,7 @@
     opts.headers = { ...(opts.headers || {}), ...(apiKey ? { 'X-API-Key': apiKey } : {}) };
     return fetch(url, opts).then(async r => {
       if (r.status === 401) {
-        const gate = document.getElementById('authGate');
-        if (gate) gate.hidden = false;
+        handleUnauthorized();
         throw new Error('Unauthorized');
       }
       const body = await r.json().catch(() => ({}));
@@ -2302,6 +2546,8 @@
 
   function fmt(ts) {
     if (!ts) return '';
+    // SQLite stores 'YYYY-MM-DD HH:MM:SS' in UTC; without a zone the browser would read it as local time.
+    if (typeof ts === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts)) ts = ts.replace(' ', 'T') + 'Z';
     const d = new Date(ts), now = new Date();
     if (d.toDateString() === now.toDateString())
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -2346,9 +2592,6 @@
       toast('Export ready');
     }).catch(err => toast('Export failed: ' + err.message));
   }
-  document.getElementById('exportNotesBtn')?.addEventListener('click', () => exportField('notes', `hestia-notes-${Date.now()}.json`));
-  document.getElementById('exportHistoryBtn')?.addEventListener('click', () => exportField('history', `hestia-history-${Date.now()}.json`));
-  document.getElementById('exportFactsBtn')?.addEventListener('click', () => exportField('facts', `hestia-facts-${Date.now()}.json`));
   document.getElementById('exportAllBtn')?.addEventListener('click', () => {
     fetchJSON('/api/export').then(data => { downloadJSON(data, `hestia-export-${Date.now()}.json`); toast('Export ready'); })
       .catch(err => toast('Export failed: ' + err.message));
@@ -2369,12 +2612,23 @@
   });
 
   // ── Theme ─────────────────────────────────────────────
+  function syncThemeUI() {
+    const attr = document.documentElement.getAttribute('data-theme');
+    const dark = attr ? attr === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const btn = document.getElementById('themeToggle');
+    if (btn) { btn.textContent = dark ? '☀️' : '🌙'; btn.setAttribute('aria-pressed', String(dark)); }
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = dark ? '#14201f' : '#f1e6d3';
+  }
   function applyTheme(t) {
     if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
     else document.documentElement.removeAttribute('data-theme');
+    syncThemeUI();
   }
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncThemeUI);
+  window.addEventListener('storage', e => { if (e.key === 'hestia_theme') applyTheme(e.newValue); });  // other tabs
   const savedTheme = localStorage.getItem('hestia_theme');
-  if (savedTheme) applyTheme(savedTheme);
+  if (savedTheme) applyTheme(savedTheme); else syncThemeUI();
   function toggleTheme() {
     const current = document.documentElement.getAttribute('data-theme') ||
       (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -2455,6 +2709,8 @@
     if (!next || current === next) return;
 
     if (!loaded[sec]) { loadSection(sec); loaded[sec] = true; }
+    else if (sec === 'today' && Date.now() - todayStamp > 30000) loadToday();
+    else if (sec === 'activity') loadActivity();
 
     if (!current) {
       next.classList.add('active');
@@ -2604,20 +2860,23 @@
     const canvas = document.getElementById('plutoCatChart');
     if (!rows.length) { if (canvas) canvas.parentElement.style.display = 'none'; return; }
     canvas.parentElement.style.display = '';
+    // A doughnut is square by default, so at full width it was taller than the screen.
+    canvas.parentElement.style.cssText += 'position:relative;height:340px;';
     chartOn('plutoCatChart', {
       type: 'doughnut',
       data: { labels: rows.map(r => r.name), datasets: [{ data: rows.map(r => r.v), backgroundColor: ['#c1502e', '#4a7c8c', '#d9a441', '#7d5a8c', '#5b8c5a', '#a0522d', '#6a7f96', '#b0788f'] }] },
-      options: { plugins: { legend: { position: 'right' }, title: { display: true, text: 'Spending by category' } } }
+      options: { maintainAspectRatio: false, plugins: { legend: { position: 'right' }, title: { display: true, text: 'Spending by category' } } }
     });
     fetchJSON('/api/pluto/investments').then(inv => {
       const items = (inv || []).map(i => ({ name: i.name || i.symbol || '?', v: Number(i.value ?? i.amount ?? (i.quantity && i.buy_price ? i.quantity * i.buy_price : 0)) })).filter(r => r.v > 0);
       const c2 = document.getElementById('plutoInvChart');
       if (!c2 || !items.length) return;
       c2.style.display = '';
+      c2.parentElement.style.cssText += 'position:relative;height:340px;';
       chartOn('plutoInvChart', {
         type: 'doughnut',
         data: { labels: items.map(r => r.name), datasets: [{ data: items.map(r => r.v), backgroundColor: ['#4a7c8c', '#c1502e', '#d9a441', '#7d5a8c', '#5b8c5a', '#a0522d'] }] },
-        options: { plugins: { legend: { position: 'right' }, title: { display: true, text: 'Investment allocation (by amount)' } } }
+        options: { maintainAspectRatio: false, plugins: { legend: { position: 'right' }, title: { display: true, text: 'Investment allocation (by amount)' } } }
       });
     }).catch(() => {});
   }
@@ -2872,6 +3131,9 @@
   });
 
   function loadSection(section) {
+    if (section === 'today') { loadToday(); return; }
+    if (section === 'activity') { loadActivity(); return; }
+    if (section === 'settings') { loadPrefs(); buildExportList(); return; }
     if (section === 'graph') {
       loadGraph();
       return;
@@ -3371,10 +3633,7 @@
     if (!resp || !resp.ok || !resp.body) {
       let msg = 'Request failed';
       if (resp) { try { const j = await resp.json(); msg = j.error || msg; } catch (_) {} }
-      if (resp && resp.status === 401) {
-        const gate = document.getElementById('authGate');
-        if (gate) gate.hidden = false;
-      }
+      if (resp && resp.status === 401) handleUnauthorized();
       addBubble('Error: ' + msg, 'hestia', new Date());
       toast(msg);
       chatBusy = false;
@@ -3393,6 +3652,7 @@
       chatMsgs.scrollTop = chatMsgs.scrollHeight;
     }
     if (!full.trim()) bubbleEl.textContent = 'Done.';
+    try { attachExplain(bubbleEl, JSON.parse(resp.headers.get('X-Hestia-Trace') || 'null')); } catch (e) { /* no trace */ }
     chatBusy = false;
   }
 
@@ -3549,7 +3809,10 @@
 
   // ── Command palette ──────────────────────────────────
   const CMDK_ITEMS = [
+    { section: 'today',     label: 'Today',      desc: 'Dashboard',    icon: 'sun.png' },
     { section: 'overview',  label: 'Overview',   desc: 'Dashboard',    icon: 'torch_alt.png' },
+    { section: 'activity',  label: 'Activity',   desc: 'Live feed',    icon: 'torch_alt.png' },
+    { section: 'search',    label: 'Search',     desc: 'Everything',   icon: 'book_man.png' },
     { section: 'history',   label: 'History',    desc: 'Memory',       icon: 'sun.png' },
     { section: 'notes',     label: 'Notes',      desc: 'Mnemosyne',    icon: 'book_man.png' },
     { section: 'facts',     label: 'Facts',      desc: 'Mnemosyne',    icon: 'warrior_diamond.png' },
@@ -3626,6 +3889,423 @@
     if (e.key === 'Enter' && cmdkFiltered[cmdkActive]) { jumpTo(cmdkFiltered[cmdkActive].section); closeCmdk(); }
   });
 
+  // ═══ Section 17 additions ═════════════════════════════════════════
+  const cap = s => { s = String(s ?? ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  function handleUnauthorized() {
+    if (AUTH_MODE === 'password') {
+      location.href = '/login?next=' + encodeURIComponent(location.pathname);
+    } else {
+      const gate = document.getElementById('authGate');
+      if (gate) gate.hidden = false;
+    }
+  }
+
+  // ── Today (#180) ───────────────────────────────────────
+  function relDays(n) {
+    if (n < 0) return `${-n}d late`;
+    if (n === 0) return 'today';
+    if (n === 1) return 'tomorrow';
+    return `in ${n} days`;
+  }
+  function clockOf(iso, allDay) {
+    if (allDay) return 'all day';
+    if (!iso) return 'any time';
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function todayCards(d) {
+    const cards = [];
+    if (d.agenda) {
+      const rows = d.agenda.length ? d.agenda.slice(0, 8).map(a => `
+        <div class="t-row"><span class="t-when">${esc(clockOf(a.when, a.all_day))}</span>
+          <span class="t-text">${esc(a.text)}</span>
+          ${a.overdue ? '<span class="t-tag late">overdue</span>' : `<span class="t-tag">${esc(a.source)}</span>`}</div>`).join('')
+        : '<div class="t-empty">Nothing scheduled today.</div>';
+      const more = d.agenda.length > 8 ? `<div class="t-sub">+${d.agenda.length - 8} more</div>` : '';
+      cards.push(`<div class="t-card t-wide"><h3>Agenda</h3>${rows}${more}</div>`);
+    }
+    if (d.deadlines && (d.modules.artemis || d.modules.chronos)) {
+      const rows = d.deadlines.length ? d.deadlines.slice(0, 6).map(x => `
+        <div class="t-row"><span class="t-text">${esc(x.title)}</span>
+          <span class="t-tag${x.overdue ? ' late' : ''}">${esc(relDays(x.days_left))}</span></div>`).join('')
+        : '<div class="t-empty">No deadlines in the next two weeks.</div>';
+      cards.push(`<div class="t-card"><h3>Deadlines</h3>${rows}</div>`);
+    }
+    if (d.habits) {
+      const h = d.habits, pct = h.total ? Math.round(100 * h.done / h.total) : 0;
+      const left = h.left.slice(0, 4).map(x => `<div class="t-row"><span class="t-text">${esc(x.name)}</span>
+        <span class="t-tag">${x.streak ? '🔥 ' + x.streak : ''}</span></div>`).join('');
+      cards.push(`<div class="t-card"><h3>Habits</h3>
+        <div class="t-big">${h.done}<span class="t-sub"> of ${h.total} done</span></div>
+        <div class="t-bar" role="img" aria-label="${pct}% of habits done"><i style="width:${pct}%"></i></div>
+        ${left || (h.total ? '<div class="t-empty">All done — nice.</div>' : '<div class="t-empty">No habits yet.</div>')}</div>`);
+    }
+    if (d.health) {
+      const hl = d.health, goal = hl.water_goal_ml, wu = (hl.units && hl.units.water) || 'ml';
+      const wp = goal ? Math.min(100, Math.round(100 * hl.water_ml / goal)) : 0;
+      cards.push(`<div class="t-card"><h3>Health</h3>
+        <div class="t-big">${hl.water_ml}<span class="t-sub"> ${esc(wu)} water${goal ? ' / ' + goal : ''}</span></div>
+        <div class="t-bar"><i style="width:${wp}%"></i></div>
+        <div class="t-row"><span class="t-text">Sleep</span><span class="t-tag">${hl.sleep_hours != null ? hl.sleep_hours + ' h' : '—'}</span></div>
+        <div class="t-row"><span class="t-text">Steps</span><span class="t-tag">${hl.steps != null ? hl.steps : '—'}</span></div>
+        <div class="t-row"><span class="t-text">Mood</span><span class="t-tag">${hl.mood != null ? (hl.mood >= 0.5 ? 'positive' : hl.mood <= -0.5 ? 'negative' : 'neutral') : '—'}</span></div></div>`);
+    }
+    if (d.finance) {
+      const f = d.finance;
+      const cats = f.top_categories.map(c => `<div class="t-row"><span class="t-text">${esc(c.category)}</span>
+        <span class="t-tag">${c.total}</span></div>`).join('');
+      cards.push(`<div class="t-card"><h3>Spending · ${esc(f.month)}</h3>
+        <div class="t-big">${f.spent}</div>${cats || '<div class="t-empty">Nothing logged this month.</div>'}</div>`);
+    }
+    if (d.study) {
+      cards.push(`<div class="t-card"><h3>Study</h3><div class="t-big">${d.study.due}<span class="t-sub"> card${d.study.due === 1 ? '' : 's'} due</span></div>
+        <div class="t-sub">${d.study.total} in total</div></div>`);
+    }
+    cards.push('<div class="t-card t-wide"><h3>Latest</h3><div id="today-feed"><div class="t-empty">Loading…</div></div></div>');
+    return cards.join('');
+  }
+
+  let todayStamp = 0;
+  function loadToday(refresh) {
+    todayStamp = Date.now();
+    return fetchJSON('/api/dashboard/today' + (refresh ? '?refresh=1' : '')).then(d => {
+      const date = new Date(d.date + 'T12:00:00');
+      document.getElementById('today-eyebrow').textContent =
+        date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }) + (d.holiday ? ' · ' + d.holiday : '');
+      const tp = d.top_priority;
+      document.getElementById('today-top').innerHTML = tp
+        ? `<div class="t-eyebrow">Do this first</div><div class="t-top-title">${esc(tp.title)}</div>
+           <div class="t-top-why">${esc(cap(tp.reason))}</div><span class="t-kind">${esc(tp.kind)}</span>`
+        : `<div class="t-eyebrow">Do this first</div><div class="t-top-title">Nothing pressing</div>
+           <div class="t-top-why">No overdue or high-priority items. Enjoy the quiet.</div>`;
+      let html = todayCards(d);
+      const failed = Object.keys(d.errors || {});
+      if (failed.length) html += `<div class="t-card t-wide"><div class="t-empty">Couldn't load: ${esc(failed.join(', '))}.</div></div>`;
+      document.getElementById('today-grid').innerHTML = html;
+      loadMiniFeed();
+    }).catch(err => {
+      document.getElementById('today-top').innerHTML =
+        `<div class="t-eyebrow">Do this first</div><div class="t-top-title">Couldn't load today</div><div class="t-top-why">${esc(err.message)}</div>`;
+    });
+  }
+  function loadMiniFeed() {
+    fetchJSON('/api/activity?limit=6').then(d => {
+      const el = document.getElementById('today-feed');
+      if (!el) return;
+      el.innerHTML = d.items.length ? d.items.map(it => `<div class="t-row">
+        <span class="t-when">${esc(fmt(it.ts))}</span>
+        <span class="t-text">${esc(it.kind === 'message' ? it.query : it.text)}</span>
+        <span class="t-tag">${esc(it.module)}</span></div>`).join('') : '<div class="t-empty">No activity yet.</div>';
+    }).catch(() => {});
+  }
+  document.getElementById('todayRefresh')?.addEventListener('click', () => loadToday(true));
+
+  // ── Activity feed (#182) ───────────────────────────────
+  const feed = { limit: 25, module: '', items: [], known: new Set(), loaded: false };
+  function feedItemHTML(it, fresh) {
+    if (it.kind !== 'message') {
+      return `<div class="feed-item notice${fresh ? ' fresh' : ''}"><div class="feed-head">
+        <span class="badge badge-remind">${it.kind === 'reminder' ? '🔔 reminder' : 'notice'}</span>
+        <span class="mod-chip">${esc(it.module)}</span><span class="ts">${esc(fmt(it.ts))}</span></div>
+        <div class="feed-q">${esc(it.text)}</div></div>`;
+    }
+    return `<div class="feed-item${fresh ? ' fresh' : ''}"><div class="feed-head">${badge(it.intent)}
+      <span class="mod-chip">${esc(it.module)}</span><span class="ts">${esc(fmt(it.ts))}</span></div>
+      <div class="feed-q">${esc(it.query)}</div>
+      ${it.response ? `<div class="feed-a">${esc(it.response)}</div>` : ''}</div>`;
+  }
+  function renderFeed(freshFirst) {
+    const chips = ['', ...[...feed.known].sort()].map(m =>
+      `<button type="button" class="chip${m === feed.module ? ' active' : ''}" data-mod="${esc(m)}">${m ? esc(m) : 'All'}</button>`).join('');
+    document.getElementById('feed-filters').innerHTML = chips;
+    document.getElementById('feed-list').innerHTML = feed.items.length
+      ? feed.items.map((it, i) => feedItemHTML(it, freshFirst && i === 0)).join('')
+      : emptyState('sun.png', feed.module ? 'Nothing from this module yet.' : 'No activity yet.');
+    document.getElementById('feedMore').hidden = feed.items.length < feed.limit;
+  }
+  function loadActivity() {
+    const q = `/api/activity?limit=${feed.limit}` + (feed.module ? '&module=' + encodeURIComponent(feed.module) : '');
+    return fetchJSON(q).then(d => {
+      feed.items = d.items; d.modules.forEach(m => feed.known.add(m)); feed.loaded = true;
+      renderFeed(false);
+    }).catch(() => {
+      document.getElementById('feed-list').innerHTML = emptyState('sun.png', 'Could not load activity.');
+    });
+  }
+  document.getElementById('feed-filters')?.addEventListener('click', e => {
+    const b = e.target.closest('.chip'); if (!b) return;
+    feed.module = b.dataset.mod; loadActivity();
+  });
+  document.getElementById('feedMore')?.addEventListener('click', () => {
+    feed.limit = Math.min(feed.limit * 2, 200); loadActivity();
+  });
+
+  // ── Why this answer? (#189) ────────────────────────────
+  const SOURCE_LABELS = {
+    nlu: 'language model', cache: 'an earlier identical question', alias: 'one of your shortcuts',
+    classifier: 'trained classifier', multi_intent: 'split into two requests',
+    local_command: 'voice-control command', dry_run: 'dry run'
+  };
+  function attachExplain(bubbleEl, t) {
+    if (!t || !bubbleEl) return;
+    const wrap = bubbleEl.closest('.bubble-wrap'); if (!wrap) return;
+    const pct = t.confidence != null ? Math.round(100 * t.confidence) : null;
+    const d = document.createElement('details');
+    d.className = 'explain';
+    d.innerHTML = `<summary>Why this answer?</summary><div class="explain-body"><dl>
+      <dt>Handled by</dt><dd>${esc(t.module || 'unknown')}</dd>
+      <dt>Understood as</dt><dd>${esc(t.intent || 'unknown')}</dd>
+      ${pct != null ? `<dt>Confidence</dt><dd><span class="conf-bar" role="img" aria-label="${pct}%"><i style="width:${pct}%"></i></span>${pct}%</dd>` : ''}
+      ${t.source ? `<dt>Decided by</dt><dd>${esc(SOURCE_LABELS[t.source] || t.source)}</dd>` : ''}
+      ${t.reason ? `<dt>Routing</dt><dd>${esc(t.reason)}</dd>` : ''}
+      ${t.latency_ms != null ? `<dt>Took</dt><dd>${Math.round(t.latency_ms)} ms</dd>` : ''}
+      ${t.checked && t.checked.length ? `<dt>Checked</dt><dd><ol>${t.checked.map(c => `<li>${esc(c)}</li>`).join('')}</ol></dd>` : ''}
+      </dl></div>`;
+    wrap.querySelector('.bubble-row').after(d);
+  }
+
+  // ── Live updates (#187): one SSE stream, polling if it is unavailable ──
+  const live = { state: 'connecting', lastId: null, abort: null, hiddenTimer: null, paused: false };
+  function setLive(state) {
+    live.state = state;
+    const pill = document.getElementById('livePill'), text = document.getElementById('livePillText');
+    if (!pill) return;
+    pill.classList.toggle('live-on', state === 'on');
+    pill.classList.toggle('live-off', state !== 'on');
+    text.textContent = state === 'on' ? 'Live' : (state === 'paused' ? 'Paused' : 'Polling');
+    const lab = document.getElementById('activity-live');
+    if (lab) lab.textContent = state === 'on' ? 'Live feed' : 'Feed · refreshes every 20 s';
+  }
+  function onLiveEvent(type, ev) {
+    if (type === 'message') {
+      fetchJSON('/api/stats').then(updateStats).catch(() => {});
+      const item = { kind: 'message', ts: ev.ts, query: ev.query, response: ev.response, intent: ev.intent, module: ev.module };
+      feed.known.add(ev.module);
+      if (feed.loaded && (!feed.module || feed.module === ev.module)) {
+        feed.items.unshift(item); feed.items = feed.items.slice(0, feed.limit); renderFeed(true);
+      }
+      if (ev.origin === 'other') {            // arrived by voice / Telegram, not typed here
+        const u = addBubble(ev.query, 'user', ev.ts);
+        const a = addBubble(ev.response, 'hestia', ev.ts);
+        [u, a].forEach(b => { const ts = b.closest('.bubble-wrap').querySelector('.bubble-ts'); if (ts) ts.textContent += ' · other channel'; });
+      }
+      scheduleTodayRefresh();
+    } else if (type === 'reminder' || type === 'notification') {
+      const mod = ev.module || (type === 'reminder' ? 'chronos' : 'core');
+      toast((type === 'reminder' ? '🔔 ' : '') + ev.text);
+      feed.known.add(mod);
+      const item = { kind: type, ts: ev.ts, text: ev.text, module: mod };
+      if (feed.loaded && (!feed.module || feed.module === mod)) {
+        feed.items.unshift(item); feed.items = feed.items.slice(0, feed.limit); renderFeed(true);
+      }
+      scheduleTodayRefresh();
+    } else if (type === 'resync') {
+      refreshActive();
+    }
+  }
+  let todayTimer = null;
+  function scheduleTodayRefresh() {
+    if (!document.getElementById('today').classList.contains('active')) return;
+    clearTimeout(todayTimer);
+    todayTimer = setTimeout(() => loadToday(true), 1500);   // coalesce bursts
+  }
+  function parseFrame(frame) {
+    let type = 'message', id = null, data = '';
+    frame.split('\n').forEach(line => {
+      if (line.startsWith('event:')) type = line.slice(6).trim();
+      else if (line.startsWith('id:')) id = line.slice(3).trim();
+      else if (line.startsWith('data:')) data += line.slice(5).trim();
+    });
+    if (!data) return;
+    if (id) live.lastId = id;
+    try { onLiveEvent(type, JSON.parse(data)); } catch (e) { /* ignore a malformed frame */ }
+  }
+  async function liveLoop() {
+    let backoff = 1000;
+    for (;;) {
+      if (live.paused) { await sleep(1000); continue; }
+      live.abort = new AbortController();
+      try {
+        const headers = { ...(apiKey ? { 'X-API-Key': apiKey } : {}), ...(live.lastId ? { 'Last-Event-ID': live.lastId } : {}) };
+        const resp = await fetch('/api/live/stream', { headers, cache: 'no-store', signal: live.abort.signal });
+        if (resp.status === 401) { handleUnauthorized(); return; }
+        if (resp.status === 429) { setLive('polling'); await sleep(30000); continue; }   // stream slots full
+        if (!resp.ok || !resp.body) throw new Error('status ' + resp.status);
+        setLive('on'); backoff = 1000;
+        const reader = resp.body.getReader(), dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) { parseFrame(buf.slice(0, i)); buf = buf.slice(i + 2); }
+        }
+      } catch (e) { /* fall through to retry */ }
+      if (live.paused) { setLive('paused'); continue; }
+      setLive('polling');
+      await sleep(backoff); backoff = Math.min(backoff * 2, 30000);
+    }
+  }
+  // A hidden tab should not hold one of the server's few stream slots.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      live.hiddenTimer = setTimeout(() => { live.paused = true; setLive('paused'); live.abort && live.abort.abort(); }, 60000);
+    } else {
+      clearTimeout(live.hiddenTimer);
+      if (live.paused) { live.paused = false; refreshActive(); }
+    }
+  });
+  function refreshActive() {
+    const id = (document.querySelector('.section.active') || {}).id;
+    fetchJSON('/api/stats').then(updateStats).catch(() => {});
+    if (id && sectionRefresh[id]) sectionRefresh[id]();
+  }
+  const sectionRefresh = {
+    today: () => loadToday(true),
+    activity: () => loadActivity(),
+  };
+  setInterval(() => { if (live.state !== 'on' && !document.hidden) refreshActive(); }, 20000);
+
+  // ── Search (#184) ──────────────────────────────────────
+  const SEARCH_GROUPS = [['mnemosyne', 'Memory'], ['athena', 'Documents'], ['iris', 'Photos & videos']];
+  function hitHTML(h) {
+    let meta = '';
+    if (h.source === 'mnemosyne') meta = h.kind + (h.meta && h.meta.at ? ' · ' + fmt(h.meta.at) : '');
+    else if (h.source === 'athena') meta = [h.meta.subject, h.meta.page != null ? 'page ' + h.meta.page : ''].filter(Boolean).join(' · ');
+    else meta = [h.meta.sensitive ? 'marked sensitive' : '', h.meta.path || ''].filter(Boolean).join(' · ');
+    return `<div class="search-hit"><div class="hit-title">${esc(h.title)}</div>
+      ${h.snippet ? `<div class="hit-snip">${esc(h.snippet)}</div>` : ''}
+      ${meta ? `<div class="hit-meta">${esc(meta)}</div>` : ''}</div>`;
+  }
+  let searchSeq = 0;
+  function runSearch(q) {
+    q = q.trim(); if (q.length < 2) { toast('Type at least 2 characters'); return; }
+    const mine = ++searchSeq;
+    jumpTo('search');
+    const status = document.getElementById('search-status'), out = document.getElementById('search-results');
+    status.textContent = `Searching for “${q}”…`; out.innerHTML = '';
+    fetchJSON('/api/search?q=' + encodeURIComponent(q)).then(d => {
+      if (mine !== searchSeq) return;                         // a newer search replaced this one
+      status.textContent = d.total ? `${d.total} result${d.total === 1 ? '' : 's'} for “${d.query}”` : `Nothing found for “${d.query}”.`;
+      out.innerHTML = SEARCH_GROUPS.map(([key, label]) => {
+        const g = d.groups[key];
+        if (!g.ok && g.error === 'not available') return '';
+        const body = !g.ok ? `<div class="search-err">Couldn't search ${esc(label.toLowerCase())} (${esc(g.error)}).</div>`
+          : g.items.length ? g.items.map(hitHTML).join('') : '<div class="t-empty">No matches.</div>';
+        return `<div class="search-group"><div class="section-subtitle">${esc(label)} <span class="rule"></span></div>${body}</div>`;
+      }).join('');
+    }).catch(err => { if (mine === searchSeq) status.textContent = 'Search failed: ' + err.message; });
+  }
+  document.getElementById('globalSearchForm')?.addEventListener('submit', e => {
+    e.preventDefault(); runSearch(document.getElementById('globalSearch').value);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      e.preventDefault(); document.getElementById('globalSearch')?.focus();
+    }
+  });
+
+  // ── Data export (#190) ─────────────────────────────────
+  let exportCatalog = [];
+  async function downloadExport(mod, ds, fmtName) {
+    try {
+      const resp = await fetch(`/api/export/${encodeURIComponent(mod)}/${encodeURIComponent(ds)}?format=${fmtName}`,
+        { headers: apiKey ? { 'X-API-Key': apiKey } : {} });
+      if (resp.status === 401) { handleUnauthorized(); return; }
+      if (!resp.ok) { const j = await resp.json().catch(() => ({})); throw new Error(j.error || resp.statusText); }
+      const blob = await resp.blob();
+      const m = /filename=([^;]+)/.exec(resp.headers.get('Content-Disposition') || '');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = m ? m[1].trim() : `hestia_${mod}_${ds}.${fmtName}`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+      toast('Export ready');
+    } catch (err) { toast('Export failed: ' + err.message); }
+  }
+  function buildExportWidget(el) {
+    const mod = exportCatalog.find(m => m.module === el.dataset.exportWidget);
+    if (!mod) return;
+    const only = el.dataset.datasets ? el.dataset.datasets.split(',') : null;
+    const sets = mod.datasets.filter(d => !only || only.includes(d.id));
+    if (!sets.length) return;
+    const sel = sets.length > 1
+      ? `<select aria-label="Table to export">${sets.map(s => `<option value="${esc(s.id)}">${esc(s.label)}</option>`).join('')}</select>` : '';
+    el.innerHTML = `${sel}<button type="button" class="export-btn" data-fmt="csv">CSV ↓</button><button type="button" class="export-btn" data-fmt="json">JSON ↓</button>`;
+    el.onclick = e => {
+      const b = e.target.closest('button[data-fmt]'); if (!b) return;
+      const s = el.querySelector('select');
+      downloadExport(mod.module, s ? s.value : sets[0].id, b.dataset.fmt);
+    };
+    el.hidden = false;
+  }
+  function buildExportList() {
+    const root = document.getElementById('export-list'); if (!root) return;
+    root.innerHTML = exportCatalog.map(m => `<div class="export-row"><span>${esc(m.label)}</span>
+      <div class="export-group" data-export-widget="${esc(m.module)}"></div></div>`).join('');
+    root.querySelectorAll('[data-export-widget]').forEach(buildExportWidget);
+  }
+  function initExports() {
+    fetchJSON('/api/export/datasets').then(cat => {
+      exportCatalog = cat;
+      document.querySelectorAll('.page-actions [data-export-widget]').forEach(buildExportWidget);
+      buildExportList();
+    }).catch(() => {});
+  }
+
+  // ── Preferences (#188) ─────────────────────────────────
+  let prefsOrig = {}, prefsCur = {};
+  function prefControl(s) {
+    const id = 'pref-' + s.key.replace(/\./g, '-');
+    if (s.kind === 'bool') return `<input type="checkbox" id="${id}" data-key="${esc(s.key)}" ${s.value ? 'checked' : ''}>`;
+    if (s.kind === 'enum') return `<select id="${id}" data-key="${esc(s.key)}">${s.choices.map(c => `<option${c === s.value ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>`;
+    const step = s.kind === 'float' ? '0.1' : '1';
+    return `<input type="number" id="${id}" data-key="${esc(s.key)}" value="${esc(s.value)}" step="${step}" min="${s.min ?? ''}" max="${s.max ?? ''}">`;
+  }
+  function prefsDirty() {
+    const n = Object.keys(prefsCur).filter(k => prefsCur[k] !== prefsOrig[k]).length;
+    document.getElementById('prefsSave').disabled = !n;
+    document.getElementById('prefsReset').disabled = !n;
+    return n;
+  }
+  function loadPrefs() {
+    const root = document.getElementById('prefs-root');
+    fetchJSON('/api/settings').then(d => {
+      prefsOrig = {}; prefsCur = {};
+      let group = '', html = '';
+      d.settings.forEach(s => {
+        prefsOrig[s.key] = prefsCur[s.key] = s.value;
+        if (s.group !== group) { group = s.group; html += `<h4>${esc(group)}</h4>`; }
+        html += `<div class="pref-row" data-row="${esc(s.key)}"><label for="pref-${esc(s.key.replace(/\./g, '-'))}">${esc(s.label)}${s.help ? `<span class="pref-help">${esc(s.help)}</span>` : ''}</label>${prefControl(s)}</div>`;
+      });
+      root.innerHTML = `<div class="pref-group">${html}</div>`;
+      document.getElementById('prefs-actions').hidden = false;
+      prefsDirty();
+    }).catch(err => {
+      root.innerHTML = `<div class="t-empty">${esc(/not available/i.test(err.message) ? 'The settings file is not reachable from this page, so settings can only be changed in laptop_config.yaml.' : err.message)}</div>`;
+    });
+  }
+  // 'input' as well as 'change': typing in a number box must enable Save at once, not only after the box loses focus.
+  function onPrefEdit(e) {
+    const el = e.target.closest('[data-key]'); if (!el) return;
+    const key = el.dataset.key;
+    let v = el.type === 'checkbox' ? el.checked : (el.type === 'number' ? (el.value === '' ? NaN : Number(el.value)) : el.value);
+    prefsCur[key] = v;
+    el.closest('.pref-row').classList.toggle('changed', v !== prefsOrig[key]);
+    prefsDirty();
+  }
+  ['input', 'change'].forEach(evt => document.getElementById('prefs-root')?.addEventListener(evt, onPrefEdit));
+  document.getElementById('prefsReset')?.addEventListener('click', loadPrefs);
+  document.getElementById('prefsSave')?.addEventListener('click', () => {
+    const changes = {};
+    Object.keys(prefsCur).forEach(k => { if (prefsCur[k] !== prefsOrig[k]) changes[k] = prefsCur[k]; });
+    if (!Object.keys(changes).length) return;
+    fetchJSON('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes }) })
+      .then(r => { toast(`Saved ${r.saved.length} setting${r.saved.length === 1 ? '' : 's'}. Restart Hestia to apply.`); loadPrefs(); })
+      .catch(err => toast('Not saved: ' + err.message));
+  });
+
   // ── PWA service worker ────────────────────────────────
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/static/sw.js').catch(() => {});
@@ -3633,9 +4313,11 @@
 
   // ── Boot ─────────────────────────────────────────────
   fetchJSON('/api/stats').then(updateStats).catch(() => {});
-  loadSection('overview');
-  loaded['overview'] = true;
+  loadSection('today');
+  loaded['today'] = true;
   reportLocation();
+  initExports();
+  liveLoop();
 </script>
 
 <!-- ── Hero flower: mouse morph-reveal widget ─────────────────────── -->

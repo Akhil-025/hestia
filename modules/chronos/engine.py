@@ -406,6 +406,39 @@ class ChronosEngine(BaseModule):
     def _now_in(self, tz: Any) -> datetime:
         return self._clock().astimezone(tz)
 
+    def dashboard_data(self, horizon_days: int = 7) -> dict:
+        """Today's agenda plus the reminders due over the next *horizon_days*.
+
+        Read-only and structured, for the web dashboard (#180). Today's list
+        is the full agenda (reminders, calendar events, goals due). The look
+        ahead is reminders only: asking the calendar for each future day would
+        mean a Google round-trip per day every time the page refreshes.
+        """
+        from datetime import timedelta
+
+        now = self._now_in(self._tz)
+        today = now.date()
+        agenda = agenda_mod.build_agenda(
+            self._svc, today, self._tz, now, hermes=self._hermes, artemis=self._artemis,
+        )
+        upcoming: list[dict] = []
+        if self._svc is not None:
+            for offset in range(1, max(1, int(horizon_days)) + 1):
+                day = today + timedelta(days=offset)
+                items, _skipped = agenda_mod.reminder_items(self._svc, day, self._tz, now)
+                for item in items:
+                    d = item.to_dict()
+                    d["day"] = day.isoformat()
+                    upcoming.append(d)
+        return {
+            "date": today.isoformat(),
+            "timezone": str(self._tz),
+            "holiday": agenda.holiday,
+            "today": [i.to_dict() for i in agenda.items],
+            "notes": list(agenda.notes),
+            "upcoming": upcoming,
+        }
+
     # ------------------------------------------------------------------
     # BaseModule interface
     # ------------------------------------------------------------------

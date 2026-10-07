@@ -73,6 +73,17 @@ webui:
   enabled: true
   host: "127.0.0.1"
   port: 5000
+  # Login (backlog #186). With a password set, the page asks for it and keeps
+  # you signed in with a cookie; without one, anyone who can reach the port can
+  # use the dashboard, which is only acceptable on 127.0.0.1. Binding to
+  # 0.0.0.0 / a LAN address REQUIRES a password or api_key.
+  #   python scripts/hash_web_password.py     prints the line to paste here
+  # password_hash: 'scrypt:...'
+  # Alternatives: environment variables HESTIA_WEB_PASSWORD (plain text, kept
+  # out of this file), HESTIA_WEB_API_KEY (for scripts), HESTIA_WEB_SECRET.
+  # session_hours: 12          # how long a login lasts
+  # cookie_secure: false       # true when served over HTTPS
+  # allowed_origins: []        # extra origins allowed to POST (reverse proxy)
 
 # Google integration
 google:

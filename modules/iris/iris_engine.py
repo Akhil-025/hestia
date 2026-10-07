@@ -506,6 +506,30 @@ class IrisEngine(BaseModule):
             logger.warning(f"[Iris] Semantic search failed, falling back to caption/tag: {e}")
             return []
 
+    def search_records(self, query: str, limit: int = 10) -> list[dict]:
+        """Photo/video matches as records (not a spoken sentence) - used by the
+        web UI's cross-module search (#184).
+
+        Same sources as ``search`` (semantic, caption, tags, detected objects),
+        semantic hits first, de-duplicated by path. Date/camera filter words
+        are not parsed here: this is "find everything related to X", and the
+        voice/Telegram search remains the way to filter by date.
+        """
+        if not query or not query.strip():
+            return []
+        limit = max(1, int(limit))
+        merged: dict[str, dict] = {}
+        for batch in (
+            self._semantic_matches(query, limit),
+            self.db.search_files_by_caption(query, limit),
+            self.db.search_files_by_tags(query, limit),
+            self._object_matches(query, limit),
+        ):
+            for rec in batch or []:
+                path = rec.get("file_path") or str(rec.get("id"))
+                merged.setdefault(path, rec)
+        return list(merged.values())[:limit]
+
     def search(self, query: str, limit: int = 10) -> "str | None":
         try:
             # #74: date taken / camera / "with location" filters, alongside the
