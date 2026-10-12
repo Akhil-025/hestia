@@ -228,6 +228,21 @@ _SCHEMA: tuple[tuple[str, tuple[type, ...], bool], ...] = (
     ("maintenance.free_ratio_threshold", (int, float), False),
     ("maintenance.min_interval_days", (int, float), False),
     ("maintenance.extra_paths", (list,), False),
+    # Encryption at rest (backlog #198).
+    ("security", (dict,), False),
+    ("security.encrypt_at_rest", (bool,), False),
+    ("security.key_file", (str,), False),
+    # Speaker identification (backlog #177).
+    ("speaker_id", (dict,), False),
+    ("speaker_id.enabled", (bool,), False),
+    ("speaker_id.profiles_path", (str,), False),
+    ("speaker_id.margin", (int, float), False),
+    ("speaker_id.guest", (dict,), False),
+    ("speaker_id.guest.allow_modules", (list,), False),
+    ("speaker_id.guest.deny_modules", (list,), False),
+    ("speaker_id.guest.deny_intents", (list,), False),
+    ("speaker_id.guest.allow_chat", (bool,), False),
+    ("speaker_id.guest.allow_repeat", (bool,), False),
 )
 
 # Top-level keys the app knows about. Anything else is reported as a
@@ -238,7 +253,7 @@ _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
     "tts", "wake_word", "barge_in", "scheduler", "heartbeat", "skills",
     "hephaestus", "pluto", "dionysus", "apollo", "artemis", "logging",
     "observability", "writing", "consensus", "conference", "whatif", "maintenance",
-    "classifier", "shadow", "processes",
+    "classifier", "shadow", "processes", "security", "speaker_id",
 })
 
 

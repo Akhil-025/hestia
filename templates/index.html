@@ -1911,20 +1911,7 @@
       </form>
       <div class="topbar-pill" id="livePill"><span class="status-dot"></span> <span id="livePillText">Online</span></div>
       <button class="theme-toggle" id="themeToggle" type="button" title="Toggle light/dark" aria-label="Toggle light or dark theme">🌙</button>
-      <form
-        class="signout-form"
-        id="signoutForm"
-        method="post"
-        action="/logout"
-        hidden
-      >
-        <button
-          class="theme-toggle"
-          type="submit"
-          title="Sign out"
-          aria-label="Sign out"
-        >⎋</button>
-      </form>
+      {% if auth_mode == 'password' %}<form class="signout-form" method="post" action="/logout"><button class="theme-toggle" type="submit" title="Sign out" aria-label="Sign out">⎋</button></form>{% endif %}
       <button class="cmdk-hint" id="cmdkHint" type="button" title="Jump to a section">Jump to <kbd>⌘K</kbd></button>
       <div class="topbar-clock" id="topbar-clock">—</div>
     </div>

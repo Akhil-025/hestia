@@ -136,6 +136,8 @@ from core.voice_state import (
     VoiceState,
 )
 from core.config_validation import ConfigError, validate_config, validate_or_raise
+from core import crypto_store  # backlog #198
+from core import speaker_id as speaker_id_mod  # backlog #177
 from core.module_loader import discover_skills
 from core.query_splitter import candidate_segments
 from core.intent_chains import apply_chain, detect_chain_reference
@@ -242,6 +244,10 @@ class HestiaBuilder:
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
+        # Backlog #198: set up field encryption before any module opens its
+        # database. Raises (fail fast) if encrypt_at_rest is on with no usable key.
+        if crypto_store.configure_from_config(config):
+            logger.info("Encryption at rest is ON for health notes and expense descriptions.")
         self.ollama_cfg: dict[str, Any] = config.get("ollama", {})
         self.google_cfg: dict[str, Any] = config.get("google", {})
         self.sync_cfg: dict[str, Any] = config.get("sync", {})
@@ -1174,6 +1180,10 @@ class Hestia:
     # queries cannot read each other's.
     _trace_local = threading.local()
     _voice_io_errors: dict = {}
+    # Speaker identification (backlog #177): None = off; the identity is for the
+    # voice utterance being handled right now and is cleared after each turn.
+    speaker_id: Optional[speaker_id_mod.SpeakerID] = None
+    _speaker_identity: Optional[speaker_id_mod.Identity] = None
 
     @property
     def voice_state(self) -> VoiceState:
@@ -1204,6 +1214,7 @@ class Hestia:
         self._query_server: Optional[CoreQueryServer] = None
         self._config_path = Path(config_path)
         self.config = _load_config(self._config_path)
+        self.speaker_id = speaker_id_mod.SpeakerID.from_config(self.config.get("speaker_id"))
         if headed:
             # --headed (#108): show the browser and slow it down so you can
             # follow what it's doing. An explicit slow_mo_ms in the config wins.
@@ -1611,7 +1622,10 @@ class Hestia:
 
         logger.info("You: %s", cleaned)
         try:
-            response = self._run_voice_command(cmd)
+            if voice_turn and cmd.name == REPEAT and not self._speaker_may_repeat():
+                response = "I only repeat things for the owner."
+            else:
+                response = self._run_voice_command(cmd)
         except Exception:
             logger.exception("Voice command %r failed.", cmd.name)
             response = "Sorry, that didn't work."
@@ -2231,12 +2245,26 @@ class Hestia:
         logger.info("You: %s", cleaned)
         self.voice_state.set_state(STATE_THINKING)
 
+        speaker = self._speaker_identity if self.speaker_id is not None else None
         try:
-            context = self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
+            # A guest gets no memory context: it could carry the owner's private turns.
+            context = [] if (speaker is not None and not speaker.is_owner) \
+                else self.mnemosyne.get_recent(_RECENT_CONTEXT_TURNS)
             nlu_result = self.nlu.understand(cleaned, context)
         except Exception:
             logger.exception("NLU failed for input=%r.", cleaned[:80])
             nlu_result = {"intent": "chat", "entities": {}, "response": ""}
+
+        if speaker is not None:
+            refusal = self.speaker_id.refusal_for(speaker, nlu_result.get("intent") or "chat")
+            if refusal:
+                logger.info("Hestia: %s", refusal)
+                self._speak_with_barge_in(refusal)
+                try:
+                    self.wake_detector.flush_audio_queue()
+                except Exception:
+                    logger.debug("flush_audio_queue() failed; ignoring.")
+                return refusal
 
         voice = self._voice_profile_for_intent(nlu_result.get("intent"))
 
@@ -2440,7 +2468,11 @@ class Hestia:
                     self.tts.wait_until_done()
                     break
 
-                self.process_voice_turn(text)
+                self._identify_speaker()
+                try:
+                    self.process_voice_turn(text)
+                finally:
+                    self._speaker_identity = None
 
                 if self._barge_in_enabled and self.barge_in.consume_triggered():
                     captured = self.barge_in.consume_captured_audio()
@@ -2454,6 +2486,31 @@ class Hestia:
         finally:
             vs.set_state(STATE_INACTIVE)
             self._shutdown()
+
+    def _identify_speaker(self) -> None:
+        """Work out who just spoke (backlog #177). Does nothing unless
+        ``speaker_id.enabled``. Missing or unusable audio means guest."""
+        self._speaker_identity = None
+        gate = self.speaker_id
+        if gate is None:
+            return
+        audio = None
+        try:
+            audio = self.stt.take_last_audio()
+        except Exception:
+            logger.debug("STT gave no audio for speaker identification.")
+        if audio is None:
+            ident = speaker_id_mod.Identity(None, speaker_id_mod.GUEST, "no audio captured")
+        else:
+            ident = gate.identify(audio, getattr(self.stt, "samplerate", speaker_id_mod.SAMPLE_RATE))
+        self._speaker_identity = ident
+        logger.info("Speaker: %s (%s)%s", ident.name or "guest", ident.reason,
+                    "" if ident.distance is None else f" distance={ident.distance:.2f}")
+
+    def _speaker_may_repeat(self) -> bool:
+        if self.speaker_id is None or self._speaker_identity is None:
+            return True
+        return self.speaker_id.may_repeat(self._speaker_identity)
 
     def _speak_held_notifications(self) -> None:
         """Read out notifications held during a do-not-disturb that has since
@@ -2713,6 +2770,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "1 if not. Does not start any subsystem."
         ),
     )
+    # Backlog #177.
+    parser.add_argument(
+        "--enroll-voice",
+        metavar="NAME",
+        help="Record a few phrases and store a voiceprint for NAME (numbers only, no "
+             "audio), then exit. See speaker_id: in the config.",
+    )
+    parser.add_argument(
+        "--forget-voice",
+        metavar="NAME",
+        help="Delete the stored voiceprint for NAME, then exit.",
+    )
     # Backlog #174.
     parser.add_argument(
         "--calibrate-mic",
@@ -2819,6 +2888,40 @@ def _run_check_config(path: str) -> int:
         f"fingerprint {registry['fingerprint']})."
     )
     return 0 if report.ok else 1
+
+
+def _run_enroll_voice(path: str, name: str) -> int:
+    """``--enroll-voice``: record a few phrases and store a voiceprint (backlog #177)."""
+    cfg = {}
+    config_path = Path(path)
+    if config_path.exists():
+        with config_path.open("r", encoding="utf-8") as fh:
+            cfg = (yaml.safe_load(fh) or {}).get("speaker_id") or {}
+    store = speaker_id_mod.ProfileStore(cfg.get("profiles_path", speaker_id_mod.DEFAULT_PATH))
+    try:
+        profile = speaker_id_mod.enroll_interactive(store, name)
+    except (KeyboardInterrupt, EOFError):
+        print("\nEnrolment cancelled; nothing was saved.")
+        return 1
+    except Exception as exc:
+        print(f"Enrolment failed: {exc}", file=sys.stderr)
+        return 1
+    return 0 if profile else 1
+
+
+def _run_forget_voice(path: str, name: str) -> int:
+    """``--forget-voice``: delete a stored voiceprint."""
+    cfg = {}
+    config_path = Path(path)
+    if config_path.exists():
+        with config_path.open("r", encoding="utf-8") as fh:
+            cfg = (yaml.safe_load(fh) or {}).get("speaker_id") or {}
+    store = speaker_id_mod.ProfileStore(cfg.get("profiles_path", speaker_id_mod.DEFAULT_PATH))
+    if store.remove(name):
+        print(f"Deleted the voiceprint for '{name}'.")
+        return 0
+    print(f"No voiceprint named '{name}'.")
+    return 1
 
 
 def _run_calibrate_mic(path: str) -> int:
@@ -2978,6 +3081,12 @@ def main(argv: list[str] | None = None) -> int:
     # Likewise: calibration only needs the mic, not a booted assistant.
     if args.calibrate_mic:
         return _run_calibrate_mic(args.config)
+
+    # Voiceprint management also needs no booted assistant (backlog #177).
+    if args.enroll_voice:
+        return _run_enroll_voice(args.config, args.enroll_voice)
+    if args.forget_voice:
+        return _run_forget_voice(args.config, args.forget_voice)
 
     if args.label:
         return _run_label(*args.label)

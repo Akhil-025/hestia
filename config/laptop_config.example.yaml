@@ -68,6 +68,44 @@ hephaestus:
   #   max_chars: 6000
   #   max_files: 4
 
+# Encryption at rest (backlog #198). OFF by default.
+# When on, the free text you write in health logs (the `notes` on workouts,
+# sleep, mood, weight, meals and pain) and the description of each expense is
+# stored encrypted (Fernet) in the SQLite files. Numbers, dates and categories
+# stay readable, because Hestia sums and charts them; Mnemosyne's memory,
+# Athena and Iris are NOT covered. Needs a key, which is never stored here:
+#   python scripts/rotate_secrets.py make-data-key   -> HESTIA_DATA_KEY in .env
+# Back that key up somewhere off this machine: without it the text is gone.
+# Existing rows stay readable; convert them with
+#   python scripts/rotate_secrets.py reencrypt
+security:
+  encrypt_at_rest: false
+  # key_file: "C:/Users/YOUR_USERNAME/.hestia_data_key"   # alternative to HESTIA_DATA_KEY
+
+# Speaker identification for voice mode (backlog #177). OFF by default.
+# Enrol your voice once:  python main.py --enroll-voice YourName
+# Then anyone Hestia does not recognise is a "guest" and gets only the policy
+# below. This is a convenience gate, NOT authentication: it is built on simple
+# voice statistics, so a similar voice can pass, a cold can make you fail, and
+# a recording of you will pass. Doubt always resolves to guest. Only numbers
+# are stored (data/voiceprints.json), never audio; `--forget-voice YourName`
+# deletes them. Voice mode only; typing, the web UI and Telegram are unaffected.
+speaker_id:
+  enabled: false
+  # profiles_path: "data/voiceprints.json"
+  # How far from your enrolled voice still counts as you, in multiples of the
+  # spread seen while enrolling. Lower = stricter (you may be refused more).
+  margin: 2.5
+  guest:
+    # Modules a guest may use. Default: entertainment and writing helpers only.
+    allow_modules: [dionysus, metis, orpheus]
+    # deny_modules: []
+    # deny_intents: []
+    # Free conversation reads your memory for context, so it is off for guests.
+    allow_chat: false
+    # "repeat that" would read your last private answer aloud to a guest.
+    allow_repeat: false
+
 # Web UI dashboard
 webui:
   enabled: true

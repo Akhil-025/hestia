@@ -75,3 +75,7 @@ hestia_test_prompts.md
 # ========================
 *.mutbak
 data/latency_baseline.json
+
+# audit_secrets.py output
+secrets_report.json
+.secrets_baseline.json.tmp

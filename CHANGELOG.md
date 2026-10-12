@@ -12,6 +12,49 @@ this file is to know what actually landed when — with 280 backlog items,
 
 ---
 
+## [Unreleased] — Speaker ID, security tooling, restaurant estimates (#151, #177, #197–#200)
+
+New tests: `test_audit_secrets.py` (10), `test_crypto_and_rotation.py` (21),
+`test_speaker_id.py` (21) and five added to `test_dionysus_backlog.py`. Run against
+fakes, temporary databases and synthetic voices; nothing was run on real
+microphones, real data, real pre-commit or GitHub Actions.
+
+### Added
+
+- **Per-restaurant cost bands (#151).** Each result shows a band when its title
+  carries a ₹/$ price level or a word like "fine dining", with a fits / may be
+  over / likely over verdict against the budget. Titles with no signal get no
+  estimate. Price ranges in titles are now read (upper end).
+- **Speaker identification (#177)**, off by default (`speaker_id:`). `--enroll-voice`
+  and `--forget-voice`. Unrecognised voices are guests: Dionysus/Metis/Orpheus
+  only, no memory context, no free chat, no "repeat that". Voice mode only.
+  `core/speaker_id.py`; `HestiaSTT.take_last_audio()` hands over the utterance.
+- **Secret scan gate (#197).** `audit_secrets.py --fail-on`, `--baseline`,
+  `--write-baseline`, per-file paths, `# audit: ignore`. `.pre-commit-config.yaml`
+  and `.github/workflows/ci.yml`.
+- **Encryption at rest (#198)**, off by default (`security.encrypt_at_rest`).
+  `core/crypto_store.py`: Apollo `notes` and Pluto expense descriptions.
+  `rotate_secrets.py reencrypt` converts existing rows.
+- **Rotation checklist (#199)**: `scripts/rotate_secrets.py` (`status`, `checklist`,
+  `record`, `make-data-key`, `reencrypt`).
+- **`.env.example` (#200).**
+
+### Changed
+
+- `audit_secrets.py` now returns an exit code (`main()` returns an int); the default
+  stays report-only (exit 0) so existing use is unchanged.
+- `ApolloDB` and `PlutoDB` read rows through `crypto_store.DecryptingRow` (a
+  `sqlite3.Row` subclass; plain values pass straight through).
+- `security` and `speaker_id` added to the config schema and known sections.
+- `cryptography` added to `requirements.txt`; `pre-commit` to `requirements-dev.txt`.
+
+### Not done
+
+- #175 (echo cancellation on real hardware), #191 and #192 (need a live Telegram
+  bot) stay partial: what remains cannot be checked without them.
+
+---
+
 ## [Unreleased] — Web UI: Today dashboard, live feed, search, login, settings, explain panel, exports (#180–#190)
 
 New tests: `tests/test_web_section17.py` (62). The page was also exercised in

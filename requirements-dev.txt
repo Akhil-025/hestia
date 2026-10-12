@@ -2,3 +2,4 @@
 pytest
 hypothesis        # tests/test_parsers_property.py, tests/test_voice_latency.py (skipped without it)
 coverage          # python run_tests.py --coverage
+pre-commit        # optional: runs audit_secrets.py before each commit (.pre-commit-config.yaml, backlog #197)

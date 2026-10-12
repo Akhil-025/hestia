@@ -17,6 +17,7 @@ from psycopg2 import pool
 import redis
 from qdrant_client import QdrantClient
 
+from core import crypto_store as _cs  # backlog #198: descriptions encrypted at rest when enabled
 from .config import PlutoConfig
 from .logging_config import get_logger
 
@@ -122,7 +123,8 @@ class PlutoDB:
             check_same_thread=False,
             isolation_level=None,  # auto-commit
         )
-        self._conn.row_factory = sqlite3.Row
+        # Decrypts expense descriptions on read; plain rows pass through unchanged.
+        self._conn.row_factory = _cs.DecryptingRow
         with self._conn:
             self._conn.execute("PRAGMA journal_mode=WAL;")
         self._init_schema()
@@ -205,7 +207,7 @@ class PlutoDB:
                     INSERT INTO expenses (amount, description, category)
                     VALUES (?, ?, ?)
                     """,
-                    (amount, description, category),
+                    (amount, _cs.encrypt_text(description), category),
                 )
             else:
                 cur.execute(
@@ -213,7 +215,7 @@ class PlutoDB:
                     INSERT INTO expenses (amount, description, category, logged_at)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (amount, description, category, logged_at),
+                    (amount, _cs.encrypt_text(description), category, logged_at),
                 )
             return cur.lastrowid
 

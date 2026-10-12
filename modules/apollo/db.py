@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from core import crypto_store as _cs  # backlog #198: free-text notes encrypted at rest when enabled
+
 
 # ── schema migrations ─────────────────────────────────────
 #
@@ -79,7 +81,8 @@ class ApolloDB:
         self._lock = threading.Lock()
         self.db_path = str(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        # Decrypts `notes` on read (plain rows pass through unchanged).
+        self._conn.row_factory = _cs.DecryptingRow
         with self._conn:
             self._conn.execute("PRAGMA journal_mode=WAL;")
         self._init_schema()
@@ -159,7 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_water_logged_at     ON water_logs(logged_at);
             cur = self._conn.execute(
                 "INSERT INTO workouts (type, duration, notes, logged_at) "
                 "VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
-                (type_, duration, notes, logged_at)
+                (type_, duration, _cs.encrypt_text(notes), logged_at)
             )
             return cur.lastrowid
 
@@ -196,7 +199,7 @@ CREATE INDEX IF NOT EXISTS idx_water_logged_at     ON water_logs(logged_at);
                 "INSERT INTO sleep_logs "
                 "(hours, quality, notes, bed_time, wake_time, rating, logged_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
-                (hours, quality, notes, bed_time, wake_time, rating, logged_at)
+                (hours, quality, _cs.encrypt_text(notes), bed_time, wake_time, rating, logged_at)
             )
             return cur.lastrowid
 
@@ -230,7 +233,7 @@ CREATE INDEX IF NOT EXISTS idx_water_logged_at     ON water_logs(logged_at);
             cur = self._conn.execute(
                 "INSERT INTO mood_logs (mood, notes, logged_at) "
                 "VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
-                (mood, notes, logged_at)
+                (mood, _cs.encrypt_text(notes), logged_at)
             )
             return cur.lastrowid
 
@@ -261,7 +264,7 @@ CREATE INDEX IF NOT EXISTS idx_water_logged_at     ON water_logs(logged_at);
             cur = self._conn.execute(
                 "INSERT INTO weight_logs (weight_kg, notes, logged_at) "
                 "VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
-                (weight_kg, notes, logged_at)
+                (weight_kg, _cs.encrypt_text(notes), logged_at)
             )
             return cur.lastrowid
 
@@ -399,7 +402,7 @@ CREATE INDEX IF NOT EXISTS idx_water_logged_at     ON water_logs(logged_at);
                 "(name, kcal, protein_g, grams, estimated, source, notes, logged_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
                 (name, kcal, protein_g, grams, 1 if estimated else 0,
-                 source, notes, logged_at)
+                 source, _cs.encrypt_text(notes), logged_at)
             )
             return cur.lastrowid
 
@@ -422,7 +425,7 @@ CREATE INDEX IF NOT EXISTS idx_water_logged_at     ON water_logs(logged_at);
             cur = self._conn.execute(
                 "INSERT INTO pain_logs (area, severity, notes, logged_at) "
                 "VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
-                (area, severity, notes, logged_at)
+                (area, severity, _cs.encrypt_text(notes), logged_at)
             )
             return cur.lastrowid
 

@@ -659,3 +659,50 @@ def test_recharge_survives_a_chronos_crash(tmp_path):
     out = engine.handle("schedule_recharge", {"raw_query": "recharge"}, {})
     assert "couldn't set" in out["response"]
     assert out["confidence"] == 0.2
+
+
+# ── #151: per-restaurant estimates ───────────────────────────────────────────
+
+from modules.dionysus.engine import _estimate_verdict, _restaurant_estimate  # noqa: E402
+
+
+def test_restaurant_estimate_reads_price_bands_and_keywords_only():
+    e = _restaurant_estimate("Cafe Mocha \u20b9\u20b9")
+    assert (e["basis"], e["tier"], e["low"], e["high"]) == ("price level", "mid", 500, 1500)
+    assert _restaurant_estimate("Bistro $$$")["tier"] == "premium"
+    assert _restaurant_estimate("Cheap eats in Bandra")["tier"] == "cheap"
+    assert _restaurant_estimate("Fine dining at its best")["high"] is None
+    # nothing said -> nothing invented; a stated amount is not repeated
+    assert _restaurant_estimate("Plain Cafe") is None
+    assert _restaurant_estimate("Thali \u20b9400") is None
+
+
+def test_price_in_text_range_uses_upper_end():
+    assert _price_in_text("Rs 500-800 per head") == 800.0
+    assert _price_in_text("\u20b91,000 \u2013 \u20b91,600 for two") == 800.0
+
+
+def test_estimate_verdict_against_budget():
+    b = _parse_budget("under 1000")
+    assert _estimate_verdict(_restaurant_estimate("X \u20b9"), b) == "fits your budget"
+    assert _estimate_verdict(_restaurant_estimate("X \u20b9\u20b9"), b) == "may be over your budget"
+    assert _estimate_verdict(_restaurant_estimate("X \u20b9\u20b9\u20b9"), b) == "likely over your budget"
+    assert _estimate_verdict(_restaurant_estimate("X \u20b9"), None) == ""
+
+
+def test_restaurant_reply_shows_estimates_with_budget_verdict(tmp_path):
+    browser = FakeBrowser("Posh Grill \u20b9\u20b9\u20b9 | Chai Stop cheap eats | Plain Cafe")
+    engine, _ = make_engine(tmp_path, browser=browser)
+    out = engine.handle("find_restaurant", {"cuisine": "any", "budget": "under 1000"}, {})
+    text = out["response"]
+    assert "price level \u20b9\u20b9\u20b9, about \u20b91,500+ per person; likely over your budget" in text
+    assert "cheap by the listing's wording" in text and "fits your budget" in text
+    assert "not quoted prices" in text
+    assert "  3. Plain Cafe\n" in text + "\n"          # no signal, no estimate
+    assert [bool(x) for x in out["data"]["estimates"]] == [True, True, False]
+
+
+def test_restaurant_reply_has_no_estimate_footer_when_nothing_to_estimate(tmp_path):
+    engine, _ = make_engine(tmp_path, browser=FakeBrowser("A | B"))
+    out = engine.handle("find_restaurant", {"cuisine": "thai"}, {})
+    assert "not quoted prices" not in out["response"]

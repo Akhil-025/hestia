@@ -1,0 +1,20 @@
+# Backlog #197: catch secrets before they are committed.
+#
+#   pip install pre-commit
+#   pre-commit install            # once per clone
+#   pre-commit run --all-files    # run it by hand
+#
+# The hook blocks only high-confidence findings (private keys, AWS keys, JWTs,
+# provider API keys, URLs with credentials). Medium/low findings are noisy
+# (words like "token" in code), so they are reported by `python audit_secrets.py`
+# but do not stop a commit. To gate on medium too, change --fail-on and accept
+# the reviewed false positives with `python audit_secrets.py --write-baseline`.
+repos:
+  - repo: local
+    hooks:
+      - id: audit-secrets
+        name: audit secrets (audit_secrets.py)
+        entry: python audit_secrets.py --fail-on high --no-report
+        language: system
+        pass_filenames: true
+        types_or: [python, json, yaml, markdown, text]

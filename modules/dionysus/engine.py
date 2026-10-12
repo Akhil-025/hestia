@@ -439,21 +439,38 @@ class DionysusEngine(BaseModule):
         # and explain what the budget words usually mean.
         budget_info = _parse_budget(budget)
         lines = [f"Restaurants — {cuisine or 'any'} in {area}\n"]
+        estimates = []
         for i, name in enumerate(raw_results.split(" | ")[:5], 1):
             flag = ""
             if budget_info and budget_info["amount"] is not None:
                 price = _price_in_text(name)
                 if price is not None and price > budget_info["amount"]:
                     flag = "  (price shown is over your budget)"
-            lines.append(f"  {i}. {name.strip()}{flag}")
+            # Backlog #151: a per-result estimate, only from what the title
+            # itself says (a price band like ₹₹, or a word like "fine dining").
+            # A plain amount in the title is already visible, so it is not
+            # repeated; a title that says nothing gets no estimate at all.
+            est = _restaurant_estimate(name)
+            estimates.append(est)
+            extra = ""
+            if est:
+                extra = f"  [{_estimate_text(est)}"
+                verdict = _estimate_verdict(est, budget_info)
+                if verdict:
+                    extra += f"; {verdict}"
+                extra += "]"
+            lines.append(f"  {i}. {name.strip()}{flag}{extra}")
         note = _budget_note(budget_info)
         if note:
             lines.extend(["", note])
+        if any(estimates):
+            lines.extend(["", "Bracketed figures are rough bands read from the listing "
+                              "text, not quoted prices."])
 
         return {
             "response": "\n".join(lines).strip(),
             "data": {"query": query, "results": raw_results,
-                     "budget": budget_info},
+                     "budget": budget_info, "estimates": estimates},
             "confidence": 0.85,
         }
 
@@ -1160,14 +1177,86 @@ def _budget_note(info: Optional[dict]) -> str:
 
 
 _PRICE_RE = re.compile(r"(?:\u20b9|rs\.?|inr)\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?", re.I)
+# "₹500-800", "Rs 500 to 800": the upper end is used so estimates err high.
+_PRICE_RANGE_RE = re.compile(
+    r"(?:\u20b9|rs\.?|inr)\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?\s*(?:-|\u2013|\u2014|to)\s*"
+    r"(?:\u20b9|rs\.?|inr)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?", re.I)
 
 
 def _price_in_text(text: str) -> Optional[float]:
     """A per-person price stated in a search-result title, if there is one."""
-    m = _PRICE_RE.search(text or "")
-    if not m:
-        return None
-    price = float(m.group(1).replace(",", "")) * (1000 if m.group(2) else 1)
+    m = _PRICE_RANGE_RE.search(text or "")
+    if m:
+        k = 1000 if (m.group(4) or m.group(2)) else 1
+        price = float(m.group(3).replace(",", "")) * k
+    else:
+        m = _PRICE_RE.search(text or "")
+        if not m:
+            return None
+        price = float(m.group(1).replace(",", "")) * (1000 if m.group(2) else 1)
     if re.search(r"for\s+(?:two|2)\b", text, re.I):
         price /= 2
     return price
+
+
+# Backlog #151: price bands a listing title can carry without stating a number.
+_LEVEL_RE = re.compile(r"(?<![\u20b9$\u00a3\u20ac])(\u20b9{1,4}|\${1,4})(?![\u20b9$\d])")
+_LEVEL_TIER = {1: "cheap", 2: "mid", 3: "premium", 4: "premium"}
+_KEYWORD_TIERS = [
+    (re.compile(r"\b(?:fine[- ]dining|luxury|upscale|premium|splurge)\b", re.I), "premium"),
+    (re.compile(r"\b(?:cheap(?:\s+eats)?|budget(?:-friendly)?|affordable|"
+                r"pocket[- ]friendly|street\s+food|inexpensive)\b", re.I), "cheap"),
+]
+
+
+def _restaurant_estimate(title: str) -> Optional[dict]:
+    """A rough per-person band for one search-result title, or None.
+
+    Only what the title itself says is used: a price band written as ₹/$
+    symbols, or a word such as "fine dining". A title that states an amount
+    returns None (the amount is already on the line), and a title that says
+    nothing returns None rather than a guess. ``low``/``high`` are rupees per
+    person; ``high`` is None for an open-ended premium band.
+    """
+    text = title or ""
+    if _price_in_text(text) is not None:
+        return None
+    m = _LEVEL_RE.search(text)
+    if m:
+        level = len(m.group(1))
+        tier = _LEVEL_TIER[level]
+        lo, hi = _BUDGET_TIERS[tier]
+        return {"basis": "price level", "level": m.group(1), "tier": tier,
+                "low": lo, "high": hi}
+    for pattern, tier in _KEYWORD_TIERS:
+        if pattern.search(text):
+            lo, hi = _BUDGET_TIERS[tier]
+            return {"basis": "keyword", "level": None, "tier": tier,
+                    "low": lo, "high": hi}
+    return None
+
+
+def _estimate_text(est: dict) -> str:
+    band = _range_text(est["low"], est["high"])
+    if est["basis"] == "price level":
+        return f"price level {est['level']}, about {band} per person"
+    return f"{est['tier']} by the listing's wording, about {band} per person"
+
+
+def _estimate_verdict(est: dict, budget_info: Optional[dict]) -> str:
+    """How an estimated band sits against the stated budget ('' if no budget)."""
+    if not budget_info:
+        return ""
+    if budget_info["amount"] is not None:
+        limit = budget_info["amount"]
+    elif budget_info["tier"]:
+        limit = _BUDGET_TIERS[budget_info["tier"]][1]
+    else:
+        return ""
+    if limit is None:                      # "premium" budget: nothing is too dear
+        return "fits your budget"
+    if est["low"] >= limit:
+        return "likely over your budget"
+    if est["high"] is None or est["high"] > limit:
+        return "may be over your budget"
+    return "fits your budget"

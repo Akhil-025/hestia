@@ -130,6 +130,15 @@ class HestiaSTT:
 
         return self.transcribe_audio(audio)
 
+    # The raw audio of the last utterance, kept in memory only until the voice
+    # loop collects it for speaker identification (backlog #177).
+    _last_audio = None
+
+    def take_last_audio(self):
+        """Return and clear the last utterance's audio (None if there is none)."""
+        audio, self._last_audio = self._last_audio, None
+        return audio
+
     def transcribe_audio(self, audio: np.ndarray) -> str:
         """Apply the configured noise filter and transcribe a pre-recorded
         audio array (float32, normalized to [-1, 1]).
@@ -144,6 +153,7 @@ class HestiaSTT:
         """
         if audio is None or len(audio) == 0:
             return ""
+        self._last_audio = audio
         audio = self.noise_filter.filter(audio, self.samplerate)
         return self._transcribe(audio)
 

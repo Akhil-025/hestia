@@ -148,6 +148,23 @@ it finds and normalises the result; a module with neither is reported as
   `${VAR}`, so a placeholder would never resolve anyway. Read them from
   the environment (`TELEGRAM_BOT_TOKEN`, `HESTIA_SYNC_API_KEY`) and
   document the variable in the example config.
+- **A new environment variable goes in `.env.example` too** (placeholder
+  only; `.env` itself is gitignored), and, if it is a credential with a
+  lifetime, in `SECRETS` in `scripts/rotate_secrets.py` so `status` can warn
+  about its age. A test checks the two files agree.
+- **Secret scan.** `python audit_secrets.py --fail-on high` is the gate that
+  pre-commit (`pip install pre-commit && pre-commit install`) and CI
+  (`.github/workflows/ci.yml`) run. Mark a line that is public by design with
+  `# audit: ignore`; accept reviewed false positives with `--write-baseline`.
+- **Encryption at rest** (`security.encrypt_at_rest`, `core/crypto_store.py`)
+  covers only the columns listed in `PROTECTED_FIELDS`. To protect a new free
+  text column, encrypt it in the DB class's write method with
+  `crypto_store.encrypt_text`, make sure the connection uses
+  `crypto_store.DecryptingRow`, never filter or sort on that column in SQL, and
+  add it to `PROTECTED_FIELDS` so `rotate_secrets.py reencrypt` converts it.
+- **Voice-only identity** (`speaker_id`, `core/speaker_id.py`) gates the voice
+  loop only, and always fails toward "guest". Do not use it to protect
+  anything that typing would not also protect.
 
 ---
 
