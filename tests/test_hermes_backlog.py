@@ -79,6 +79,11 @@ class Agent:
 
     def create_event(self, title, start_dt, end_dt=None, location="", description="", recurrence=None):
         self.created.append({"title": title, "start": start_dt, "end": end_dt, "recurrence": recurrence})
+        # A real calendar lists what was just created (verify-after-write).
+        ev = _event(title, start_dt, end_dt)
+        # Google ids are unique per event; give the fake the same property.
+        object.__setattr__(ev, "event_id", f"{title}-{len(self.events)}")
+        self.events.append(ev)
         return True
 
     def delete_event(self, event_id):

@@ -126,6 +126,10 @@ def sec_company_search(company_name: str) -> list[dict]:
     Look up ticker/CIK candidates for a company name using SEC's public
     company_tickers.json index (small, cached by SEC at the edge).
     """
+    if isinstance(company_name, (list, tuple)):
+        company_name = " ".join(str(c) for c in company_name)
+    if not isinstance(company_name, str) or not company_name.strip():
+        raise FreeAPIError("sec_company_search needs a non-empty company name string")
     data = _get("https://www.sec.gov/files/company_tickers.json", headers=_EDGAR_HEADERS)
     name_lower = company_name.lower()
     matches = [

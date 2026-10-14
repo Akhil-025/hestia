@@ -1,0 +1,134 @@
+notes:
+  small talk: Statements about how the user feels, greetings and thanks are chat;
+    do not use clarify_intent for them.
+  calendar create: create_event needs a title and a when (put the whole phrase in
+    time). It is NOT check_schedule_gaps, which only inspects free time.
+  food: Hunger or wanting to eat is dionysus_find_restaurant, not a web search.
+examples:
+- utterance: I'm tired
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: i am tired today
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: I'm bored
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: I'm feeling sad
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: I had a long day
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: I'm stressed
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: I am so happy today
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: that was fun
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: good evening Hestia
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: how's your day
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: aap kaise ho?
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: kya haal hai
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: shukriya
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: thanks a lot
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: ok cool
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: nice
+  intent: chat
+  entities: {}
+  section: small talk
+- utterance: I am hungry
+  intent: dionysus_find_restaurant
+  entities: {}
+  section: food
+- utterance: I'm hungry
+  intent: dionysus_find_restaurant
+  entities: {}
+  section: food
+- utterance: I'm starving
+  intent: dionysus_find_restaurant
+  entities: {}
+  section: food
+- utterance: I'm craving pizza
+  intent: dionysus_find_restaurant
+  entities:
+    cuisine: pizza
+  section: food
+- utterance: I want to eat out
+  intent: dionysus_find_restaurant
+  entities: {}
+  section: food
+- utterance: create an event tomorrow at 5pm called Gym
+  intent: create_event
+  entities:
+    title: Gym
+    time: tomorrow at 5pm
+  section: calendar create
+- utterance: add a meeting called standup tomorrow at 9am
+  intent: create_event
+  entities:
+    title: standup
+    time: tomorrow at 9am
+  section: calendar create
+- utterance: schedule dentist on Friday at 3pm
+  intent: create_event
+  entities:
+    title: dentist
+    time: Friday at 3pm
+  section: calendar create
+- utterance: book an appointment called checkup next Monday at 10am
+  intent: create_event
+  entities:
+    title: checkup
+    time: next Monday at 10am
+  section: calendar create
+- utterance: put lunch with Raj on my calendar tomorrow at 1pm
+  intent: create_event
+  entities:
+    title: lunch with Raj
+    time: tomorrow at 1pm
+  section: calendar create
+- utterance: do I have any gaps in my schedule today
+  intent: check_schedule_gaps
+  entities: {}
+  section: calendar gaps
+- utterance: am I free between meetings
+  intent: check_schedule_gaps
+  entities: {}
+  section: calendar gaps
+- utterance: check my schedule for back to back meetings
+  intent: check_schedule_gaps
+  entities: {}
+  section: calendar gaps

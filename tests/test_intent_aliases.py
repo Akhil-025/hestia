@@ -283,6 +283,15 @@ def test_shipped_alias_file_has_no_duplicate_phrases_across_intents():
         ("module status", "modules_status"),
         ("that was wrong", "report_mistake"),
         ("why did you route that to pluto", "explain_routing"),
+        # Hardening Plan, Phase 2 additions
+        ("what's my name?", "get_user_info"),
+        ("what notes do I have?", "get_notes"),
+        ("what's on my calendar today?", "list_events"),
+        ("search the web for latest iPhone price", "hephaestus_search_web"),
+        ("search my documents for taxes", "athena_search"),
+        ("search my photos for pictures of my dog", "iris_search"),
+        ("write me a short poem about the ocean", "orpheus_write_poem"),
+        ("brainstorm ideas for a birthday gift", "orpheus_brainstorm"),
     ],
 )
 def test_shipped_aliases_resolve_representative_phrasings(query, expected):
@@ -293,9 +302,10 @@ def test_shipped_aliases_resolve_representative_phrasings(query, expected):
     "query",
     [
         "what's the weather in mumbai",
-        "write me a poem about heat transfer",
+        "revise my last poem to be shorter",
         "how are you doing today",
-        "search my documents for rankine cycle efficiency",
+        "my name is Akhil and I live in Pune",
+        "google pixel",
     ],
 )
 def test_shipped_aliases_do_not_hijack_unrelated_queries(query):

@@ -79,3 +79,6 @@ data/latency_baseline.json
 # audit_secrets.py output
 secrets_report.json
 .secrets_baseline.json.tmp
+
+# Hardening Plan: keep OAuth client secrets out of version control / zips
+config/google_credentials.json

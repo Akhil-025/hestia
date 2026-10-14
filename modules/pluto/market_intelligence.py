@@ -1,20 +1,27 @@
-"""Market intelligence manager with caching, retries, and optimized data pipelines."""
+"""Market intelligence manager with caching, retries, and optimized data pipelines.
+
+Memory note: ``polars``, ``xgboost`` and the LangGraph agent stack are
+imported lazily (inside the methods that need them) instead of at module
+import, so importing Pluto no longer pays for them up front.
+"""
+from __future__ import annotations
+
 import json
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
-
-import polars as pl
-import xgboost as xgb
+from typing import TYPE_CHECKING, Optional, Dict, Any
 
 from .explain import heuristic_breakdown, render_score_breakdown
 from .config import PlutoConfig
 from .db import DatabaseManager
-from .agents import LangGraphOrchestrator
 from .retry import retry
 from .logging_config import get_logger
 from .metrics import MetricsCollector
 from .llm_client import LLMClient
+
+if TYPE_CHECKING:  # annotations only; never imported at runtime
+    import polars as pl
+    import xgboost as xgb
 
 logger = get_logger(__name__)
 
@@ -37,8 +44,8 @@ class MarketIntelligenceManager:
         # LLM client for agents
         self.llm_client = llm_client or LLMClient(config, fallback_llm=kimi_client)
 
-        # Initialize Kimi-powered LangGraph Orchestrator
-        self.orchestrator = LangGraphOrchestrator(self.llm_client)
+        # LangGraph orchestrator — built on first use (see ``orchestrator``).
+        self._orchestrator: Optional[Any] = None
 
         # Load pre-trained model (lazy loading)
         self._model: Optional[xgb.Booster] = None
@@ -48,6 +55,18 @@ class MarketIntelligenceManager:
         # loaded on first actual use (see _get_embedder) rather than here,
         # so constructing this manager never requires a model download.
         self._embedder: Optional[Any] = None
+
+    @property
+    def orchestrator(self) -> Any:
+        """The LangGraph agent workflow, created lazily on first access."""
+        if self._orchestrator is None:
+            from .agents import LangGraphOrchestrator
+            self._orchestrator = LangGraphOrchestrator(self.llm_client)
+        return self._orchestrator
+
+    @orchestrator.setter
+    def orchestrator(self, value: Any) -> None:
+        self._orchestrator = value
 
     def _get_model(self) -> Optional[xgb.Booster]:
         """Lazy-load a trained XGBoost model from disk, if one is
@@ -65,6 +84,7 @@ class MarketIntelligenceManager:
             model_path = self.config.stock_model_path
             if model_path and Path(model_path).exists():
                 try:
+                    import xgboost as xgb
                     model = xgb.Booster()
                     model.load_model(str(model_path))
                     self._model = model
@@ -114,6 +134,7 @@ class MarketIntelligenceManager:
                 cur.execute(query, (ticker, days_back))
                 data = cur.fetchall()
                 columns = [desc[0] for desc in cur.description]
+            import polars as pl
             df = pl.DataFrame(data, schema=columns)
         return df
 
@@ -148,6 +169,8 @@ class MarketIntelligenceManager:
         if df.is_empty():
             logger.warning("Empty DataFrame for quant score; no data to score from.")
             return {"score": 0.5, "method": "no_data", "reliability": 0.0}
+
+        import polars as pl
 
         # Lazy feature engineering
         features = (
@@ -195,6 +218,7 @@ class MarketIntelligenceManager:
         model = self._get_model()
         if model is not None:
             X = features.to_numpy()
+            import xgboost as xgb
             dmatrix = xgb.DMatrix(X)
             score = float(model.predict(dmatrix)[0])
             return {
@@ -365,9 +389,9 @@ class MarketIntelligenceManager:
         MarketIntelligenceManager (including in tests) never triggers a
         model download by itself."""
         if self._embedder is None:
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer(self.config.embedding_model)
-            logger.info("Embedding model '%s' loaded", self.config.embedding_model)
+            from core.shared_models import get_sentence_transformer
+            self._embedder = get_sentence_transformer(self.config.embedding_model)
+            logger.info("Embedding model '%s' ready (shared)", self.config.embedding_model)
         return self._embedder
 
     def _ensure_qdrant_collection(self, vector_size: int) -> None:

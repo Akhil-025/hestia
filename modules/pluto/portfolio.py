@@ -21,9 +21,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pypfopt import EfficientFrontier, expected_returns, risk_models
-from pypfopt.exceptions import OptimizationError
-
 from .db import PlutoDB
 from .market_data import MarketDataError, MarketDataThrottled, fetch_price_history, throttle_hint
 from .logging_config import get_logger
@@ -110,6 +107,18 @@ class PortfolioOptimizer:
                 f"{MIN_TICKERS_FOR_OPTIMIZATION}). Skipped: "
                 f"{', '.join(skipped) if skipped else 'none'}."
                 + (throttle_hint(throttled) if throttled is not None else "")
+            )
+
+        # PyPortfolioOpt is imported on the first real optimisation, not at
+        # module import — it is large and most sessions never optimise.
+        try:
+            from pypfopt import EfficientFrontier, expected_returns, risk_models
+            from pypfopt.exceptions import OptimizationError
+        except ImportError as e:
+            logger.warning("optimize_portfolio: PyPortfolioOpt unavailable: %s", e)
+            return _err(
+                "Portfolio optimisation needs the PyPortfolioOpt package, which "
+                "isn't installed (pip install PyPortfolioOpt)."
             )
 
         try:

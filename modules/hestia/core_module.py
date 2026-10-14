@@ -562,7 +562,7 @@ class CoreModule(BaseModule):
     # correctly — same class of bug the date/time aliasing above already
     # covers, just for identity instead of date/time.
     _NAME_KEYS = frozenset({"name", "user_name", "my_name", "users_name"})
-    _NAME_QUERY_RE = re.compile(r"\bname\b", re.IGNORECASE)
+    _NAME_QUERY_RE = re.compile(r"\b(?:name|naam)\b", re.IGNORECASE)
 
     def _get_user_info(self, entities: dict, raw: str = "") -> dict:
         key = (entities.get("key") or "").strip().lower()
@@ -609,7 +609,7 @@ class CoreModule(BaseModule):
         # nothing here ever queried get_all_facts(). Aggregate whatever
         # Mnemosyne actually has instead of claiming ignorance.
         try:
-            facts = self._memory.db.get_all_facts(limit=10)
+            facts = self._memory.db.get_all_facts(limit=60)
         except Exception:
             logger.exception("_get_user_info: get_all_facts() failed.")
             facts = []
@@ -620,7 +620,13 @@ class CoreModule(BaseModule):
         def _label(k: str) -> str:
             return k.replace("_", " ").strip()
 
-        lines = [f"- {_label(f['key'])}: {f['value']}" for f in facts]
+        # Hide module-generated artefacts (e.g. orpheus_poem_* stores whole
+        # poems under fact keys) and cap long values.
+        facts = [f for f in facts if not str(f["key"]).startswith(("orpheus_", "metis_", "ares_"))][:10]
+        if not facts:
+            return {"response": "I don't have that information yet.", "data": {}, "confidence": 0.3}
+        lines = [f"- {_label(f['key'])}: {(str(f['value'])[:140] + '…') if len(str(f['value'])) > 140 else f['value']}"
+                 for f in facts]
         body = "Here's what I know about you:\n" + "\n".join(lines)
         return {"response": body, "data": {"facts": facts}, "confidence": 0.8}
 

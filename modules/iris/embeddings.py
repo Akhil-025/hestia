@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 _CLIP_MODEL_NAME = "clip-ViT-B-32"
 _COLLECTION_NAME = "iris_images"
+_MIN_FREE_GB_FOR_CLIP = 3.0
 
 
 def filter_hits(
@@ -90,6 +91,20 @@ class ClipEmbedder:
             return True
         if self._load_failed:
             return False
+        # Loading CLIP needs ~2-3 GB free. When memory is short the native
+        # loader aborts the whole process (seen: "memory allocation ... failed"
+        # and Hestia silently exiting), which no try/except can catch — so
+        # check first and degrade to caption/tag search instead.
+        try:
+            import psutil
+            free_gb = psutil.virtual_memory().available / 1024 ** 3
+            if free_gb < _MIN_FREE_GB_FOR_CLIP:
+                logger.warning(
+                    "[Iris] Only %.1f GB RAM free (< %.1f GB); not loading the CLIP "
+                    "model now. Close some apps and try again.", free_gb, _MIN_FREE_GB_FOR_CLIP)
+                return False
+        except ImportError:
+            pass
         try:
             from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(self._model_name)

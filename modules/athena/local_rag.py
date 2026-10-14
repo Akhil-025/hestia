@@ -27,7 +27,8 @@ from typing import Any, Optional
 
 import chromadb
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
+
+from core.shared_models import get_sentence_transformer
 
 from modules.athena.config import get_config
 from modules.athena.progress import IngestionProgress
@@ -267,7 +268,10 @@ class MergedLocalRAG:
         self._bm25 = _BM25State()
 
         self._client, self._collection = self._init_chroma()
-        self._embedder: SentenceTransformer = self._init_embedder()
+        # Loaded on first use (see the ``_embedder`` property) and shared with
+        # Mnemosyne / the classifier via core/shared_models.py.
+        self._embedder_obj: Optional[Any] = None
+        self._embedder_lock = threading.Lock()
         self._pdf_processor = PDFProcessor()
 
         # backlog #63: relevance feedback, stored alongside (not inside)
@@ -303,21 +307,27 @@ class MergedLocalRAG:
                 f"Failed to initialise ChromaDB at {self.persist_directory!r}: {exc}"
             ) from exc
 
-    def _init_embedder(self) -> SentenceTransformer:
+    def _init_embedder(self) -> Any:
         try:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            device = "cpu"
-
-        try:
-            embedder = SentenceTransformer(self.model_name, device=device)
-            logger.info("Embedding model %r loaded on %s.", self.model_name, device)
-            return embedder
+            return get_sentence_transformer(self.model_name)
         except Exception as exc:
             raise EmbedderInitError(
                 f"Failed to load embedding model {self.model_name!r}: {exc}"
             ) from exc
+
+    @property
+    def _embedder(self) -> Any:
+        """The embedding model, loaded lazily and shared process-wide."""
+        if self._embedder_obj is None:
+            with self._embedder_lock:
+                if self._embedder_obj is None:
+                    self._embedder_obj = self._init_embedder()
+        return self._embedder_obj
+
+    @_embedder.setter
+    def _embedder(self, value: Any) -> None:
+        # Lets tests / callers inject a stand-in embedder.
+        self._embedder_obj = value
 
     # ------------------------------------------------------------------
     # Embedding

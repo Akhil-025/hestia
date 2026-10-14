@@ -20,7 +20,7 @@ logger = logging.getLogger("hestia.llm_latency")
 
 
 def generate(prompt, model="mistral", host="127.0.0.1", port=11434,
-             fmt=None, timeout=60, options=None):
+             fmt=None, timeout=60, options=None, keep_alive=None):
     """
     Call Ollama's /api/generate and return the response text (or "" on
     failure — see the note in modules/hestia/orchestrator.py and item #4
@@ -42,6 +42,9 @@ def generate(prompt, model="mistral", host="127.0.0.1", port=11434,
     body = {"model": model, "prompt": prompt, "stream": False}
     if fmt:
         body["format"] = fmt
+    if keep_alive:
+        # Keep the model resident between calls (avoids reload latency).
+        body["keep_alive"] = keep_alive
     if options:
         # e.g. {"temperature": 0.2} — Ollama defaults to ~0.8 when this is
         # omitted, which is fine for open-ended chat but is exactly the

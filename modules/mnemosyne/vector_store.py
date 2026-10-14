@@ -3,12 +3,15 @@ modules/mnemosyne/vector_store.py
 
 ChromaDB vector store for Mnemosyne, using SentenceTransformers for embeddings.
 """
+from __future__ import annotations
+
 import logging
 import threading
-from typing import Optional, List
+from typing import Any, Optional, List
 
 import chromadb
-from sentence_transformers import SentenceTransformer
+
+from core.shared_models import get_sentence_transformer
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,7 @@ class MnemosyneVectorStore:
         self.chroma_dir = chroma_dir
         self.embedding_model_name = embedding_model
         self._lock = threading.Lock()
-        self._embedder: Optional[SentenceTransformer] = None
+        self._embedder: Optional[Any] = None
         self._initialize_chroma()
         logger.info(f"MnemosyneVectorStore initialized (dir={chroma_dir}, model={embedding_model})")
 
@@ -30,12 +33,12 @@ class MnemosyneVectorStore:
             metadata={"description": "Mnemosyne Memory Store"},
         )
 
-    def _get_embedder(self) -> SentenceTransformer:
+    def _get_embedder(self) -> Any:
+        # Shared, process-wide instance (core/shared_models.py): Athena, the
+        # classifier and Pluto reuse the same weights instead of each loading
+        # their own copy of the same model.
         if self._embedder is None:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._embedder = SentenceTransformer(self.embedding_model_name, device=device)
-            logger.info(f"Embedding model loaded on {device}: {self.embedding_model_name}")
+            self._embedder = get_sentence_transformer(self.embedding_model_name)
         return self._embedder
 
     def _embed(self, texts: List[str]) -> List[List[float]]:

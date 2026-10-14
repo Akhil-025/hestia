@@ -125,6 +125,7 @@ class HermesEngine(BaseModule):
             "send_email",
             "list_events",
             "create_event",
+            "update_last_event",
             "delete_events",
             # backlog #92-#99
             "email_digest",
@@ -257,6 +258,7 @@ class HermesEngine(BaseModule):
         self._state_path = Path(state_path) if state_path else None
         self._digest_state: dict[str, Any] = self._load_state()
         self._last_slots: Optional[dict[str, Any]] = None
+        self._last_event: Optional[dict[str, Any]] = None   # for update_last_event
         self._todoist_error = ""
         self._llm = llm
         self._contacts = {
@@ -357,6 +359,8 @@ class HermesEngine(BaseModule):
             return self._create_event(entities)
         if intent == "delete_events":
             return self._delete_events(entities)
+        if intent == "update_last_event":
+            return self._update_last_event(entities)
         if intent == "email_digest":
             return self._email_digest(entities)
         if intent == "draft_email":
@@ -508,8 +512,16 @@ class HermesEngine(BaseModule):
                 "What should I call the event?", slot="title", entities=entities
             )
 
-        date_str: str = (entities.get("date") or "today").strip()
-        time_str: str = (entities.get("time") or _DEFAULT_EVENT_TIME).strip()
+        # The NLU often puts "tomorrow at 5pm" in a single field; split it
+        # into the separate date / time fields _parse_datetime expects.
+        from core.temporal import split_date_time
+        date_str, time_str = split_date_time(
+            str(entities.get("date") or "").strip(),
+            str(entities.get("time") or "").strip(),
+            datetime.now(self._tz).date(),
+        )
+        date_str = date_str or "today"
+        time_str = time_str or _DEFAULT_EVENT_TIME
 
         try:
             start_dt = _parse_datetime(date_str, time_str, self._tz)
@@ -572,6 +584,7 @@ class HermesEngine(BaseModule):
         if recurrence:
             create_kwargs["recurrence"] = recurrence
 
+        ids_before = self._event_ids_in_window(start_dt, duration)
         try:
             success = self._google.create_event(**create_kwargs)
         except Exception:
@@ -585,6 +598,24 @@ class HermesEngine(BaseModule):
             # every platform.
             readable = f"{start_dt:%A} {start_dt.day} {start_dt:%B} at {start_dt:%H:%M}"
             logger.info("create_event: %r created at %s.", title, start_dt.isoformat())
+            # Verify-after-write (Hardening Plan 4.2): read the event back
+            # before claiming success. Skipped for recurring events (the
+            # window query would only show one instance) and silently
+            # skipped if the lookup itself fails.
+            verified = self._verify_event_created(title, start_dt, duration, ids_before) \
+                if not recurrence else None
+            if verified is not False and not recurrence:
+                self._last_event = {"title": title, "start": start_dt,
+                                    "duration": duration,
+                                    "event_id": getattr(self, "_found_event_id", None)}
+            if verified is False:
+                logger.warning("create_event: %r not found after create.", title)
+                return _ok(
+                    f"I asked Google Calendar to add {title!r} for {readable}, "
+                    "but I couldn't find it when I checked afterwards. "
+                    "Please look at your calendar before relying on it.",
+                    confidence=0.5,
+                )
             return _ok(
                 f"Done. {title!r} added to your calendar for {readable}{repeat_label}.",
                 confidence=0.9,
@@ -700,6 +731,113 @@ class HermesEngine(BaseModule):
         return list(
             self._google.list_events(max_results=_MAX_EVENT_DELETE, days_ahead=days) or []
         )
+
+    @staticmethod
+    def _ev_id(ev: Any) -> Optional[str]:
+        return getattr(ev, "event_id", None) or (
+            ev.get("event_id") if isinstance(ev, dict) else None)
+
+    def _event_ids_in_window(self, start: datetime, duration_min: int) -> set:
+        """Ids already present in the window — snapshot BEFORE creating, so the
+        new event can be told apart from older same-title ones (a leftover
+        'gym' made the move flow remember a stale id and fail with HTTP 410)."""
+        try:
+            evs = self._events_in_window(
+                start - timedelta(minutes=1), start + timedelta(minutes=max(duration_min, 1)))
+        except Exception:
+            return set()
+        return {self._ev_id(e) for e in (evs or []) if self._ev_id(e)}
+
+    def _verify_event_created(self, title: str, start: datetime,
+                              duration_min: int, exclude: Optional[set] = None) -> Optional[bool]:
+        """True if an event with *title* now exists at *start*; False if the
+        lookup worked and it is absent; None if it could not be checked."""
+        try:
+            events = self._events_in_window(
+                start - timedelta(minutes=1), start + timedelta(minutes=max(duration_min, 1)))
+        except Exception:
+            return None
+        if events is None:
+            return None
+        want = title.strip().lower()
+        for ev in events:
+            got = str(getattr(ev, "title", None) or getattr(ev, "summary", None)
+                      or (ev.get("title") if isinstance(ev, dict) else "") or "").strip().lower()
+            if got == want and self._ev_id(ev) not in (exclude or set()):
+                self._found_event_id = self._ev_id(ev)
+                return True
+        return False
+
+    _BARE_TIME_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?(?!\d)", re.I)
+
+    def _update_last_event(self, entities: dict) -> dict:
+        """\"Make it 6 instead\" / \"move it to Friday\": change the event this
+        module created most recently, using its own remembered result (not
+        the NLU prompt). The new event is created and verified BEFORE the
+        old one is deleted, so a failure never loses the original."""
+        last = getattr(self, "_last_event", None)
+        if not last:
+            return _clarify("I don't have a recent event to change. Which event "
+                            "do you mean, and what should it become?")
+        from core.temporal import split_date_time
+        raw = str(entities.get("raw_query") or "")
+        raw = re.sub(r"^\s*(?:make it|change it to|move it to|push it to|"
+                     r"reschedule(?: it)? to)\s+", "", raw, flags=re.I)
+        d_str, t_str = split_date_time(str(entities.get("date") or ""),
+                                       str(entities.get("time") or "") or raw,
+                                       datetime.now(self._tz).date())
+        old_start: datetime = last["start"]
+        new_date = old_start.date()
+        if d_str:
+            try:
+                new_date = _resolve_date(d_str, self._tz)
+            except DateTimeParseError:
+                pass
+        new_time = _parse_time(t_str) if t_str else None
+        if new_time is None:
+            m = self._BARE_TIME_RE.search(str(entities.get("time") or "") or raw)
+            if m:
+                hour, minute = int(m.group(1)), int(m.group(2) or 0)
+                mer = (m.group(3) or "").lower().replace(".", "")
+                if mer == "pm" and hour < 12:
+                    hour += 12
+                elif mer == "am" and hour == 12:
+                    hour = 0
+                elif not mer and old_start.hour >= 12 and hour < 12:
+                    hour += 12      # keep the original event's am/pm
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    new_time = time(hour, minute)
+        if new_time is None and new_date == old_start.date():
+            return _clarify("What should I change it to? (e.g. 'make it 6pm' "
+                            "or 'move it to Friday')")
+        new_start = datetime.combine(new_date, new_time or old_start.time())
+        if new_start == old_start:
+            return _ok("It's already set for then.", confidence=0.8)
+
+        title, duration = last["title"], last["duration"]
+        ids_before = self._event_ids_in_window(new_start, duration)
+        try:
+            ok = self._google.create_event(
+                title=title, start_dt=new_start,
+                end_dt=new_start + timedelta(minutes=duration))
+        except Exception:
+            logger.exception("update_last_event: create_event raised.")
+            return _err("I couldn't change that event; the original is untouched.")
+        if not ok or self._verify_event_created(title, new_start, duration, ids_before) is False:
+            return _err("I couldn't confirm the new time, so I left the "
+                        "original event as it was.")
+        new_id = getattr(self, "_found_event_id", None)
+        removed = False
+        if last.get("event_id"):
+            try:
+                removed = bool(self._google.delete_event(last["event_id"]))
+            except Exception:
+                logger.exception("update_last_event: deleting the old event failed.")
+        self._last_event = {"title": title, "start": new_start,
+                            "duration": duration, "event_id": new_id}
+        readable = f"{new_start:%A} {new_start.day} {new_start:%B} at {new_start:%H:%M}"
+        note = "" if removed else (" I couldn't remove the old one, so check for a duplicate.")
+        return _ok(f"Done. {title!r} moved to {readable}.{note}", confidence=0.9)
 
     def _conflicts_for(self, start: datetime, end: datetime) -> list[Any]:
         """Timed events that overlap [start, end). All-day events are not

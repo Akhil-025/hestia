@@ -411,6 +411,17 @@ class DionysusEngine(BaseModule):
         area    = entities.get("area") or entities.get("location", "Mumbai")
         budget  = entities.get("budget", "")
 
+        # Nothing to search for ("I am hungry" was routed here with no
+        # entities): ask, rather than searching for "best  restaurants".
+        if not (cuisine or budget or entities.get("area")
+                or entities.get("location") or entities.get("dish")):
+            return {
+                "response": "Sure — what are you in the mood for (cuisine or "
+                            "dish), and roughly where?",
+                "data": {"needs_clarification": True},
+                "confidence": 0.6,
+            }
+
         query = f"best {cuisine} restaurants in {area} Mumbai"
         if budget:
             query += f" {budget} budget"

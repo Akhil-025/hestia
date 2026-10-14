@@ -441,6 +441,39 @@ class HestiaBrowserAgent:
                 if title:
                     out.append({"title": title, "url": href})
 
+            if not out:
+                # The HTML endpoint often serves a bot-check page with no
+                # results. Retry once on DuckDuckGo's lite endpoint, which
+                # has different markup, before reporting "no results".
+                try:
+                    logger.warning("search_web_results: no results from html endpoint "
+                                   "(url=%r title=%r html_len=%d); trying lite.",
+                                   page.url[:80], (page.title() or "")[:60], len(page.content()))
+                except Exception:
+                    logger.warning("search_web_results: no results from html endpoint; trying lite.")
+                page.goto(f"https://lite.duckduckgo.com/lite/?q={quote_plus(query)}",
+                          timeout=20000)
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                for link in page.query_selector_all("a.result-link")[:max_results]:
+                    title = (link.inner_text() or "").strip()
+                    href = (link.get_attribute("href") or "").strip()
+                    if title:
+                        out.append({"title": title, "url": href})
+
+            if not out:
+                # Last resort: Bing, which does not bot-wall headless Chromium
+                # as aggressively.
+                page.goto(f"https://www.bing.com/search?q={quote_plus(query)}", timeout=20000)
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                for link in page.query_selector_all("li.b_algo h2 a")[:max_results]:
+                    title = (link.inner_text() or "").strip()
+                    href = (link.get_attribute("href") or "").strip()
+                    if title:
+                        out.append({"title": title, "url": href})
+                if not out:
+                    logger.warning("search_web_results: bing returned nothing either "
+                                   "(url=%r title=%r).", page.url[:80], (page.title() or "")[:60])
+
             page.close()
             return out
 

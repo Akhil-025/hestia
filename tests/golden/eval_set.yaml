@@ -1,0 +1,2322 @@
+- utterance: im on leave
+  intent: mark_holiday
+  category: clean
+  layer: deterministic
+- utterance: im on leaev
+  intent: mark_holiday
+  category: typo
+  layer: llm
+- utterance: my critical path this week
+  intent: weekly_focus
+  category: clean
+  layer: deterministic
+- utterance: my critcial path this week
+  intent: weekly_focus
+  category: typo
+  layer: llm
+- utterance: mera naam
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: goal pace
+  intent: apollo_get_goal_pace
+  category: clean
+  layer: deterministic
+- utterance: health summary
+  intent: apollo_get_health_summary
+  category: clean
+  layer: deterministic
+- utterance: health summray
+  intent: apollo_get_health_summary
+  category: typo
+  layer: llm
+- utterance: good afternoon hestia
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: good afternoon hestai
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: find in my documents
+  intent: athena_search
+  category: clean
+  layer: deterministic
+- utterance: find in my dcouments
+  intent: athena_search
+  category: typo
+  layer: llm
+- utterance: give me ideas for
+  intent: orpheus_brainstorm
+  category: clean
+  layer: deterministic
+- utterance: give me idaes for
+  intent: orpheus_brainstorm
+  category: typo
+  layer: llm
+- utterance: what is my name
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: paise kharch kiye
+  intent: pluto_log_expense
+  category: clean
+  layer: deterministic
+- utterance: paies kharch kiye
+  intent: pluto_log_expense
+  category: typo
+  layer: llm
+- utterance: my week in health
+  intent: apollo_get_weekly_summary
+  category: clean
+  layer: deterministic
+- utterance: my week in heatlh
+  intent: apollo_get_weekly_summary
+  category: typo
+  layer: llm
+- utterance: dhanyavad
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: dhanyavda
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: mere notes dikhao
+  intent: get_notes
+  category: clean
+  layer: deterministic
+- utterance: mere ntoes dikhao
+  intent: get_notes
+  category: typo
+  layer: llm
+- utterance: this is an important fact
+  intent: set_fact_importance
+  category: clean
+  layer: deterministic
+- utterance: this is an improtant fact
+  intent: set_fact_importance
+  category: typo
+  layer: llm
+- utterance: my notes
+  intent: get_notes
+  category: clean
+  layer: deterministic
+- utterance: mujhe mera naam batao
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: mujeh mera naam batao
+  intent: get_user_info
+  category: typo
+  layer: llm
+- utterance: whats on my calendar
+  intent: list_events
+  category: clean
+  layer: deterministic
+- utterance: whats on my caelndar
+  intent: list_events
+  category: typo
+  layer: llm
+- utterance: turn off the grace period
+  intent: set_habit_grace
+  category: clean
+  layer: deterministic
+- utterance: turn off the grace preiod
+  intent: set_habit_grace
+  category: typo
+  layer: llm
+- utterance: am i behind on water
+  intent: apollo_hydration_status
+  category: clean
+  layer: deterministic
+- utterance: am i behind on waetr
+  intent: apollo_hydration_status
+  category: typo
+  layer: llm
+- utterance: delete my notes
+  intent: delete_notes
+  category: clean
+  layer: deterministic
+- utterance: dleete my notes
+  intent: delete_notes
+  category: typo
+  layer: llm
+- utterance: hows my health
+  intent: apollo_get_health_summary
+  category: clean
+  layer: deterministic
+- utterance: hows my helath
+  intent: apollo_get_health_summary
+  category: typo
+  layer: llm
+- utterance: export memory
+  intent: export_memory
+  category: clean
+  layer: deterministic
+- utterance: exoprt memory
+  intent: export_memory
+  category: typo
+  layer: llm
+- utterance: look at it from every angle
+  intent: conference
+  category: clean
+  layer: deterministic
+- utterance: look at it from every angel
+  intent: conference
+  category: typo
+  layer: llm
+- utterance: show my badges
+  intent: list_badges
+  category: clean
+  layer: deterministic
+- utterance: show my bdages
+  intent: list_badges
+  category: typo
+  layer: llm
+- utterance: i paid
+  intent: pluto_log_expense
+  category: clean
+  layer: deterministic
+- utterance: show my writing style
+  intent: metis_show_style_profile
+  category: clean
+  layer: deterministic
+- utterance: show my wirting style
+  intent: metis_show_style_profile
+  category: typo
+  layer: llm
+- utterance: use my playbook
+  intent: ares_run_playbook
+  category: clean
+  layer: deterministic
+- utterance: use my playboko
+  intent: ares_run_playbook
+  category: typo
+  layer: llm
+- utterance: backup my memory
+  intent: export_memory
+  category: clean
+  layer: deterministic
+- utterance: bcakup my memory
+  intent: export_memory
+  category: typo
+  layer: llm
+- utterance: cancel my reminder
+  intent: cancel_reminder
+  category: clean
+  layer: deterministic
+- utterance: cancel my reminedr
+  intent: cancel_reminder
+  category: typo
+  layer: llm
+- utterance: log outcome
+  intent: ares_record_outcome
+  category: clean
+  layer: deterministic
+- utterance: log outcoem
+  intent: ares_record_outcome
+  category: typo
+  layer: llm
+- utterance: grace period for
+  intent: set_habit_grace
+  category: clean
+  layer: deterministic
+- utterance: garce period for
+  intent: set_habit_grace
+  category: typo
+  layer: llm
+- utterance: delete the playbook
+  intent: ares_delete_playbook
+  category: clean
+  layer: deterministic
+- utterance: deltee the playbook
+  intent: ares_delete_playbook
+  category: typo
+  layer: llm
+- utterance: what s my agenda
+  intent: get_agenda
+  category: clean
+  layer: deterministic
+- utterance: what s my agedna
+  intent: get_agenda
+  category: typo
+  layer: llm
+- utterance: what happens if i cancel
+  intent: what_if
+  category: clean
+  layer: deterministic
+- utterance: what happens if i canecl
+  intent: what_if
+  category: typo
+  layer: llm
+- utterance: what are my goals
+  intent: get_goals
+  category: clean
+  layer: deterministic
+- utterance: what are my golas
+  intent: get_goals
+  category: typo
+  layer: llm
+- utterance: how have my past decisions turned out
+  intent: ares_outcome_stats
+  category: clean
+  layer: deterministic
+- utterance: how have my past deciisons turned out
+  intent: ares_outcome_stats
+  category: typo
+  layer: llm
+- utterance: that is an important fact
+  intent: set_fact_importance
+  category: clean
+  layer: deterministic
+- utterance: that is an ipmortant fact
+  intent: set_fact_importance
+  category: typo
+  layer: llm
+- utterance: mark that fact as
+  intent: set_fact_importance
+  category: clean
+  layer: deterministic
+- utterance: which habits help my mood
+  intent: apollo_habit_mood_correlation
+  category: clean
+  layer: deterministic
+- utterance: wihch habits help my mood
+  intent: apollo_habit_mood_correlation
+  category: typo
+  layer: llm
+- utterance: get every module s view
+  intent: conference
+  category: clean
+  layer: deterministic
+- utterance: get eveyr module s view
+  intent: conference
+  category: typo
+  layer: llm
+- utterance: write a poem
+  intent: orpheus_write_poem
+  category: clean
+  layer: deterministic
+- utterance: wriet a poem
+  intent: orpheus_write_poem
+  category: typo
+  layer: llm
+- utterance: decision track record
+  intent: ares_outcome_stats
+  category: clean
+  layer: deterministic
+- utterance: decision tarck record
+  intent: ares_outcome_stats
+  category: typo
+  layer: llm
+- utterance: mere habits dikhao
+  intent: list_habits
+  category: clean
+  layer: deterministic
+- utterance: mere haibts dikhao
+  intent: list_habits
+  category: typo
+  layer: llm
+- utterance: hey
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: delete my reminder
+  intent: cancel_reminder
+  category: clean
+  layer: deterministic
+- utterance: deelte my reminder
+  intent: cancel_reminder
+  category: typo
+  layer: llm
+- utterance: stop the pomodoro
+  intent: stop_focus
+  category: clean
+  layer: deterministic
+- utterance: stop the pomodroo
+  intent: stop_focus
+  category: typo
+  layer: llm
+- utterance: why did that go to
+  intent: explain_routing
+  category: clean
+  layer: deterministic
+- utterance: module status
+  intent: modules_status
+  category: clean
+  layer: deterministic
+- utterance: modlue status
+  intent: modules_status
+  category: typo
+  layer: llm
+- utterance: what have you learned about me
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: what have you learned aobut me
+  intent: get_user_info
+  category: typo
+  layer: llm
+- utterance: run my playbook
+  intent: ares_run_playbook
+  category: clean
+  layer: deterministic
+- utterance: run my playboko
+  intent: ares_run_playbook
+  category: typo
+  layer: llm
+- utterance: what s critical this week
+  intent: weekly_focus
+  category: clean
+  layer: deterministic
+- utterance: what s critiacl this week
+  intent: weekly_focus
+  category: typo
+  layer: llm
+- utterance: good evening
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: good eveinng
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: tick off step
+  intent: complete_milestone
+  category: clean
+  layer: deterministic
+- utterance: good afternoon
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: good atfernoon
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: show me your checks
+  intent: audit_routing
+  category: clean
+  layer: deterministic
+- utterance: show me your chceks
+  intent: audit_routing
+  category: typo
+  layer: llm
+- utterance: show me my reminders
+  intent: list_reminders
+  category: clean
+  layer: deterministic
+- utterance: show me my remidners
+  intent: list_reminders
+  category: typo
+  layer: llm
+- utterance: mera naam kya hai
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: remember that
+  intent: learn_fact
+  category: clean
+  layer: deterministic
+- utterance: remembre that
+  intent: learn_fact
+  category: typo
+  layer: llm
+- utterance: what do you know about me
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: what do you know abotu me
+  intent: get_user_info
+  category: typo
+  layer: llm
+- utterance: this fact is important
+  intent: set_fact_importance
+  category: clean
+  layer: deterministic
+- utterance: this fact is ipmortant
+  intent: set_fact_importance
+  category: typo
+  layer: llm
+- utterance: set my target allocation
+  intent: pluto_set_target_allocation
+  category: clean
+  layer: deterministic
+- utterance: set my target allcoation
+  intent: pluto_set_target_allocation
+  category: typo
+  layer: llm
+- utterance: put my habit on hold
+  intent: pause_habit
+  category: clean
+  layer: deterministic
+- utterance: put my habti on hold
+  intent: pause_habit
+  category: typo
+  layer: llm
+- utterance: what does my paper cite
+  intent: athena_citation_graph
+  category: clean
+  layer: deterministic
+- utterance: what does my paepr cite
+  intent: athena_citation_graph
+  category: typo
+  layer: llm
+- utterance: kal itni der soya
+  intent: apollo_track_sleep
+  category: clean
+  layer: deterministic
+- utterance: what if i cancel
+  intent: what_if
+  category: clean
+  layer: deterministic
+- utterance: what if i cacnel
+  intent: what_if
+  category: typo
+  layer: llm
+- utterance: my quiz score
+  intent: quiz_performance
+  category: clean
+  layer: deterministic
+- utterance: my quiz scoer
+  intent: quiz_performance
+  category: typo
+  layer: llm
+- utterance: less of this
+  intent: dionysus_less_like_this
+  category: clean
+  layer: deterministic
+- utterance: do you know my name
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: my quiz results
+  intent: quiz_performance
+  category: clean
+  layer: deterministic
+- utterance: my quiz resutls
+  intent: quiz_performance
+  category: typo
+  layer: llm
+- utterance: add a grace period
+  intent: set_habit_grace
+  category: clean
+  layer: deterministic
+- utterance: add a graec period
+  intent: set_habit_grace
+  category: typo
+  layer: llm
+- utterance: i m feeling
+  intent: apollo_log_mood
+  category: clean
+  layer: deterministic
+- utterance: i m feeilng
+  intent: apollo_log_mood
+  category: typo
+  layer: llm
+- utterance: unpause habit
+  intent: resume_habit
+  category: clean
+  layer: deterministic
+- utterance: unpaues habit
+  intent: resume_habit
+  category: typo
+  layer: llm
+- utterance: completed my habit
+  intent: complete_habit
+  category: clean
+  layer: deterministic
+- utterance: completed my haibt
+  intent: complete_habit
+  category: typo
+  layer: llm
+- utterance: career ranking
+  intent: ares_career_ranking
+  category: clean
+  layer: deterministic
+- utterance: pain history
+  intent: apollo_get_pain_trend
+  category: clean
+  layer: deterministic
+- utterance: pain hisotry
+  intent: apollo_get_pain_trend
+  category: typo
+  layer: llm
+- utterance: done with my
+  intent: complete_habit
+  category: clean
+  layer: deterministic
+- utterance: sync my broker
+  intent: pluto_sync_broker
+  category: clean
+  layer: deterministic
+- utterance: sync my brkoer
+  intent: pluto_sync_broker
+  category: typo
+  layer: llm
+- utterance: monte carlo
+  intent: ares_simulate_outcomes
+  category: clean
+  layer: deterministic
+- utterance: monte calro
+  intent: ares_simulate_outcomes
+  category: typo
+  layer: llm
+- utterance: my name
+  intent: get_user_info
+  category: clean
+  layer: deterministic
+- utterance: how much have i focused
+  intent: focus_stats
+  category: clean
+  layer: deterministic
+- utterance: how much have i focsued
+  intent: focus_stats
+  category: typo
+  layer: llm
+- utterance: use pounds
+  intent: apollo_set_units
+  category: clean
+  layer: deterministic
+- utterance: use poudns
+  intent: apollo_set_units
+  category: typo
+  layer: llm
+- utterance: start a quiz on
+  intent: start_quiz
+  category: clean
+  layer: deterministic
+- utterance: statr a quiz on
+  intent: start_quiz
+  category: typo
+  layer: llm
+- utterance: scan this receipt
+  intent: pluto_log_receipt
+  category: clean
+  layer: deterministic
+- utterance: scan this reciept
+  intent: pluto_log_receipt
+  category: typo
+  layer: llm
+- utterance: export to ics
+  intent: export_calendar
+  category: clean
+  layer: deterministic
+- utterance: exoprt to ics
+  intent: export_calendar
+  category: typo
+  layer: llm
+- utterance: export a report on
+  intent: athena_generate_report
+  category: clean
+  layer: deterministic
+- utterance: export a repotr on
+  intent: athena_generate_report
+  category: typo
+  layer: llm
+- utterance: spending report
+  intent: pluto_spending_report
+  category: clean
+  layer: deterministic
+- utterance: spending reoprt
+  intent: pluto_spending_report
+  category: typo
+  layer: llm
+- utterance: how consistent have i been this week
+  intent: weekly_habit_review
+  category: clean
+  layer: deterministic
+- utterance: how conssitent have i been this week
+  intent: weekly_habit_review
+  category: typo
+  layer: llm
+- utterance: ye likh lo
+  intent: take_note
+  category: clean
+  layer: deterministic
+- utterance: walk me through what you checked
+  intent: audit_routing
+  category: clean
+  layer: deterministic
+- utterance: walk me through what you chekced
+  intent: audit_routing
+  category: typo
+  layer: llm
+- utterance: find a time for the group
+  intent: dionysus_plan_group_outing
+  category: clean
+  layer: deterministic
+- utterance: find a time for the gorup
+  intent: dionysus_plan_group_outing
+  category: typo
+  layer: llm
+- utterance: will it rain on my plans
+  intent: weather_plan
+  category: clean
+  layer: deterministic
+- utterance: will it rain on my plasn
+  intent: weather_plan
+  category: typo
+  layer: llm
+- utterance: export the writing session
+  intent: metis_export_session
+  category: clean
+  layer: deterministic
+- utterance: export the writing sessoin
+  intent: metis_export_session
+  category: typo
+  layer: llm
+- utterance: show my habits
+  intent: list_habits
+  category: clean
+  layer: deterministic
+- utterance: show my hbaits
+  intent: list_habits
+  category: typo
+  layer: llm
+- utterance: i ate
+  intent: apollo_log_meal
+  category: clean
+  layer: deterministic
+- utterance: generate a report about
+  intent: athena_generate_report
+  category: clean
+  layer: deterministic
+- utterance: generate a reprot about
+  intent: athena_generate_report
+  category: typo
+  layer: llm
+- utterance: break down the goal
+  intent: decompose_goal
+  category: clean
+  layer: deterministic
+- utterance: berak down the goal
+  intent: decompose_goal
+  category: typo
+  layer: llm
+- utterance: make a report on
+  intent: athena_generate_report
+  category: clean
+  layer: deterministic
+- utterance: make a reprot on
+  intent: athena_generate_report
+  category: typo
+  layer: llm
+- utterance: which papers cite
+  intent: athena_citation_graph
+  category: clean
+  layer: deterministic
+- utterance: whcih papers cite
+  intent: athena_citation_graph
+  category: typo
+  layer: llm
+- utterance: im feeling
+  intent: apollo_log_mood
+  category: clean
+  layer: deterministic
+- utterance: im feleing
+  intent: apollo_log_mood
+  category: typo
+  layer: llm
+- utterance: search my pictures for
+  intent: iris_search
+  category: clean
+  layer: deterministic
+- utterance: serach my pictures for
+  intent: iris_search
+  category: typo
+  layer: llm
+- utterance: methodology for
+  intent: athena_methodology
+  category: clean
+  layer: deterministic
+- utterance: methdoology for
+  intent: athena_methodology
+  category: typo
+  layer: llm
+- utterance: rebalance with
+  intent: pluto_rebalance_portfolio
+  category: clean
+  layer: deterministic
+- utterance: rebaalnce with
+  intent: pluto_rebalance_portfolio
+  category: typo
+  layer: llm
+- utterance: slept for
+  intent: apollo_track_sleep
+  category: clean
+  layer: deterministic
+- utterance: selpt for
+  intent: apollo_track_sleep
+  category: typo
+  layer: llm
+- utterance: set grace period
+  intent: set_habit_grace
+  category: clean
+  layer: deterministic
+- utterance: set garce period
+  intent: set_habit_grace
+  category: typo
+  layer: llm
+- utterance: what connects to
+  intent: graph_connections
+  category: clean
+  layer: deterministic
+- utterance: what connetcs to
+  intent: graph_connections
+  category: typo
+  layer: llm
+- utterance: what did you check
+  intent: audit_routing
+  category: clean
+  layer: deterministic
+- utterance: what did you cehck
+  intent: audit_routing
+  category: typo
+  layer: llm
+- utterance: learn my writing style
+  intent: metis_learn_style
+  category: clean
+  layer: deterministic
+- utterance: learn my writing stlye
+  intent: metis_learn_style
+  category: typo
+  layer: llm
+- utterance: sync my zerodha
+  intent: pluto_sync_broker
+  category: clean
+  layer: deterministic
+- utterance: sync my zreodha
+  intent: pluto_sync_broker
+  category: typo
+  layer: llm
+- utterance: generate a report on
+  intent: athena_generate_report
+  category: clean
+  layer: deterministic
+- utterance: generate a rpeort on
+  intent: athena_generate_report
+  category: typo
+  layer: llm
+- utterance: is the weather ok for my plans
+  intent: weather_plan
+  category: clean
+  layer: deterministic
+- utterance: is the weather ok for my plnas
+  intent: weather_plan
+  category: typo
+  layer: llm
+- utterance: show goal templates
+  intent: list_goal_templates
+  category: clean
+  layer: deterministic
+- utterance: show goal tempaltes
+  intent: list_goal_templates
+  category: typo
+  layer: llm
+- utterance: thank you hestia
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: thank you hestai
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: aap kaise ho
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: aap kasie ho
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: i did my
+  intent: complete_habit
+  category: clean
+  layer: deterministic
+- utterance: what events do i have
+  intent: list_events
+  category: clean
+  layer: deterministic
+- utterance: what evnets do i have
+  intent: list_events
+  category: typo
+  layer: llm
+- utterance: end focus session
+  intent: stop_focus
+  category: clean
+  layer: deterministic
+- utterance: end foucs session
+  intent: stop_focus
+  category: typo
+  layer: llm
+- utterance: you got that wrong
+  intent: report_mistake
+  category: clean
+  layer: deterministic
+- utterance: you got that wrogn
+  intent: report_mistake
+  category: typo
+  layer: llm
+- utterance: surprise me
+  intent: dionysus_surprise_me
+  category: clean
+  layer: deterministic
+- utterance: surprsie me
+  intent: dionysus_surprise_me
+  category: typo
+  layer: llm
+- utterance: clear the outing group
+  intent: dionysus_clear_group_outing
+  category: clean
+  layer: deterministic
+- utterance: claer the outing group
+  intent: dionysus_clear_group_outing
+  category: typo
+  layer: llm
+- utterance: make a pdf report
+  intent: athena_generate_report
+  category: clean
+  layer: deterministic
+- utterance: make a pdf repotr
+  intent: athena_generate_report
+  category: typo
+  layer: llm
+- utterance: that holding is in dollars
+  intent: pluto_set_holding_currency
+  category: clean
+  layer: deterministic
+- utterance: that holding is in dolalrs
+  intent: pluto_set_holding_currency
+  category: typo
+  layer: llm
+- utterance: mark my fact
+  intent: set_fact_importance
+  category: clean
+  layer: deterministic
+- utterance: any new papers
+  intent: watch_papers
+  category: clean
+  layer: deterministic
+- utterance: any new ppaers
+  intent: watch_papers
+  category: typo
+  layer: llm
+- utterance: is the market data throttled
+  intent: pluto_data_source_status
+  category: clean
+  layer: deterministic
+- utterance: is the market data throtteld
+  intent: pluto_data_source_status
+  category: typo
+  layer: llm
+- utterance: show scores for
+  intent: athena_search
+  category: clean
+  layer: deterministic
+- utterance: show socres for
+  intent: athena_search
+  category: typo
+  layer: llm
+- utterance: log my meal
+  intent: apollo_log_meal
+  category: clean
+  layer: deterministic
+- utterance: workout streaks
+  intent: apollo_get_workout_streaks
+  category: clean
+  layer: deterministic
+- utterance: workout straeks
+  intent: apollo_get_workout_streaks
+  category: typo
+  layer: llm
+- utterance: unpause my
+  intent: resume_habit
+  category: clean
+  layer: deterministic
+- utterance: upnause my
+  intent: resume_habit
+  category: typo
+  layer: llm
+- utterance: that was the wrong
+  intent: report_mistake
+  category: clean
+  layer: deterministic
+- utterance: that was the wrnog
+  intent: report_mistake
+  category: typo
+  layer: llm
+- utterance: list my habits
+  intent: list_habits
+  category: clean
+  layer: deterministic
+- utterance: list my hbaits
+  intent: list_habits
+  category: typo
+  layer: llm
+- utterance: test me on
+  intent: start_quiz
+  category: clean
+  layer: deterministic
+- utterance: show my style profile
+  intent: metis_show_style_profile
+  category: clean
+  layer: deterministic
+- utterance: show my sytle profile
+  intent: metis_show_style_profile
+  category: typo
+  layer: llm
+- utterance: hi hestia
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: hi hetsia
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: meal summary
+  intent: apollo_get_meal_summary
+  category: clean
+  layer: deterministic
+- utterance: meal summray
+  intent: apollo_get_meal_summary
+  category: typo
+  layer: llm
+- utterance: delete the reminder
+  intent: cancel_reminder
+  category: clean
+  layer: deterministic
+- utterance: delete the remnider
+  intent: cancel_reminder
+  category: typo
+  layer: llm
+- utterance: burnout signals
+  intent: apollo_burnout_check
+  category: clean
+  layer: deterministic
+- utterance: buronut signals
+  intent: apollo_burnout_check
+  category: typo
+  layer: llm
+- utterance: draw the citation graph
+  intent: athena_citation_graph
+  category: clean
+  layer: deterministic
+- utterance: draw the citation grahp
+  intent: athena_citation_graph
+  category: typo
+  layer: llm
+- utterance: who cites
+  intent: athena_citation_graph
+  category: clean
+  layer: deterministic
+- utterance: who ciets
+  intent: athena_citation_graph
+  category: typo
+  layer: llm
+- utterance: mere notes
+  intent: get_notes
+  category: clean
+  layer: deterministic
+- utterance: mere ntoes
+  intent: get_notes
+  category: typo
+  layer: llm
+- utterance: mark tomorrow as a holiday
+  intent: mark_holiday
+  category: clean
+  layer: deterministic
+- utterance: mark tmoorrow as a holiday
+  intent: mark_holiday
+  category: typo
+  layer: llm
+- utterance: review my old memories
+  intent: review_stale_facts
+  category: clean
+  layer: deterministic
+- utterance: rveiew my old memories
+  intent: review_stale_facts
+  category: typo
+  layer: llm
+- utterance: what does my day look like
+  intent: get_agenda
+  category: clean
+  layer: deterministic
+- utterance: what facts are out of date
+  intent: review_stale_facts
+  category: clean
+  layer: deterministic
+- utterance: what fcats are out of date
+  intent: review_stale_facts
+  category: typo
+  layer: llm
+- utterance: burnout check
+  intent: apollo_burnout_check
+  category: clean
+  layer: deterministic
+- utterance: burnout chekc
+  intent: apollo_burnout_check
+  category: typo
+  layer: llm
+- utterance: forget the outing group
+  intent: dionysus_clear_group_outing
+  category: clean
+  layer: deterministic
+- utterance: forget the outnig group
+  intent: dionysus_clear_group_outing
+  category: typo
+  layer: llm
+- utterance: mujhe yaad dilana
+  intent: set_reminder
+  category: clean
+  layer: deterministic
+- utterance: mujhe yaad dialna
+  intent: set_reminder
+  category: typo
+  layer: llm
+- utterance: feeling pretty
+  intent: apollo_log_mood
+  category: clean
+  layer: deterministic
+- utterance: feeilng pretty
+  intent: apollo_log_mood
+  category: typo
+  layer: llm
+- utterance: what cites
+  intent: athena_citation_graph
+  category: clean
+  layer: deterministic
+- utterance: what cties
+  intent: athena_citation_graph
+  category: typo
+  layer: llm
+- utterance: learn how i write
+  intent: metis_learn_style
+  category: clean
+  layer: deterministic
+- utterance: learn how i wriet
+  intent: metis_learn_style
+  category: typo
+  layer: llm
+- utterance: source 1 wasn t
+  intent: athena_mark_feedback
+  category: clean
+  layer: deterministic
+- utterance: suorce 1 wasn t
+  intent: athena_mark_feedback
+  category: typo
+  layer: llm
+- utterance: list my badges
+  intent: list_badges
+  category: clean
+  layer: deterministic
+- utterance: list my badgse
+  intent: list_badges
+  category: typo
+  layer: llm
+- utterance: show my goals
+  intent: get_goals
+  category: clean
+  layer: deterministic
+- utterance: show my gaols
+  intent: get_goals
+  category: typo
+  layer: llm
+- utterance: log the outcome
+  intent: ares_record_outcome
+  category: clean
+  layer: deterministic
+- utterance: log the outcoem
+  intent: ares_record_outcome
+  category: typo
+  layer: llm
+- utterance: clear my style profile
+  intent: metis_clear_style_profile
+  category: clean
+  layer: deterministic
+- utterance: clear my style profiel
+  intent: metis_clear_style_profile
+  category: typo
+  layer: llm
+- utterance: hold a conference
+  intent: conference
+  category: clean
+  layer: deterministic
+- utterance: hold a confernece
+  intent: conference
+  category: typo
+  layer: llm
+- utterance: which facts are stale
+  intent: review_stale_facts
+  category: clean
+  layer: deterministic
+- utterance: whihc facts are stale
+  intent: review_stale_facts
+  category: typo
+  layer: llm
+- utterance: focus time this week
+  intent: focus_stats
+  category: clean
+  layer: deterministic
+- utterance: fcous time this week
+  intent: focus_stats
+  category: typo
+  layer: llm
+- utterance: add an expense
+  intent: pluto_log_expense
+  category: clean
+  layer: deterministic
+- utterance: add an exepnse
+  intent: pluto_log_expense
+  category: typo
+  layer: llm
+- utterance: good morning
+  intent: chat
+  category: clean
+  layer: deterministic
+- utterance: good morinng
+  intent: chat
+  category: typo
+  layer: llm
+- utterance: keep my stale
+  intent: review_stale_facts
+  category: clean
+  layer: deterministic
+- utterance: keep my stael
+  intent: review_stale_facts
+  category: typo
+  layer: llm
+- utterance: scrape wikipedia for Alan Turing
+  intent: hephaestus_scrape_page
+  category: conversational
+  layer: llm
+  entities:
+    query: Alan Turing wikipedia
+- utterance: will the rain ruin my plans today
+  intent: weather_plan
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: am I going to miss any goal deadlines
+  intent: get_at_risk_goals
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: explain my Infosys holding
+  intent: pluto_explain_holding
+  category: conversational
+  layer: llm
+  entities:
+    name: Infosys
+- utterance: schedule a meeting with Sarah at 3pm tomorrow
+  intent: create_event
+  category: conversational
+  layer: llm
+  entities:
+    title: meeting with Sarah
+    time: 3pm
+    date: tomorrow
+- utterance: help me plan an outing this weekend
+  intent: dionysus_plan_outing
+  category: conversational
+  layer: llm
+  entities:
+    time: weekend
+- utterance: that was wrong, I meant my sleep log not my workout log
+  intent: report_mistake
+  category: conversational
+  layer: llm
+  entities:
+    note: meant my sleep log not my workout log
+- utterance: I already watched The Matrix
+  intent: dionysus_mark_seen
+  category: conversational
+  layer: llm
+  entities:
+    title: The Matrix
+- utterance: give me a creative writing prompt
+  intent: orpheus_creative_prompt
+  category: conversational
+  layer: llm
+  entities:
+    medium: writing
+- utterance: do I feel better on workout days
+  intent: apollo_get_correlations
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what's new since I last checked my documents
+  intent: athena_check_updates
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: forget my writing style
+  intent: metis_clear_style_profile
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: my AAPL holding is in dollars
+  intent: pluto_set_holding_currency
+  category: conversational
+  layer: llm
+  entities:
+    name: AAPL
+    currency: USD
+- utterance: 'learn my writing style from this: I never really trusted mornings. They always arrive too loud, too
+    bright, and far too sure of themselves.'
+  intent: metis_learn_style
+  category: conversational
+  layer: llm
+  entities:
+    text: I never really trusted mornings. They always arrive too loud, too bright, and far too sure of themselves.
+- utterance: is it going to rain during my run tomorrow
+  intent: weather_plan
+  category: conversational
+  layer: llm
+  entities:
+    date: tomorrow
+    activity: run
+- utterance: ye note kar lo ki milk khatam ho gaya hai
+  intent: take_note
+  category: conversational
+  layer: llm
+  entities:
+    content: milk khatam ho gaya hai
+- utterance: polish this paragraph
+  intent: metis_polish_text
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: how much can I spend today
+  intent: pluto_safe_to_spend
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: why did you route that to pluto
+  intent: explain_routing
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what pages am I watching
+  intent: hephaestus_list_watches
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: nutrition info for Nutella
+  intent: apollo_lookup_food
+  category: conversational
+  layer: llm
+  entities:
+    food: Nutella
+- utterance: mera 7 hours ka neend track karo
+  intent: apollo_track_sleep
+  category: conversational
+  layer: llm
+  entities:
+    hours: '7'
+- utterance: give me 3 art prompts about the ocean
+  intent: orpheus_creative_prompt
+  category: conversational
+  layer: llm
+  entities:
+    medium: art
+    theme: the ocean
+    count: 3
+- utterance: search SEC for a company named Tesla
+  intent: pluto_company_lookup
+  category: conversational
+  layer: llm
+  entities:
+    company: Tesla
+- utterance: show scores for heat transfer coefficients
+  intent: athena_search
+  category: conversational
+  layer: llm
+  entities:
+    query: heat transfer coefficients
+    debug: 'true'
+- utterance: find emails from Raj about the invoice
+  intent: search_email
+  category: conversational
+  layer: llm
+  entities:
+    sender: Raj
+    subject: invoice
+- utterance: summarize the code in C:\projects\hestia
+  intent: hephaestus_summarize_repo
+  category: conversational
+  layer: llm
+  entities:
+    path: C:\projects\hestia
+- utterance: is 2026-01-26 a holiday in India
+  intent: get_holiday
+  category: conversational
+  layer: llm
+  entities:
+    date: '2026-01-26'
+    country: IN
+- utterance: suggest some exercises for chest
+  intent: apollo_suggest_exercise
+  category: conversational
+  layer: llm
+  entities:
+    muscle_group: chest
+- utterance: what connects to entropy
+  intent: graph_connections
+  category: conversational
+  layer: llm
+  entities:
+    entity: entropy
+- utterance: my passport number is critical, never let it fall out of memory
+  intent: set_fact_importance
+  category: conversational
+  layer: llm
+  entities:
+    key: passport number
+    importance: critical
+- utterance: clear my notes
+  intent: delete_notes
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: go back to version 1 of creation 12
+  intent: orpheus_restore_version
+  category: conversational
+  layer: llm
+  entities:
+    creation_id: 12
+    version: 1
+- utterance: rewrite this to sound more confident
+  intent: metis_rewrite_text
+  category: conversational
+  layer: llm
+  entities:
+    goal: confidence
+- utterance: analyse my competitors for my coffee shop
+  intent: ares_competitive_analysis
+  category: conversational
+  layer: llm
+  entities:
+    topic: coffee shop
+- utterance: review the code in C:\projects\hestia
+  intent: hephaestus_summarize_repo
+  category: conversational
+  layer: llm
+  entities:
+    path: C:\projects\hestia
+    review: true
+- utterance: archive the low priority emails in my inbox
+  intent: inbox_zero
+  category: conversational
+  layer: llm
+  entities:
+    apply: true
+- utterance: what subscriptions am I paying for
+  intent: pluto_recurring_expenses
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: write me a poem about the ocean
+  intent: orpheus_write_poem
+  category: conversational
+  layer: llm
+  entities:
+    topic: ocean
+- utterance: try different moving average windows on Reliance
+  intent: pluto_backtest_sweep
+  category: conversational
+  layer: llm
+  entities:
+    ticker: RELIANCE
+- utterance: track a new habit called drink water
+  intent: add_habit
+  category: conversational
+  layer: llm
+  entities:
+    name: drink water
+- utterance: use ounces for water
+  intent: apollo_set_units
+  category: conversational
+  layer: llm
+  entities:
+    water_unit: oz
+- utterance: what goal templates do you have
+  intent: list_goal_templates
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: track my investment in index funds
+  intent: pluto_track_investment
+  category: conversational
+  layer: llm
+  entities:
+    type: index funds
+- utterance: am I hitting my workout target
+  intent: apollo_get_goal_progress
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what's the status of image indexing
+  intent: iris_status
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: delete the meditate habit
+  intent: remove_habit
+  category: conversational
+  layer: llm
+  entities:
+    name: meditate
+- utterance: give me style suggestions for this paragraph
+  intent: metis_suggest_style
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what's on my desk right now
+  intent: iris_detect_objects
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: export that writing session as a text file
+  intent: metis_export_session
+  category: conversational
+  layer: llm
+  entities:
+    format: txt
+- utterance: export my memory as markdown
+  intent: export_memory
+  category: conversational
+  layer: llm
+  entities:
+    format: markdown
+- utterance: add goal publish research paper
+  intent: add_goal
+  category: conversational
+  layer: llm
+  entities:
+    name: publish research paper
+- utterance: search my documents for CFD reports
+  intent: athena_search
+  category: conversational
+  layer: llm
+  entities:
+    query: CFD reports
+- utterance: suggest a meal for dinner
+  intent: dionysus_recommend_recipe
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what are my workout streaks
+  intent: apollo_get_workout_streaks
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: give me 5 fantasy character names
+  intent: orpheus_generate_names
+  category: conversational
+  layer: llm
+  entities:
+    category: character
+    theme: fantasy
+    count: 5
+- utterance: start a 25 minute focus session on my thesis
+  intent: start_focus
+  category: conversational
+  layer: llm
+  entities:
+    minutes: '25'
+    task: my thesis
+- utterance: what's the status of flight AI101
+  intent: hephaestus_check_flight
+  category: conversational
+  layer: llm
+  entities:
+    flight: AI101
+- utterance: I finished step 2 of publish the paper
+  intent: complete_milestone
+  category: conversational
+  layer: llm
+  entities:
+    name: publish the paper
+    step: '2'
+- utterance: explain quantum computing
+  intent: chat
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: open chrome
+  intent: hephaestus_open_app
+  category: conversational
+  layer: llm
+  entities:
+    app: chrome
+- utterance: surprise me with some music I wouldn't normally listen to
+  intent: dionysus_surprise_me
+  category: conversational
+  layer: llm
+  entities:
+    type: music
+- utterance: I loved Interstellar, give me more like it
+  intent: dionysus_more_like_this
+  category: conversational
+  layer: llm
+  entities:
+    title: Interstellar
+    type: movie
+- utterance: what if I cancel my netflix subscription
+  intent: what_if
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: stop tracking my running habit
+  intent: remove_habit
+  category: conversational
+  layer: llm
+  entities:
+    name: running
+- utterance: start a writing session for a short story about a lighthouse keeper
+  intent: metis_writing_session
+  category: conversational
+  layer: llm
+  entities:
+    kind: story
+    topic: a lighthouse keeper
+- utterance: sync my zerodha holdings
+  intent: pluto_sync_broker
+  category: conversational
+  layer: llm
+  entities:
+    broker: zerodha
+- utterance: set a weight goal of 68 kg by 2026-12-31
+  intent: apollo_set_health_goal
+  category: conversational
+  layer: llm
+  entities:
+    goal_type: weight
+    target: 68
+    deadline: '2026-12-31'
+- utterance: delete the job offer playbook
+  intent: ares_delete_playbook
+  category: conversational
+  layer: llm
+  entities:
+    name: job offer
+- utterance: how many documents have I indexed
+  intent: athena_status
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: I drank 500ml of water
+  intent: apollo_log_water
+  category: conversational
+  layer: llm
+  entities:
+    amount: 500
+- utterance: what public holidays are there in the US this year
+  intent: get_holiday
+  category: conversational
+  layer: llm
+  entities:
+    country: US
+- utterance: surprise me with a movie
+  intent: dionysus_surprise_me
+  category: conversational
+  layer: llm
+  entities:
+    type: movie
+- utterance: show my upcoming reminders
+  intent: list_reminders
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: add these photos
+  intent: iris_ingest
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: that was wrong
+  intent: report_mistake
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: 'fix the grammar in this: "he dont know nothing about it"'
+  intent: metis_correct_text
+  category: conversational
+  layer: llm
+  entities:
+    text: he dont know nothing about it
+- utterance: log this receipt /home/me/receipts/dinner.jpg
+  intent: pluto_log_receipt
+  category: conversational
+  layer: llm
+  entities:
+    image_path: /home/me/receipts/dinner.jpg
+- utterance: give me the full strategic picture on the startup
+  intent: ares_war_room_briefing
+  category: conversational
+  layer: llm
+  entities:
+    topic: startup
+- utterance: watch https://shop.example.com/phone and tell me if the price drops
+  intent: hephaestus_watch_page
+  category: conversational
+  layer: llm
+  entities:
+    url: https://shop.example.com/phone
+    track_price: true
+- utterance: check my mail
+  intent: read_email
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: simplify this sentence, it's too wordy
+  intent: metis_improve_clarity
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: add a task to todoist to call the bank, priority 1
+  intent: todoist_add_task
+  category: conversational
+  layer: llm
+  entities:
+    task: call the bank
+    priority: p1
+- utterance: ingest my documents folder
+  intent: athena_ingest
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what could go so wrong with this startup that it dies
+  intent: ares_premortem_analysis
+  category: conversational
+  layer: llm
+  entities:
+    topic: startup
+- utterance: 'rank these career paths for me: data science, embedded systems, academia, weighing salary and learning'
+  intent: ares_career_ranking
+  category: conversational
+  layer: llm
+  entities:
+    topic: career path
+    options: data science, embedded systems, academia
+    criteria: salary, learning
+- utterance: compare paper1.pdf and paper2.pdf on their methodology
+  intent: athena_compare_documents
+  category: conversational
+  layer: llm
+  entities:
+    file_names:
+    - paper1.pdf
+    - paper2.pdf
+    query: their methodology
+- utterance: what does my day look like tomorrow
+  intent: get_agenda
+  category: conversational
+  layer: llm
+  entities:
+    date: tomorrow
+- utterance: I'm on leave from monday to wednesday
+  intent: mark_holiday
+  category: conversational
+  layer: llm
+  entities:
+    label: leave
+- utterance: unmark tomorrow as a holiday
+  intent: unmark_holiday
+  category: conversational
+  layer: llm
+  entities:
+    date: tomorrow
+- utterance: how are you
+  intent: chat
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: check the circuit in photo 14 for mistakes
+  intent: iris_check_circuit
+  category: conversational
+  layer: llm
+  entities:
+    file_id: 14
+- utterance: add goal launch website due August 20th, high priority
+  intent: add_goal
+  category: conversational
+  layer: llm
+  entities:
+    name: launch website
+    due_date: '2026-08-20'
+    priority: high
+- utterance: is the market data being rate limited
+  intent: pluto_data_source_status
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: check back on the thesis plan next month
+  intent: ares_schedule_review
+  category: conversational
+  layer: llm
+  entities:
+    topic: thesis plan
+    when: next month
+- utterance: pause my running habit for two weeks
+  intent: pause_habit
+  category: conversational
+  layer: llm
+  entities:
+    name: running
+    days: '14'
+- utterance: launch spotify
+  intent: hephaestus_open_app
+  category: conversational
+  layer: llm
+  entities:
+    app: spotify
+- utterance: scan my photos for faces
+  intent: iris_scan_faces
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what's my sleep score
+  intent: apollo_get_sleep_quality
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: find research papers on turbulence modeling
+  intent: athena_search
+  category: conversational
+  layer: llm
+  entities:
+    query: turbulence modeling
+- utterance: 'take a note: buy milk'
+  intent: take_note
+  category: conversational
+  layer: llm
+  entities:
+    content: buy milk
+- utterance: update goal publish research paper to 50 percent
+  intent: update_goal
+  category: conversational
+  layer: llm
+  entities:
+    name: publish research paper
+    progress: 50
+- utterance: 'log my mood: feeling good today'
+  intent: apollo_log_mood
+  category: conversational
+  layer: llm
+  entities:
+    mood: feeling good today
+- utterance: what reminders do I have
+  intent: list_reminders
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what did we talk about yesterday
+  intent: get_history
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: how am I doing on my health goals
+  intent: apollo_get_goal_progress
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: I'm back, resume meditation
+  intent: resume_habit
+  category: conversational
+  layer: llm
+  entities:
+    name: meditation
+- utterance: am I drinking enough water
+  intent: apollo_hydration_status
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: my name is Akhil
+  intent: save_name
+  category: conversational
+  layer: llm
+  entities:
+    name: Akhil
+- utterance: can you check my spelling on this paragraph
+  intent: metis_correct_text
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: save the form at apply.example.org/gate as gate application
+  intent: hephaestus_fill_form
+  category: conversational
+  layer: llm
+  entities:
+    action: save
+    form: gate application
+    url: apply.example.org/gate
+- utterance: export my last poem as markdown
+  intent: orpheus_export_creation
+  category: conversational
+  layer: llm
+  entities:
+    type: poem
+    format: md
+- utterance: search the web for best pizza in mumbai
+  intent: hephaestus_search_web
+  category: conversational
+  layer: llm
+  entities:
+    query: best pizza in mumbai
+- utterance: what's on my plate today
+  intent: get_agenda
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what tone does this email come across as
+  intent: metis_detect_tone
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: how much writing have I had you help with
+  intent: metis_writing_stats
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: more like that
+  intent: dionysus_more_like_this
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what is fft
+  intent: chat
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: schedule a meeting with sarah at 11pm on 25/11/2026
+  intent: create_event
+  category: conversational
+  layer: llm
+  entities:
+    title: meeting with sarah
+    time: '23:00'
+    date: 25/11/2026
+- utterance: expand this to about 300 words at an 8th grade reading level
+  intent: metis_expand_text
+  category: conversational
+  layer: llm
+  entities:
+    target_words: 300
+    target_grade: 8
+- utterance: which of my goals are at risk of missing their deadline
+  intent: get_at_risk_goals
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: keep all the stale facts
+  intent: review_stale_facts
+  category: conversational
+  layer: llm
+  entities:
+    action: keep
+- utterance: what's due for review today
+  intent: review_study
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: run my job offer playbook on the Bangalore offer
+  intent: ares_run_playbook
+  category: conversational
+  layer: llm
+  entities:
+    name: job offer
+    topic: the Bangalore offer
+- utterance: revise my last poem to make the ending more hopeful
+  intent: orpheus_revise_creation
+  category: conversational
+  layer: llm
+  entities:
+    type: poem
+    instruction: make the ending more hopeful
+- utterance: how is Priya connected to IIT Bombay
+  intent: graph_connections
+  category: conversational
+  layer: llm
+  entities:
+    entity: Priya
+    to: IIT Bombay
+- utterance: organize my photos into albums
+  intent: iris_organize_albums
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: is this plagiarized
+  intent: metis_check_plagiarism
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: are all your modules working
+  intent: modules_status
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what is todays date
+  intent: get_date
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what changed between these two photos
+  intent: iris_compare_photos
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: Person 3 is Mom
+  intent: iris_name_person
+  category: conversational
+  layer: llm
+  entities:
+    person: Person 3
+    name: Mom
+- utterance: I'm bored, suggest something to do
+  intent: suggest_activity
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: give me my budget summary
+  intent: pluto_get_budget_summary
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: remind me to study every evening but not on holidays
+  intent: set_reminder
+  category: conversational
+  layer: llm
+  entities:
+    task: study
+- utterance: set a daily water goal of 2000ml
+  intent: apollo_set_health_goal
+  category: conversational
+  layer: llm
+  entities:
+    goal_type: water_ml
+    target: 2000
+- utterance: snooze the dentist reminder for an hour
+  intent: snooze_reminder
+  category: conversational
+  layer: llm
+  entities:
+    task: dentist
+    duration: 1 hour
+- utterance: schedule a weekend recharge, every Saturday at 5pm for 2 hours
+  intent: dionysus_schedule_recharge
+  category: conversational
+  layer: llm
+  entities:
+    schedule: every Saturday at 5pm
+    duration: 2 hours
+- utterance: switch me to pounds
+  intent: apollo_set_units
+  category: conversational
+  layer: llm
+  entities:
+    weight_unit: lb
+- utterance: log my weight as 154 lbs
+  intent: apollo_log_weight
+  category: conversational
+  layer: llm
+  entities:
+    weight: 154
+    unit: lb
+- utterance: show me my spending report
+  intent: pluto_spending_report
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: rebalance using 20000 of new money
+  intent: pluto_rebalance_portfolio
+  category: conversational
+  layer: llm
+  entities:
+    contribution: '20000'
+- utterance: I slept 7.5 hours, pretty good quality
+  intent: apollo_track_sleep
+  category: conversational
+  layer: llm
+  entities:
+    hours: 7.5
+    quality: good
+- utterance: import my steps
+  intent: apollo_import_steps
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: what's the exchange rate from EUR to GBP
+  intent: pluto_convert_currency
+  category: conversational
+  layer: llm
+  entities:
+    amount: 1
+    from_currency: EUR
+    to_currency: GBP
+- utterance: did I miss any reminders
+  intent: list_reminders
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: look up SEC filings for Apple
+  intent: pluto_company_lookup
+  category: conversational
+  layer: llm
+  entities:
+    company: Apple
+- utterance: set a goal of 4 workouts a week
+  intent: apollo_set_health_goal
+  category: conversational
+  layer: llm
+  entities:
+    goal_type: workout_frequency
+    target: 4
+- utterance: convert 100 USD to INR
+  intent: pluto_convert_currency
+  category: conversational
+  layer: llm
+  entities:
+    amount: 100
+    from_currency: USD
+    to_currency: INR
+- utterance: remind me to water the plants every sunday
+  intent: set_reminder
+  category: conversational
+  layer: llm
+  entities:
+    task: water the plants
+- utterance: 'learn this fact: my sister''s name is Priya'
+  intent: learn_fact
+  category: conversational
+  layer: llm
+  entities:
+    key: sister_name
+    value: Priya
+- utterance: give me my agenda for friday
+  intent: get_agenda
+  category: conversational
+  layer: llm
+  entities:
+    date: friday
+- utterance: brainstorm ideas for my project
+  intent: orpheus_brainstorm
+  category: conversational
+  layer: llm
+  entities:
+    topic: my project
+- utterance: add habit meditate
+  intent: add_habit
+  category: conversational
+  layer: llm
+  entities:
+    name: meditate
+- utterance: forget that I'm allergic to peanuts
+  intent: forget_fact
+  category: conversational
+  layer: llm
+  entities:
+    key: allergy
+- utterance: export my 2024-25 tax data
+  intent: pluto_export_tax
+  category: conversational
+  layer: llm
+  entities:
+    year: 2024-25
+- utterance: give me a bibliography for that
+  intent: athena_get_citations
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: find photos similar to photo 12
+  intent: iris_find_similar
+  category: conversational
+  layer: llm
+  entities:
+    file_id: 12
+- utterance: show my notes
+  intent: get_notes
+  category: conversational
+  layer: llm
+  entities:
+    limit: 5
+- utterance: what did I tell you on 12 March
+  intent: recall_on_date
+  category: conversational
+  layer: llm
+  entities:
+    date: 12 March
+- utterance: check my watched pages now
+  intent: hephaestus_check_watches
+  category: conversational
+  layer: llm
+  entities: {}
+- utterance: my left knee hurts, 4 out of 10
+  intent: apollo_log_pain
+  category: conversational
+  layer: llm
+  entities:
+    area: left knee
+    severity: 4
+- utterance: cancel the gym reminder
+  intent: cancel_reminder
+  category: conversational
+  layer: llm
+  entities:
+    task: gym
+- utterance: give me a full briefing on the CFD project
+  intent: ares_war_room_briefing
+  category: conversational
+  layer: llm
+  entities:
+    topic: CFD project
+- utterance: I want to reach 68 kg
+  intent: apollo_set_health_goal
+  category: conversational
+  layer: llm
+  entities:
+    goal_type: weight_target
+    target: 68
+- utterance: log an expense of 500 rupees for groceries
+  intent: pluto_log_expense
+  category: conversational
+  layer: llm
+  entities:
+    amount: 500
+    category: groceries
+- utterance: 'Take a note: buy new headphones'
+  intent: take_note
+  category: clean
+  layer: deterministic
+  entities:
+    content: buy new headphones
+- utterance: 'Log an expense: Rs500 for groceries'
+  intent: pluto_log_expense
+  category: clean
+  layer: deterministic
+  entities:
+    amount: '500'
+- utterance: 'add a habit: drink water'
+  intent: add_habit
+  category: clean
+  layer: deterministic
+  entities:
+    name: drink water
+- utterance: make it 6 instead
+  intent: update_last_event
+  category: clean
+  layer: deterministic
+  entities: {}
+- utterance: I'm tired
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+- utterance: I am hungry
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+- utterance: I'm fine thanks
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+- utterance: i am going home now
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+- utterance: I'm Priya's brother
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+- utterance: I am so done with this
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+- utterance: What notes do I have?
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - take_note
+- utterance: what did I note down yesterday
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - take_note
+- utterance: Which notes did I save
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - take_note
+- utterance: do I have any notes
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - take_note
+- utterance: What's my name?
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+  - learn_fact
+  - remove_habit
+- utterance: who am i
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - save_name
+  - learn_fact
+- utterance: what do you know about me
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - learn_fact
+  - take_note
+- utterance: what habits do I have
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - add_habit
+  - remove_habit
+- utterance: how much did I spend on groceries
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - pluto_log_expense
+- utterance: what reminders do I have
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - set_reminder
+- utterance: What's my sister's name?
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - learn_fact
+- utterance: what is my favourite colour
+  intent: null
+  category: adversarial
+  layer: deterministic
+  must_not_write:
+  - learn_fact

@@ -30,7 +30,7 @@ the input language or script:
 
 Valid intents:
 get_time, get_date, get_weather, set_reminder, get_holiday,
-list_reminders, cancel_reminder, snooze_reminder, get_agenda,
+list_reminders, cancel_reminder, update_last_event, snooze_reminder, get_agenda,
 mark_holiday, unmark_holiday, save_place, export_calendar,
 import_calendar, weather_plan,
 apollo_lookup_food, apollo_suggest_exercise,

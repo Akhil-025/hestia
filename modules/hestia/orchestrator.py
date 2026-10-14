@@ -24,7 +24,11 @@ from typing import Any, Optional
 from modules.base import BaseModule
 from modules.hecate.engine import HecateEngine
 from modules.hecate.intent_registry import strip_module_prefix as _strip_module_prefix
+from modules.hecate.intent_registry import (
+    DESTRUCTIVE, ORCHESTRATOR_CONFIRMED, risk_for,
+)
 from core.circuit_breaker import CircuitBreakerOpen, CircuitBreakerRegistry
+from core.entity_coerce import coerce_entities
 
 logger = logging.getLogger(__name__)
 
@@ -489,7 +493,7 @@ class HestiaOrchestrator:
             logger.exception("call_module: %r refused %r.", name, intent)
             return None
         try:
-            raw = mod.handle(intent, dict(entities or {}), dict(context or {}))
+            raw = mod.handle(intent, coerce_entities(entities), dict(context or {}))
         except Exception:
             logger.exception("call_module: %r raised for %r.", name, intent)
             self._breakers.record_failure(name)
@@ -552,6 +556,18 @@ class HestiaOrchestrator:
 
         decision = self._route(raw_query, nlu_result)
         primary_name: str = decision.get("primary") or "core"
+
+        if nlu_result.get("clarify"):
+            return str(nlu_result["clarify"])
+
+        # Nothing claimed an ambiguous "search X": ask where to look rather
+        # than answering with a generic chat reply (Hardening Plan 6.5).
+        if primary_name == "core":
+            from core.clarify import clarification_for
+            ask = clarification_for(raw_query, raw_intent,
+                                    float(nlu_result.get("confidence") or 0.0))
+            if ask:
+                return ask
 
         # Hecate's text-trigger tiers (e.g. "mnemosyne trigger") match on the
         # raw query, not on nlu_result["intent"] — which is frequently just
@@ -860,7 +876,7 @@ class HestiaOrchestrator:
         try:
             with self._lock:
                 context = self._ctx.as_dict()
-            raw_result = module.handle(pending.intent, filled_entities, context)
+            raw_result = module.handle(pending.intent, coerce_entities(filled_entities), context)
         except Exception:
             logger.exception(
                 "Slot-filled re-dispatch to %s.%s raised.",
@@ -899,6 +915,10 @@ class HestiaOrchestrator:
             return result.response
 
         return result.response
+
+    def is_pending_reply(self, text: str) -> bool:
+        """True if a confirmation is pending and *text* is a clear yes/no."""
+        return self._pending is not None and _classify_yes_no(text) is not None
 
     def _resolve_pending(self, raw_query: str) -> Optional[str]:
         """
@@ -1167,8 +1187,32 @@ class HestiaOrchestrator:
                 confidence=0.3,
             )
 
+        # Risk-class gate (Hardening Plan, Phase 3.2): destructive intents
+        # whose module has no confirmation flow of its own are held until the
+        # user says yes; the confirmed re-dispatch carries _confirmed=True.
+        if (intent in ORCHESTRATOR_CONFIRMED
+                and risk_for(intent) == DESTRUCTIVE
+                and not (entities or {}).get("_confirmed")):
+            label = intent.replace("_", " ")
+            subject = next((str(entities[k]).strip() for k in
+                            ("name", "habit", "goal", "title", "content", "topic")
+                            if (entities or {}).get(k)), "")
+            if subject:
+                label = f"{label}: {subject}"
+            elif raw_query:
+                label = f"{label} (you said: \"{raw_query.strip()}\")"
+            return DispatchResult(
+                response=f"This will {label}. Say yes to confirm, or no to cancel.",
+                confidence=0.9,
+                needs_confirmation=True,
+                confirm_intent=intent,
+                confirm_entities=dict(entities or {}),
+                confirm_label=label,
+            )
+
         t_call = time.perf_counter()
         try:
+            entities = coerce_entities(entities)
             raw_result = mod.handle(intent, entities, context)
         except NotImplementedError:
             logger.error(
@@ -1190,7 +1234,11 @@ class HestiaOrchestrator:
             )
             self._breakers.record_failure(primary_name)
             self._publish_handled(primary_name, intent, False, (time.perf_counter() - t_call) * 1000)
-            return _GENERIC_ERROR
+            return (
+                f"Sorry, the {primary_name} module hit an error while handling "
+                f"'{intent}'. The details are in the log \u2014 you could try "
+                f"rephrasing the request."
+            )
 
         self._breakers.record_success(primary_name)
         self._publish_handled(primary_name, intent, True, (time.perf_counter() - t_call) * 1000)

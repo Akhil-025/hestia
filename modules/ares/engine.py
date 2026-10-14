@@ -438,10 +438,22 @@ class AresEngine(BaseModule):
             safe_key = f"ares_{key[:40].replace(' ', '_').lower()}"
             self._memory.learn(safe_key, value)
 
+    @staticmethod
+    def _as_text(value) -> str:
+        """Coerce an entity value to a plain string (the NLU can emit a list,
+        e.g. topic=['gaps']; downstream code calls .lower() on it)."""
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple, set)):
+            return ", ".join(str(v).strip() for v in value if str(v).strip())
+        if isinstance(value, dict):
+            return ", ".join(str(v).strip() for v in value.values() if str(v).strip())
+        return str(value).strip()
+
     def _topic(self, entities: dict) -> str:
         return (
-            entities.get("topic")
-            or entities.get("raw_query")
+            self._as_text(entities.get("topic"))
+            or self._as_text(entities.get("raw_query"))
             or "your topic"
         )
 

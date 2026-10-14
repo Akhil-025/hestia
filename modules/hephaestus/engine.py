@@ -408,11 +408,21 @@ class HephaestusEngine(BaseModule):
     def _search_web(self, entities: dict) -> dict:
         """Run a web search and return a summarised result."""
         query = _extract(entities, "query", "topic", "raw_query")
+        # An alias/classifier hit carries only raw_query ("search the web for
+        # latest iPhone price"); search for the subject, not the command.
+        query = re.sub(
+            r"^\s*(?:please\s+)?(?:search|google|look up|find)\s+(?:the\s+)?"
+            r"(?:web|internet|online)?\s*(?:for|about)?\s+", "", query or "",
+            flags=re.I).strip() or (query or "")
         if not query:
             return _clarify("What would you like me to search for?")
 
         try:
             result: str = self._browser.search_web(query)
+            if result.startswith("No results found"):
+                result += (" The search page came back empty, which usually means "
+                           "the search engine blocked the automated browser or the "
+                           "connection failed — it isn't that nothing exists.")
         except Exception:
             logger.exception("search_web() raised for query=%r.", query[:80])
             return _err("I couldn't complete that web search.")

@@ -262,11 +262,25 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
         return _ok(response or "I don't have anything on that.", confidence=0.85)
 
     def _handle_learn_fact(self, entities: dict) -> dict:
-        key: str = (entities.get("key") or "").strip()
-        value: str = (entities.get("value") or "").strip()
+        key: str = str(entities.get("key") or "").strip()
+        value: str = str(entities.get("value") or "").strip()
 
         if not key or not value:
-            return _ok("What should I remember?", confidence=0.0)
+            # Salvage "my sister's name is Priya" from the raw text instead
+            # of discarding a fact the user clearly stated.
+            from modules.mnemosyne.keys import salvage_fact
+            salvaged = salvage_fact(str(entities.get("raw_query") or ""))
+            if salvaged:
+                key, value = salvaged
+            else:
+                return _ok("What should I remember?", confidence=0.0)
+
+        from modules.mnemosyne.keys import canonical_key, is_junk
+        key = canonical_key(key)
+        if is_junk(key, value):
+            return _ok("I couldn't tell what to remember from that. Could you "
+                       "rephrase it, e.g. \"my sister's name is Priya\"?",
+                       confidence=0.3)
 
         # Contradiction check (backlog #37) runs BEFORE writing, against
         # the fact table as it stood before this call — checking after
@@ -296,7 +310,10 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
                 data={"deduplicated": True, "matched_key": result["matched_key"]},
             )
 
-        response = f"Got it — I'll remember your {_readable(key)}."
+        if key.startswith("user_is_"):
+            response = f"Got it — I'll remember that you're {_readable(key[8:])}."
+        else:
+            response = f"Got it — I'll remember your {_readable(key)}."
         if hedged or (confidence is not None and confidence < _LOW_CONFIDENCE):
             response += " I'll note that you weren't sure."
         if conflict:
@@ -952,6 +969,11 @@ class MnemosyneEngine(MnemosyneExtensionsMixin, BaseModule):
             other_key = fact.get("key", "")
             if other_key == key:
                 continue  # same key = an update, not a contradiction
+            # "sister_name" vs "user_name" are different people, not a
+            # contradiction, even though the key strings look alike.
+            if (key.endswith("_name") and other_key.endswith("_name")
+                    and key != other_key):
+                continue
             ratio = difflib.SequenceMatcher(
                 None, norm_key, _normalise_key(other_key)
             ).ratio()

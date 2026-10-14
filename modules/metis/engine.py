@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -980,8 +981,16 @@ class MetisEngine(BaseModule):
 
     def _summarize_text(self, entities: dict) -> dict:
         text = _extract(entities, "text", "content", "raw_query")
+        if not _extract(entities, "text", "content"):
+            # Only the raw command was supplied ("summarize my recent work and
+            # highlight gaps"). Summarising that sentence made the model invent
+            # a summary; ask for real text instead.
+            cmd = re.sub(r"(?i)^\s*(?:please\s+)?(?:summari[sz]e|tl;?dr|sum up|give me a summary of)\b[:\s]*",
+                         "", text or "")
+            if len(cmd.split()) < 25:
+                text = ""
         length = _normalise(entities.get("length", ""), _VALID_LENGTHS, "short")
-        missing = _collect_missing(("text", text, "What text should I summarise?"))
+        missing = _collect_missing(("text", text, "What text should I summarise? Paste it here."))
         if missing:
             return _clarify(missing)
         target, target_problem = parse_length_target(entities)

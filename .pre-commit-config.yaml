@@ -18,3 +18,10 @@ repos:
         language: system
         pass_filenames: true
         types_or: [python, json, yaml, markdown, text]
+      - id: nlu-golden-eval
+        name: NLU golden eval (deterministic layer)
+        entry: python scripts/eval_golden.py --min-accuracy 0.97 --max-false-write 0
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        files: ^(config/(intent_aliases|nlu_examples)\.yaml|core/(nlu|slot_extract|route_guards|intent_aliases)\.py)$

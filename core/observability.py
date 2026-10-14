@@ -762,3 +762,62 @@ class Timer:
 
     def __exit__(self, *exc: Any) -> None:
         self.ms = (time.perf_counter() - self._start) * 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Per-stage latency (Hardening Plan, Phase 6.1)
+# ---------------------------------------------------------------------------
+# Stages: fast (regex fast-paths), slots, alias, cache, classifier, nlu (LLM),
+# module, response. Budgets are TARGETS to compare against, not hard limits.
+STAGE_BUDGETS_MS: dict[str, float] = {
+    "fast": 200.0, "slots": 200.0, "alias": 200.0, "cache": 200.0,
+    "classifier": 200.0, "classifier_stage1": 200.0, "nlu": 2000.0,
+}
+
+
+class StageTimings:
+    """Thread-safe rolling per-stage latency samples with p50/p95 summaries."""
+
+    def __init__(self, max_samples: int = 500) -> None:
+        import collections
+        import threading
+        self._lock = threading.Lock()
+        self._max = max_samples
+        self._samples: dict[str, Any] = collections.defaultdict(
+            lambda: collections.deque(maxlen=self._max))
+
+    def record(self, stage: str, ms: float) -> None:
+        with self._lock:
+            self._samples[stage].append(float(ms))
+
+    @staticmethod
+    def _pct(sorted_vals: list[float], p: float) -> float:
+        if not sorted_vals:
+            return 0.0
+        i = min(len(sorted_vals) - 1, max(0, int(round(p * (len(sorted_vals) - 1)))))
+        return sorted_vals[i]
+
+    def summary(self) -> dict[str, dict[str, float]]:
+        with self._lock:
+            snap = {k: sorted(v) for k, v in self._samples.items()}
+        out = {}
+        for stage, vals in snap.items():
+            p95 = self._pct(vals, 0.95)
+            budget = STAGE_BUDGETS_MS.get(stage)
+            out[stage] = {"n": len(vals), "p50": round(self._pct(vals, 0.5), 1),
+                          "p95": round(p95, 1), "budget_ms": budget,
+                          "over_budget": bool(budget and p95 > budget)}
+        return out
+
+    def format(self) -> str:
+        rows = [f"{s:<18} n={d['n']:<5} p50={d['p50']:>8}ms p95={d['p95']:>8}ms"
+                + ("  OVER BUDGET" if d["over_budget"] else "")
+                for s, d in sorted(self.summary().items())]
+        return "\n".join(rows) or "(no samples yet)"
+
+    def reset(self) -> None:
+        with self._lock:
+            self._samples.clear()
+
+
+STAGE_TIMINGS = StageTimings()

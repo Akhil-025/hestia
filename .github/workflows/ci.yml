@@ -16,3 +16,19 @@ jobs:
           python-version: "3.11"
       - name: Scan for secrets (high confidence fails the build)
         run: python audit_secrets.py --fail-on high --no-report
+
+  nlu-hardening:
+    # No Ollama in CI: runs the deterministic layer (aliases, slot extraction,
+    # route guards) against the golden set and the hardening regression tests.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install light dependencies
+        run: pip install pytest pyyaml requests numpy pydantic pydantic-settings python-dotenv dateparser rank-bm25 langdetect httpx fastapi flask
+      - name: Golden eval (deterministic layer; zero false writes allowed)
+        run: python scripts/eval_golden.py --min-accuracy 0.97 --max-false-write 0
+      - name: Hardening regression tests
+        run: python -m pytest -q tests/test_hardening.py tests/test_hardening_phases.py tests/test_intent_aliases.py

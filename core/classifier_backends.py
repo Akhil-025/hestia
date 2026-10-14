@@ -69,9 +69,10 @@ class SentenceTransformerEmbedder:
     Loads eagerly so a missing library fails at load time, not mid-query."""
 
     def __init__(self, model_name: str = DEFAULT_EMBEDDING_MODEL, device: str = "cpu") -> None:
-        from sentence_transformers import SentenceTransformer
+        from core.shared_models import get_sentence_transformer
         self.model_name = model_name
-        self._model = SentenceTransformer(model_name, device=device)
+        # Shared with Mnemosyne / Athena / Pluto: one copy of MiniLM in RAM.
+        self._model = get_sentence_transformer(model_name, device=device)
 
     def __call__(self, texts: Sequence[str]):
         return self._model.encode(list(texts), normalize_embeddings=True, batch_size=64,

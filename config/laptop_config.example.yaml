@@ -367,6 +367,9 @@ llm:
 # NLU
 nlu:
   prompt_path: "config/nlu_prompt.txt"
+  # How long Ollama keeps the NLU model loaded after a query (default "5m").
+  # Shorter frees RAM when idle; longer avoids a reload delay.
+  keep_alive: "5m"
   # Optional — point classification at a separate model and/or a separate
   # Ollama instance, independent of the `ollama:` block above (which
   # reasoning/chat/RAG/Pluto's ReAct agent still use). Classification is a
@@ -378,6 +381,19 @@ nlu:
   # model: "phi3"
   # host: "127.0.0.1"
   # port: 11435
+
+  # --- Hardening Plan knobs. Every default below = previous behaviour. ---
+  # Turn these on ONE AT A TIME and compare `python scripts/eval_golden.py
+  # --live --json before.json` against after.json (needs Ollama).
+  # prompt_mode: "legacy"          # "retrieval": compact prompt + top-k examples
+  # examples_path: "config/nlu_examples.yaml"   # rebuild: scripts/build_nlu_examples.py
+  # top_k_examples: 8
+  # candidate_k: 0                 # >0 narrows the schema's intent enum (try 25)
+  # include_response: true         # false drops the unused `response` field
+  # max_attempts: 3                # 1 = a single LLM attempt
+  # time_budget_s: null            # e.g. 6: stop retrying/sleeping after 6 s
+  # include_facts: true            # false drops memory facts from the NLU prompt
+  # classifier_first_threshold: null   # e.g. 0.92: trained classifier before the LLM
 
 hecate:
   # Conversation session TTL, in seconds (backlog #12). A gap longer than

@@ -172,6 +172,7 @@ INTENT_MODULE_MAP: dict[str, str] = {
     "read_email": "hermes",
     "send_email": "hermes",
     "list_events": "hermes",
+    "update_last_event": "hermes",
     "create_event": "hermes",
     "delete_events": "hermes",
     # backlog #92-#99 — triage digest, drafting, search, schedule gaps,
@@ -499,3 +500,58 @@ def strip_module_prefix(intent: str) -> str:
         if intent.startswith(prefix):
             return intent[len(prefix):]
     return intent
+
+
+# ---------------------------------------------------------------------------
+# Risk classes (Hardening Plan, Phase 3.2)
+# ---------------------------------------------------------------------------
+# READ        no side effects
+# WRITE       creates/changes the user's own data (reversible-ish)
+# DESTRUCTIVE deletes/forgets/cancels data; needs confirmation
+# EXTERNAL    acts on the outside world (sends mail, books, syncs brokers)
+import re as _re
+
+READ, WRITE, DESTRUCTIVE, EXTERNAL = "READ", "WRITE", "DESTRUCTIVE", "EXTERNAL"
+
+_RISK_OVERRIDES: dict[str, str] = {
+    "abandon_goal": DESTRUCTIVE, "ares_delete_playbook": DESTRUCTIVE,
+    "cancel_reminder": DESTRUCTIVE, "delete_events": DESTRUCTIVE,
+    "delete_notes": DESTRUCTIVE, "dionysus_clear_group_outing": DESTRUCTIVE,
+    "forget_fact": DESTRUCTIVE, "hephaestus_stop_watching": DESTRUCTIVE,
+    "iris_forget_faces": DESTRUCTIVE, "metis_clear_style_profile": DESTRUCTIVE,
+    "remove_goal": DESTRUCTIVE, "remove_habit": DESTRUCTIVE,
+    "unmark_holiday": DESTRUCTIVE,
+    "send_email": EXTERNAL, "create_event": EXTERNAL, "book_meeting_slot": EXTERNAL,
+    "todoist_add_task": EXTERNAL, "todoist_complete_task": EXTERNAL,
+    "pluto_sync_broker": EXTERNAL, "obsidian_sync": EXTERNAL,
+    "hephaestus_search_web": EXTERNAL,
+    "take_note": WRITE, "learn_fact": WRITE, "save_name": WRITE,
+    "set_reminder": WRITE, "add_habit": WRITE, "add_goal": WRITE,
+    "pluto_log_expense": WRITE,
+}
+_READ_RE = _re.compile(
+    r"^(?:get|list|show|search|find|check|what|query|lookup|recall|explain|"
+    r"audit|review|summar|compare|status|read|view)|_(?:get|list|search|status|"
+    r"summary|report|stats|lookup|query)(?:_|$)|^chat$")
+
+
+def risk_for(intent: str) -> str:
+    """Risk class for an intent (override table first, then name heuristics)."""
+    if intent in _RISK_OVERRIDES:
+        return _RISK_OVERRIDES[intent]
+    bare = strip_module_prefix(intent) if intent else ""
+    if intent in _RISK_OVERRIDES or bare in _RISK_OVERRIDES:
+        return _RISK_OVERRIDES[bare]
+    if _READ_RE.search(intent or "") or _READ_RE.search(bare):
+        return READ
+    return WRITE
+
+
+# Destructive intents whose module has NO confirmation flow of its own; the
+# orchestrator asks "say yes" before dispatching them. (forget_fact,
+# delete_notes and Hermes' deletions already confirm inside their module.)
+ORCHESTRATOR_CONFIRMED: frozenset[str] = frozenset({
+    "remove_habit", "remove_goal", "abandon_goal", "ares_delete_playbook",
+    "iris_forget_faces", "metis_clear_style_profile", "hephaestus_stop_watching",
+    "dionysus_clear_group_outing",
+})

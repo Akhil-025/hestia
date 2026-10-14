@@ -1,0 +1,21 @@
+# Golden cases from the Hestia Hardening Plan (Phase 0.3).
+# `layer: deterministic` cases are asserted in tests/test_hardening.py
+# (alias / slot / guard layer, no LLM). `layer: llm` cases need Ollama and are
+# for scripts/eval_intents.py (not run in CI).
+- {utterance: "What's my name?", intent: get_user_info, layer: deterministic}
+- {utterance: "My name is Akhil", intent: save_name, entities: {name: Akhil}, layer: deterministic}
+- {utterance: "What notes do I have?", intent: get_notes, layer: deterministic}
+- {utterance: "Take a note: buy new headphones", intent: take_note, entities: {content: buy new headphones}, layer: deterministic}
+- {utterance: "My sister's name is Priya", intent: learn_fact, entities: {key: sister_name, value: Priya}, layer: llm}
+- {utterance: "What do you know about me?", intent: get_user_info, layer: deterministic}
+- {utterance: "What's on my calendar today?", intent: list_events, layer: deterministic}
+- {utterance: "Create an event tomorrow at 5pm called Gym", intent: create_event, entities: {date: tomorrow, time: "17:00"}, layer: llm}
+- {utterance: "Search the web for latest iPhone price", intent: hephaestus_search_web, layer: deterministic}
+- {utterance: "Search my documents for taxes", intent: athena_search, layer: deterministic}
+- {utterance: "Search my photos for pictures of my dog", intent: iris_search, layer: deterministic}
+- {utterance: "Write me a short poem about the ocean", intent: orpheus_write_poem, layer: deterministic}
+- {utterance: "Brainstorm ideas for a birthday gift", intent: orpheus_brainstorm, layer: deterministic}
+- {utterance: "Log an expense: Rs500 for groceries", intent: pluto_log_expense, entities: {amount: "500", description: groceries}, layer: deterministic}
+- {utterance: "Summarize my recent work and highlight gaps", intent: null, note: "must not crash (Ares topic=['gaps'])", layer: llm}
+- {utterance: "I'm tired", intent: null, note: "must NOT save name", layer: deterministic}
+- {utterance: "I am hungry", intent: null, note: "must NOT save name", layer: deterministic}

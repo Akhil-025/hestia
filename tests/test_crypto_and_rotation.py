@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from core import crypto_store as cs  # noqa: E402
-import rotate_secrets as rs  # noqa: E402
+import scripts.rotate_secrets as rs  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

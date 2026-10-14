@@ -194,7 +194,11 @@ from modules.pluto import PlutoEngine
 
 _DEFAULT_CONFIG = Path("config/laptop_config.yaml")
 _EXIT_WORDS: frozenset[str] = frozenset({"bye", "exit", "stop", "shutdown"})
-_FILLER_RE = re.compile(r"\b(uh|um|you know)\b\s*", re.IGNORECASE)
+# "you know" is only a filler when it is set off by commas ("I was, you know,
+# tired"). Bare "you know" is a real verb phrase: "what do you know about me?"
+_FILLER_RE = re.compile(
+    r"\b(?:uh|um)\b\s*|,\s*you know\s*(?=[,.?!]|$)|\byou know\s*,\s*",
+    re.IGNORECASE)
 _OLLAMA_STARTUP_DELAY = 2          # seconds after ensure_running()
 _STT_MAX_DURATION = 10             # seconds per utterance
 _WAKE_WORD_TIMEOUT = 30            # seconds per listen cycle
@@ -350,6 +354,18 @@ class HestiaBuilder:
             host=nlu_cfg.get("host") or self.ollama_cfg.get("host", "127.0.0.1"),
             port=nlu_cfg.get("port") or self.ollama_cfg.get("port", 11434),
             prompt_path=nlu_cfg.get("prompt_path"),
+            # Hardening Plan Phase 1/2 knobs; every default = legacy behaviour.
+            prompt_mode=nlu_cfg.get("prompt_mode", "legacy"),
+            examples_path=nlu_cfg.get("examples_path", "config/nlu_examples.yaml"),
+            top_k_examples=nlu_cfg.get("top_k_examples", 8),
+            candidate_k=nlu_cfg.get("candidate_k", 0),
+            include_response=nlu_cfg.get("include_response", True),
+            max_attempts=nlu_cfg.get("max_attempts", 3),
+            time_budget_s=nlu_cfg.get("time_budget_s"),
+            include_facts=nlu_cfg.get("include_facts", True),
+            classifier_first_threshold=nlu_cfg.get("classifier_first_threshold"),
+            # How long Ollama keeps the NLU model in RAM after a query.
+            keep_alive=str(nlu_cfg.get("keep_alive", "5m")),
         )
 
     def build_mnemosyne(self, llm: HestiaLLM) -> MnemosyneEngine:
@@ -1279,6 +1295,7 @@ class Hestia:
         )
         self.diagnostics.bind_orchestrator(self.orchestrator)
         self.orchestrator.attach_classifier(self.classifier)          # backlog #4
+        self.nlu.set_pending_probe(self.orchestrator.is_pending_reply)
         self.orchestrator.attach_event_bus(bus)                       # backlog #10
         self.shadow = builder.build_shadow()                          # backlog #16
         if self.shadow is not None:
@@ -1866,6 +1883,10 @@ class Hestia:
                 return None
 
         intents = [r.get("intent", "chat") for r in results]
+        if "clarify_intent" in intents:
+            # One half is "I don't understand": don't answer half a request and
+            # tack a generic apology on; handle the sentence as a whole instead.
+            return None
         if (
             intents[0] == "chat"
             or intents[1] == "chat"

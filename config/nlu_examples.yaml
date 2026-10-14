@@ -1,0 +1,2108 @@
+notes:
+  general: config/nlu_prompt.txt
+  MULTI-LANGUAGE (HINDI/HINGLISH) EXAMPLES: A handful of Hinglish phrasings not already covered by config/intent_aliases.yaml,
+    to show the model the intent stays English snake_case regardless of input script/language (see the
+    "Multi-language input" instructions near the top of this file).
+  DIAGNOSTICS (ABOUT HESTIA HERSELF): 'These three ask about the assistant, not about the user''s data.
+    They are answered by CoreModule from the Diagnostics object (core/observability.py). Disambiguation
+    notes: - "how are you" / "you doing ok" is small talk -> chat, NOT modules_status. modules_status
+    is about SUBSYSTEM health ("are your modules working", "module status", "is athena up"). - explain_routing
+    asks why the PREVIOUS query went where it went. A question about how routing works in general is chat.
+    - report_mistake is the user telling Hestia she got the LAST answer wrong. It is not a request to
+    redo the task; log it and acknowledge. Put any extra detail the user gave in entities.note. - audit_routing
+    asks WHAT was checked, step by step, before the previous answer ("what did you check before answering
+    that"). explain_routing is the short "why did it go there"; audit_routing is the full ordered list.
+    - conference is for a decision that genuinely spans several areas of the user''s life (money + health
+    + goals) and where they want the views set side by side. A question about ONE area is that area''s
+    own intent, never a conference. Put any areas the user named in entities.modules as a list of module
+    names (pluto, ares, apollo, artemis, chronos). - what_if is a hypothetical about changing ONE thing
+    the user already does or pays for ("what if I cancel netflix", "what if I stop meditating", "what
+    if I slept an hour less"). Not a decision to log (that is ares_decision_support) and not a request
+    to actually cancel. - weekly_focus asks which few things need attention over the coming week. A plain
+    "what''s on my plate today" is get_agenda, not weekly_focus.'
+  MNEMOSYNE (LONG-TERM FACTS ABOUT THE USER): learn_fact is for durable facts ABOUT THE USER (their name,
+    family, relationships, preferences, background) that should be recalled later. NEVER use take_note
+    for this -- take_note is for arbitrary reminders / to-do items, not facts about the user. If the user
+    says "remember..." or "learn this fact..." and states something true about themselves, it is learn_fact,
+    not take_note. "What do you know about me" / "tell me about myself" has no specific key to look up
+    -- omit the "key" entity entirely (do NOT invent one) so Mnemosyne falls through to a semantic recall
+    over everything it knows, instead of a single-fact lookup.
+  'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS': 'start_quiz           -> "quiz me on X"
+    (entities: subject, optional count) answer_quiz          -> only when the user gives a quiz answer
+    with no quiz question pending; normally the answer is consumed by the quiz itself, not classified.
+    quiz_performance     -> "how am I doing" / "my weak subjects" for QUIZZES (NOT get_goals, NOT apollo
+    health summaries). add_study_fact       -> put a fact into spaced-repetition study material (entities:
+    key + value, or topic for an existing fact). review_study         -> "what''s due" / "review my study
+    cards" (flashcards). graph_connections    -> "what connects to X" / "how is X related to Y" (entities:
+    entity, optional "to"). recall_episode       -> "what were we doing about X" / "what did we work on"
+    (past conversations grouped by topic, NOT a dated lookup and NOT athena_search). obsidian_sync        ->
+    sync the Obsidian vault. watch_papers         -> arXiv topic watching (entities: action = add / remove
+    / list / check, and topic).'
+  'MNEMOSYNE: MANAGING THE MEMORY ITSELF': 'recall_on_date       -> "what did I say on / last <day or
+    date>" -- a CALENDAR lookup (entities: date = the phrase as spoken). Not recall_episode (that is by
+    topic), not get_history. get_memory_stats     -> how big the memory is (facts, summaries, database
+    size, embeddings). NOT get_system_info (that is CPU / RAM / battery of the machine). export_memory        ->
+    back up / dump everything remembered to a file (entities: format = json or markdown). set_fact_importance  ->
+    the user stresses that a remembered fact matters more or less (entities: key = which fact, importance
+    = critical / high / low). review_stale_facts   -> facts not mentioned for months that were flagged
+    for review; also "keep" them (entities: action = list / keep, optional key). A hedged statement is
+    still learn_fact -- Mnemosyne notices the hedge itself.'
+  IRIS (MEDIA / FILES): iris_check_circuit is a visual check of ONE breadboard photo Iris has already
+    indexed (the newest image unless entities.file_id names one). It cannot test a circuit; it only looks
+    for faults that show in the picture.
+  ARTEMIS (GOALS): 'HABITS and GOALS are different things -- do not conflate them. A habit is a recurring
+    behaviour ("drink water", "meditate"); a goal is a project/outcome with progress ("finish CFD project").
+    "list my habits" is list_habits, NEVER get_goals, even though both are Artemis intents. ABANDON vs
+    REMOVE: abandon_goal keeps the goal on record with a status of "abandoned" (the user gave up on it
+    but it''s still visible in history); remove_goal deletes it entirely. "give up on" / "abandon" ->
+    abandon_goal. "delete" / "remove" -> remove_goal. Do not conflate them.'
+  ARES (STRATEGY / RISK): 'ares_premortem_analysis: assume the thing has ALREADY failed and work backwards
+    to the causes. Different from ares_analyse_risk, which looks forward at risks that might occur --
+    a premortem is the "imagine it''s a year from now and this blew up, why?" exercise. ares_competitive_analysis:
+    about RIVALS/opposition specifically (other companies, other candidates, other teams). Different from
+    ares_swot_analysis, which looks inward at the topic itself, not named competitors. If the user names
+    competitors, put them in the "competitors" entity as a comma-separated string. ares_contingency_plan:
+    a PLAN B / fallback if a specific risk hits. Different from ares_strategic_plan, which is the primary
+    plan itself. If the user names the specific risk, put it in the "trigger" entity. ares_war_room_briefing:
+    a CONSOLIDATED status briefing pulling together everything already known/discussed about a topic (past
+    plans, risks, SWOTs, decisions). Use for "where do things stand", "catch me up", "give me the full
+    picture" -- NOT for starting a fresh single-purpose analysis, which should map to one of the other
+    ares_* intents instead. ares_career_ranking: RANK a set of career/education paths against weighted
+    criteria (including GATE choices like M.Tech vs PSU vs private job). Use this instead of ares_decision_support
+    when the user asks to RANK or SCORE career/education options. Put the options in "options" as a comma-separated
+    string; put any criteria they name in "criteria" (comma-separated, optional ":weight" 1-5). Use ares_decision_support
+    for general life decisions. ares_schedule_review: schedule a follow-up reminder to REVISIT a past
+    plan/decision. Put the delay in "when" ("in 2 weeks", "next month"). ares_record_outcome: the user
+    reports HOW a past plan/decision turned out. "outcome" is one of: success, mixed, failure. Different
+    from ares_outcome_stats, which asks for a summary of all of them. ares_simulate_outcomes: Monte Carlo
+    / expected value over NUMBERS the user gives. Not a qualitative analysis -- use only when there are
+    probabilities or ranges of money/values. Keep the original wording in raw_query; if the user gave
+    structured numbers, "scenarios" is a list of {"probability": 0.6, "value": 1000000}, or use "low"/"likely"/"high".
+    ares_save_playbook / ares_list_playbooks / ares_run_playbook / ares_delete_playbook: NAMED, reusable
+    analysis templates. "analysis" is one of: swot, premortem, risk, plan, decision, competitive, contingency,
+    career. "criteria" is the standing checklist, as the user said it.'
+  APOLLO (HEALTH): 'No separate "query" intent exists for sleep — a question like this also routes to
+    apollo_track_sleep, with no "hours" entity (there is none to extract). ApolloEngine detects the missing
+    hours + question phrasing and reports the last logged night back instead of asking "how many hours
+    did you sleep" in response to a question. "log my mood ..." / "my mood is ..." is ALWAYS apollo_log_mood,
+    even though it starts with the word "log" like take_note examples do. NEVER use take_note for mood.
+    Same log-vs-query ambiguity as apollo_track_sleep above: no separate "query" intent exists for weight
+    either. When the phrasing is a question and there''s no weight entity to extract, ApolloEngine reports
+    the trend from existing logs instead of demanding a fresh number. Same log-vs-query pattern again:
+    a question with no amount to extract reports today''s running total instead of asking "how much water?".'
+  ORPHEUS (CREATIVE): 'Always extract a "topic"/"theme" entity from the user''s own words when one is
+    present (mirrors write_poem/generate_lyrics below) — leaving entities empty here forces Orpheus to
+    fall back to the *entire* raw utterance as the topic (e.g. "Brainstorm Ideas For My Project" instead
+    of "My Project"). "keep going" / "continue this" on a piece of THE USER''S OWN fiction or verse is
+    orpheus_continue_writing, matching voice/tense/style — not metis_expand_text, which adds supporting
+    detail to functional text instead of extending a narrative voice. orpheus_rewrite_style vs. metis_rewrite_text:
+    Orpheus shifts a piece''s creative VOICE/TONE (melancholic, playful, noir...) while preserving it
+    as art; Metis rewrites for a functional GOAL (clarity, professionalism, confidence...). "Make this
+    poem sound more melancholic" → Orpheus. "Make this email sound more confident" → Metis. "polish"/"clean
+    it up" on a NEW piece is the optional Metis polish pass (entity polish: true). Editing a piece you
+    already saved is orpheus_revise_creation, which adds a new version and keeps the original.'
+  METIS (WRITING ASSISTANCE / EDITING): 'Scope boundary vs. Orpheus: fiction/verse/lyrics/brainstorming
+    always go to orpheus_*, even though the verb ("write") overlaps. Everything else that edits, corrects,
+    or drafts *utilitarian* text (emails, reports, cover letters, summaries, outlines, citations) is metis_*.
+    "rewrite"/"reword" without a specific correction ask -> rewrite_text, with the requested quality as
+    the "goal" entity. Exact numbers become targets, not the vague "length" entity: max_words / min_words
+    / target_words (whole numbers) and target_grade (a U.S. grade level). A writing session is ONE request
+    that both drafts (Orpheus) and then critiques/polishes (Metis). Extract the form (poem/story/lyrics)
+    as "kind".'
+  HEPHAESTUS (BROWSER): 'hephaestus_open_app launches a real native desktop application (Chrome the app,
+    Notepad, Spotify, Edge, Firefox, Calculator, etc.) — this is NOT the same as hephaestus_browser_action,
+    which only drives a headless automated browser. Use open_app whenever the user says "open"/"launch"
+    and names a desktop application rather than a URL or website. hephaestus_scrape_page fetches and extracts
+    readable text — either from a given URL, or by searching for a topic and reading the top result. Use
+    this when the user wants the actual CONTENT of a page, not just a browser tab opened or a list of
+    search result titles. hephaestus_watch_page starts a standing check of a web page that Hestia re-reads
+    on a schedule and speaks up about only when something meaningful changes. Use it for "tell me when
+    ..." / "keep an eye on ..." / "watch ..." about a PAGE. (Reminders about a time are chronos, not this.)
+    Entities: url (required), keywords (list), track_price (true for price drops), target_price, interval
+    ("hourly", "daily", "every 6 hours"), name. hephaestus_fill_form fills a form the user has SAVED by
+    name in config; it never invents fields. entities.form is the saved name; entities.values carries
+    any details the user spoke for the form''s {placeholders}. hephaestus_fill_form can also MANAGE forms.
+    entities.action is "save" (read the fields from entities.url; set entities.submit true only if the
+    user said to submit), "list" or "forget". The user never speaks selectors. hephaestus_summarize_repo
+    summarises a LOCAL code folder (structure, size, tests, things worth a look). entities.path is a folder
+    on this computer. entities.review is true only when the user asks for a REVIEW or opinion of the code
+    (not just a summary); it needs the optional model review setting.'
+  'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS': set_reminder also covers recurring reminders
+    ("every weekday at 7am"), location reminders ("when I get home") and per-reminder time zones ("9am
+    London time"). Pass the user's wording through in the entities; the module parses the rule itself,
+    so do not invent cron strings.
+  HERMES (GMAIL / CALENDAR): 'Pass the date through as the user typed it — DD/MM/YYYY is fine, do NOT
+    try to reorder it into YYYY-MM-DD yourself; the calendar module parses both formats. Repeating events:
+    pass the user''s own words through in "recurrence".'
+examples:
+- utterance: mera 7 hours ka neend track karo
+  intent: apollo_track_sleep
+  entities:
+    hours: '7'
+  section: MULTI-LANGUAGE (HINDI/HINGLISH) EXAMPLES
+- utterance: kal shaam 6 baje dentist appointment ka reminder set karo
+  intent: set_reminder
+  entities:
+    text: dentist appointment
+    time: 6pm tomorrow
+  section: MULTI-LANGUAGE (HINDI/HINGLISH) EXAMPLES
+- utterance: maine aaj 500 rupees grocery pe kharch kiye
+  intent: pluto_log_expense
+  entities:
+    amount: '500'
+    category: grocery
+  section: MULTI-LANGUAGE (HINDI/HINGLISH) EXAMPLES
+- utterance: ye note kar lo ki milk khatam ho gaya hai
+  intent: take_note
+  entities:
+    content: milk khatam ho gaya hai
+  section: MULTI-LANGUAGE (HINDI/HINGLISH) EXAMPLES
+- utterance: aaj Mumbai mein mausam kaisa hai
+  intent: get_weather
+  entities:
+    location: Mumbai
+  section: MULTI-LANGUAGE (HINDI/HINGLISH) EXAMPLES
+- utterance: module status
+  intent: modules_status
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: are all your modules working
+  intent: modules_status
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: is athena actually loaded right now
+  intent: modules_status
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: how are you today
+  intent: chat
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: why did you route that to pluto
+  intent: explain_routing
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: why did that go to the wrong module
+  intent: explain_routing
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: that was wrong
+  intent: report_mistake
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: that was wrong, I meant my sleep log not my workout log
+  intent: report_mistake
+  entities:
+    note: meant my sleep log not my workout log
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: what did you check before answering that
+  intent: audit_routing
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: weigh my budget against my sleep and my goals before I take this on
+  intent: conference
+  entities:
+    modules:
+    - pluto
+    - apollo
+    - artemis
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: should I cut my hours to study for GATE, look at it from every angle
+  intent: conference
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: what if I cancel my netflix subscription
+  intent: what_if
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: what if I only slept 5 hours a night
+  intent: what_if
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: what happens if I stop meditating
+  intent: what_if
+  entities:
+    habit: meditating
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: what actually needs my attention this week
+  intent: weekly_focus
+  entities: {}
+  section: DIAGNOSTICS (ABOUT HESTIA HERSELF)
+- utterance: search documents about heat transfer
+  intent: athena_search
+  entities:
+    query: heat transfer
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: find research papers on turbulence modeling
+  intent: athena_search
+  entities:
+    query: turbulence modeling
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: search my documents for CFD reports
+  intent: athena_search
+  entities:
+    query: CFD reports
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: ingest my documents folder
+  intent: athena_ingest
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: how many documents have I indexed
+  intent: athena_status
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: what's new since I last checked my documents
+  intent: athena_check_updates
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: write me a literature review on turbulence modeling
+  intent: athena_literature_review
+  entities:
+    subject: turbulence modeling
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: what research gaps exist in my heat transfer papers
+  intent: athena_research_gaps
+  entities:
+    subject: heat transfer
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: compare paper1.pdf and paper2.pdf on their methodology
+  intent: athena_compare_documents
+  entities:
+    file_names:
+    - paper1.pdf
+    - paper2.pdf
+    query: their methodology
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: the second source wasn't relevant
+  intent: athena_mark_feedback
+  entities:
+    index: '2'
+    relevant: 'false'
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: that first source was really useful
+  intent: athena_mark_feedback
+  entities:
+    index: '1'
+    relevant: 'true'
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: show scores for heat transfer coefficients
+  intent: athena_search
+  entities:
+    query: heat transfer coefficients
+    debug: 'true'
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: give me a bibliography for that
+  intent: athena_get_citations
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: translate notes.pdf into spanish
+  intent: athena_translate_document
+  entities:
+    file_name: notes.pdf
+    target_language: Spanish
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: make a pdf report on heat transfer
+  intent: athena_generate_report
+  entities:
+    subject: heat transfer
+    format: pdf
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: turn my machine learning notes into a powerpoint
+  intent: athena_generate_report
+  entities:
+    subject: machine learning
+    format: pptx
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: draft a methodology for studying sleep and exam scores
+  intent: athena_methodology
+  entities:
+    question: sleep and exam scores
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: show me which of my papers cite each other
+  intent: athena_citation_graph
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: who cites attention is all you need
+  intent: athena_citation_graph
+  entities:
+    focus: attention is all you need
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: pause my running habit for two weeks
+  intent: pause_habit
+  entities:
+    name: running
+    days: '14'
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: I'm back, resume meditation
+  intent: resume_habit
+  entities:
+    name: meditation
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: give my reading habit a grace period of 2 days
+  intent: set_habit_grace
+  entities:
+    name: reading
+    days: '2'
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: how consistent have I been with my habits this week
+  intent: weekly_habit_review
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: start a 25 minute focus session on my thesis
+  intent: start_focus
+  entities:
+    minutes: '25'
+    task: my thesis
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: stop the pomodoro
+  intent: stop_focus
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: how much have I focused this week
+  intent: focus_stats
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: break down my goal to publish the paper into steps
+  intent: decompose_goal
+  entities:
+    name: publish the paper
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: I finished step 2 of publish the paper
+  intent: complete_milestone
+  entities:
+    name: publish the paper
+    step: '2'
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: what goal templates do you have
+  intent: list_goal_templates
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: start the run a 5k template
+  intent: add_goal_from_template
+  entities:
+    template: run a 5k
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: show my badges
+  intent: list_badges
+  entities: {}
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: search heat transfer notes
+  intent: athena_search
+  entities:
+    query: heat transfer notes
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: find my notes on thermodynamics
+  intent: athena_search
+  entities:
+    query: thermodynamics notes
+  section: ATHENA (DOCUMENT / RESEARCH SEARCH)
+- utterance: 'learn this fact: my sister''s name is Priya'
+  intent: learn_fact
+  entities:
+    key: sister_name
+    value: Priya
+  section: MNEMOSYNE (LONG-TERM FACTS ABOUT THE USER)
+- utterance: remember that I'm allergic to peanuts
+  intent: learn_fact
+  entities:
+    key: allergy
+    value: peanuts
+  section: MNEMOSYNE (LONG-TERM FACTS ABOUT THE USER)
+- utterance: forget that I'm allergic to peanuts
+  intent: forget_fact
+  entities:
+    key: allergy
+  section: MNEMOSYNE (LONG-TERM FACTS ABOUT THE USER)
+- utterance: what do you know about me
+  intent: get_user_info
+  entities: {}
+  section: MNEMOSYNE (LONG-TERM FACTS ABOUT THE USER)
+- utterance: quiz me on thermodynamics
+  intent: start_quiz
+  entities:
+    subject: thermodynamics
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: give me 3 questions on organic chemistry
+  intent: start_quiz
+  entities:
+    subject: organic chemistry
+    count: '3'
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: which subjects am I weakest in
+  intent: quiz_performance
+  entities: {}
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: 'add to my study material: entropy is a measure of disorder'
+  intent: add_study_fact
+  entities:
+    key: entropy
+    value: a measure of disorder
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: make my notes on carnot cycle flashcards
+  intent: add_study_fact
+  entities:
+    topic: carnot cycle
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: what's due for review today
+  intent: review_study
+  entities: {}
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: what connects to entropy
+  intent: graph_connections
+  entities:
+    entity: entropy
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: how is Priya connected to IIT Bombay
+  intent: graph_connections
+  entities:
+    entity: Priya
+    to: IIT Bombay
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: what were we working on about the flight to Delhi
+  intent: recall_episode
+  entities:
+    topic: flight to Delhi
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: sync my obsidian vault
+  intent: obsidian_sync
+  entities: {}
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: watch arxiv for transformers in time series forecasting
+  intent: watch_papers
+  entities:
+    action: add
+    topic: transformers in time series forecasting
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: any new papers on my topics
+  intent: watch_papers
+  entities:
+    action: check
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: tell me about myself
+  intent: get_user_info
+  entities: {}
+  section: 'MNEMOSYNE: STUDYING, QUIZZES, THE GRAPH, EPISODES, PAPERS'
+- utterance: what did I say last Tuesday
+  intent: recall_on_date
+  entities:
+    date: last Tuesday
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: what did I tell you on 12 March
+  intent: recall_on_date
+  entities:
+    date: 12 March
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: how many facts do you remember
+  intent: get_memory_stats
+  entities: {}
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: how big is your memory
+  intent: get_memory_stats
+  entities: {}
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: export my memory as markdown
+  intent: export_memory
+  entities:
+    format: markdown
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: back up everything you remember about me
+  intent: export_memory
+  entities:
+    format: json
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: mark my allergy as very important
+  intent: set_fact_importance
+  entities:
+    key: allergy
+    importance: high
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: my passport number is critical, never let it fall out of memory
+  intent: set_fact_importance
+  entities:
+    key: passport number
+    importance: critical
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: which of my facts are out of date
+  intent: review_stale_facts
+  entities:
+    action: list
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: keep all the stale facts
+  intent: review_stale_facts
+  entities:
+    action: keep
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: I think my locker number is 42
+  intent: learn_fact
+  entities:
+    key: locker_number
+    value: '42'
+  section: 'MNEMOSYNE: MANAGING THE MEMORY ITSELF'
+- utterance: find my photos of beach
+  intent: iris_search
+  entities:
+    query: beach photos
+  section: IRIS (MEDIA / FILES)
+- utterance: show me my images of cars
+  intent: iris_search
+  entities:
+    query: car images
+  section: IRIS (MEDIA / FILES)
+- utterance: search my gallery
+  intent: iris_search
+  entities:
+    query: gallery
+  section: IRIS (MEDIA / FILES)
+- utterance: ingest my gallery
+  intent: iris_ingest
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: add these photos
+  intent: iris_ingest
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: what's the status of image indexing
+  intent: iris_status
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: how many photos have you indexed
+  intent: iris_status
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: find duplicate photos
+  intent: iris_find_duplicates
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: organize my photos into albums
+  intent: iris_organize_albums
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: what changed between these two photos
+  intent: iris_compare_photos
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: index my photos for semantic search
+  intent: iris_reindex
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: find photos similar to photo 12
+  intent: iris_find_similar
+  entities:
+    file_id: 12
+  section: IRIS (MEDIA / FILES)
+- utterance: scan my photos for faces
+  intent: iris_scan_faces
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: who have you found in my photos
+  intent: iris_list_people
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: Person 3 is Mom
+  intent: iris_name_person
+  entities:
+    person: Person 3
+    name: Mom
+  section: IRIS (MEDIA / FILES)
+- utterance: show me photos of Mom
+  intent: iris_find_person
+  entities:
+    person: Mom
+  section: IRIS (MEDIA / FILES)
+- utterance: delete all the face data
+  intent: iris_forget_faces
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: what's on my desk right now
+  intent: iris_detect_objects
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: watch the camera for 20 seconds and tell me what changes
+  intent: iris_detect_objects
+  entities:
+    seconds: 20
+  section: IRIS (MEDIA / FILES)
+- utterance: does anything look wrong on my breadboard
+  intent: iris_check_circuit
+  entities: {}
+  section: IRIS (MEDIA / FILES)
+- utterance: check the circuit in photo 14 for mistakes
+  intent: iris_check_circuit
+  entities:
+    file_id: 14
+  section: IRIS (MEDIA / FILES)
+- utterance: add goal publish research paper
+  intent: add_goal
+  entities:
+    name: publish research paper
+  section: ARTEMIS (GOALS)
+- utterance: create a goal to finish CFD project
+  intent: add_goal
+  entities:
+    name: finish CFD project
+  section: ARTEMIS (GOALS)
+- utterance: what are my goals
+  intent: get_goals
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: update goal publish research paper to 50 percent
+  intent: update_goal
+  entities:
+    name: publish research paper
+    progress: 50
+  section: ARTEMIS (GOALS)
+- utterance: add habit meditate
+  intent: add_habit
+  entities:
+    name: meditate
+  section: ARTEMIS (GOALS)
+- utterance: track a new habit called drink water
+  intent: add_habit
+  entities:
+    name: drink water
+  section: ARTEMIS (GOALS)
+- utterance: mark meditate as done
+  intent: complete_habit
+  entities:
+    name: meditate
+  section: ARTEMIS (GOALS)
+- utterance: I finished my run today
+  intent: complete_habit
+  entities:
+    name: run
+  section: ARTEMIS (GOALS)
+- utterance: what habits do I have
+  intent: list_habits
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: list my habits
+  intent: list_habits
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: show me my habit streaks
+  intent: list_habits
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: give me a productivity summary
+  intent: productivity_summary
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: how am I doing with my habits and goals
+  intent: productivity_summary
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: delete the meditate habit
+  intent: remove_habit
+  entities:
+    name: meditate
+  section: ARTEMIS (GOALS)
+- utterance: stop tracking my running habit
+  intent: remove_habit
+  entities:
+    name: running
+  section: ARTEMIS (GOALS)
+- utterance: delete my goal to finish CFD project
+  intent: remove_goal
+  entities:
+    name: finish CFD project
+  section: ARTEMIS (GOALS)
+- utterance: give up on the goal publish research paper
+  intent: abandon_goal
+  entities:
+    name: publish research paper
+  section: ARTEMIS (GOALS)
+- utterance: I'm abandoning my goal to learn guitar
+  intent: abandon_goal
+  entities:
+    name: learn guitar
+  section: ARTEMIS (GOALS)
+- utterance: add goal launch website due August 20th, high priority
+  intent: add_goal
+  entities:
+    name: launch website
+    due_date: '2026-08-20'
+    priority: high
+  section: ARTEMIS (GOALS)
+- utterance: set finish CFD project as high priority, due next Friday
+  intent: update_goal
+  entities:
+    name: finish CFD project
+    priority: high
+    due_date: '2026-08-14'
+  section: ARTEMIS (GOALS)
+- utterance: which of my goals are at risk of missing their deadline
+  intent: get_at_risk_goals
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: am I going to miss any goal deadlines
+  intent: get_at_risk_goals
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: give me some motivation
+  intent: get_motivation
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: I need a pep talk about my habits
+  intent: get_motivation
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: I'm bored, suggest something to do
+  intent: suggest_activity
+  entities: {}
+  section: ARTEMIS (GOALS)
+- utterance: give me an idea for a relaxing activity
+  intent: suggest_activity
+  entities:
+    type: relaxation
+  section: ARTEMIS (GOALS)
+- utterance: analyse the risks of starting a business
+  intent: ares_analyse_risk
+  entities:
+    topic: starting a business
+  section: ARES (STRATEGY / RISK)
+- utterance: do a SWOT analysis for my CFD project
+  intent: ares_swot_analysis
+  entities:
+    topic: CFD project
+  section: ARES (STRATEGY / RISK)
+- utterance: help me make a strategic plan for the semester
+  intent: ares_strategic_plan
+  entities:
+    topic: semester
+  section: ARES (STRATEGY / RISK)
+- utterance: I need help making a decision about switching jobs
+  intent: ares_decision_support
+  entities:
+    topic: switching jobs
+  section: ARES (STRATEGY / RISK)
+- utterance: should I learn React or Vue for frontend development
+  intent: ares_decision_support
+  entities:
+    topic: frontend framework to learn
+    options: React, Vue
+  section: ARES (STRATEGY / RISK)
+- utterance: imagine my product launch failed, why would that have happened
+  intent: ares_premortem_analysis
+  entities:
+    topic: product launch
+  section: ARES (STRATEGY / RISK)
+- utterance: do a premortem on my thesis defence
+  intent: ares_premortem_analysis
+  entities:
+    topic: thesis defence
+  section: ARES (STRATEGY / RISK)
+- utterance: what could go so wrong with this startup that it dies
+  intent: ares_premortem_analysis
+  entities:
+    topic: startup
+  section: ARES (STRATEGY / RISK)
+- utterance: analyse my competitors for my coffee shop
+  intent: ares_competitive_analysis
+  entities:
+    topic: coffee shop
+  section: ARES (STRATEGY / RISK)
+- utterance: how do I stack up against Notion and Obsidian
+  intent: ares_competitive_analysis
+  entities:
+    topic: note-taking app
+    competitors: Notion, Obsidian
+  section: ARES (STRATEGY / RISK)
+- utterance: who are the biggest threats to my app in this market
+  intent: ares_competitive_analysis
+  entities:
+    topic: app
+  section: ARES (STRATEGY / RISK)
+- utterance: give me a backup plan in case my funding falls through
+  intent: ares_contingency_plan
+  entities:
+    topic: startup funding
+    trigger: funding falls through
+  section: ARES (STRATEGY / RISK)
+- utterance: what's my plan B if the internship offer gets withdrawn
+  intent: ares_contingency_plan
+  entities:
+    topic: internship
+    trigger: offer gets withdrawn
+  section: ARES (STRATEGY / RISK)
+- utterance: help me prepare a fallback plan for the conference
+  intent: ares_contingency_plan
+  entities:
+    topic: conference
+  section: ARES (STRATEGY / RISK)
+- utterance: give me a full briefing on the CFD project
+  intent: ares_war_room_briefing
+  entities:
+    topic: CFD project
+  section: ARES (STRATEGY / RISK)
+- utterance: catch me up on where things stand with the job search
+  intent: ares_war_room_briefing
+  entities:
+    topic: job search
+  section: ARES (STRATEGY / RISK)
+- utterance: give me the full strategic picture on the startup
+  intent: ares_war_room_briefing
+  entities:
+    topic: startup
+  section: ARES (STRATEGY / RISK)
+- utterance: 'rank my GATE options: M.Tech, PSU, private job'
+  intent: ares_career_ranking
+  entities:
+    topic: post-GATE path
+    options: M.Tech, PSU, private job
+    mode: gate
+  section: ARES (STRATEGY / RISK)
+- utterance: 'rank these career paths for me: data science, embedded systems, academia, weighing salary
+    and learning'
+  intent: ares_career_ranking
+  entities:
+    topic: career path
+    options: data science, embedded systems, academia
+    criteria: salary, learning
+  section: ARES (STRATEGY / RISK)
+- utterance: remind me to revisit my job decision in 2 weeks
+  intent: ares_schedule_review
+  entities:
+    topic: job decision
+    when: in 2 weeks
+  section: ARES (STRATEGY / RISK)
+- utterance: check back on the thesis plan next month
+  intent: ares_schedule_review
+  entities:
+    topic: thesis plan
+    when: next month
+  section: ARES (STRATEGY / RISK)
+- utterance: the move to the new team worked out well
+  intent: ares_record_outcome
+  entities:
+    topic: move to the new team
+    outcome: success
+  section: ARES (STRATEGY / RISK)
+- utterance: record the outcome for the startup plan, it failed
+  intent: ares_record_outcome
+  entities:
+    topic: startup plan
+    outcome: failure
+  section: ARES (STRATEGY / RISK)
+- utterance: how have my past decisions turned out
+  intent: ares_outcome_stats
+  entities: {}
+  section: ARES (STRATEGY / RISK)
+- utterance: 'simulate this: 60% chance of gaining 10 lakh, 40% chance of losing 2 lakh'
+  intent: ares_simulate_outcomes
+  entities:
+    topic: the bet
+  section: ARES (STRATEGY / RISK)
+- utterance: run a monte carlo, somewhere between 50k and 200k, most likely 100k
+  intent: ares_simulate_outcomes
+  entities:
+    topic: the project
+    low: 50k
+    likely: 100k
+    high: 200k
+  section: ARES (STRATEGY / RISK)
+- utterance: save a playbook called job offer that runs a premortem and always considers salary, growth
+    and commute
+  intent: ares_save_playbook
+  entities:
+    name: job offer
+    analysis: premortem
+    criteria: salary, growth, commute
+  section: ARES (STRATEGY / RISK)
+- utterance: what playbooks do I have
+  intent: ares_list_playbooks
+  entities: {}
+  section: ARES (STRATEGY / RISK)
+- utterance: run my job offer playbook on the Bangalore offer
+  intent: ares_run_playbook
+  entities:
+    name: job offer
+    topic: the Bangalore offer
+  section: ARES (STRATEGY / RISK)
+- utterance: delete the job offer playbook
+  intent: ares_delete_playbook
+  entities:
+    name: job offer
+  section: ARES (STRATEGY / RISK)
+- utterance: log my workout today
+  intent: apollo_log_workout
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: I slept 7.5 hours, pretty good quality
+  intent: apollo_track_sleep
+  entities:
+    hours: 7.5
+    quality: good
+  section: APOLLO (HEALTH)
+- utterance: how did I sleep last night
+  intent: apollo_track_sleep
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: log my mood as good
+  intent: apollo_log_mood
+  entities:
+    mood: good
+  section: APOLLO (HEALTH)
+- utterance: 'log my mood: feeling good today'
+  intent: apollo_log_mood
+  entities:
+    mood: feeling good today
+  section: APOLLO (HEALTH)
+- utterance: give me a health summary
+  intent: apollo_get_health_summary
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: I weigh 72.5 kg today
+  intent: apollo_log_weight
+  entities:
+    weight: 72.5
+    unit: kg
+  section: APOLLO (HEALTH)
+- utterance: log my weight as 154 lbs
+  intent: apollo_log_weight
+  entities:
+    weight: 154
+    unit: lb
+  section: APOLLO (HEALTH)
+- utterance: what's my weight trend this month
+  intent: apollo_log_weight
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: how many calories are in a banana
+  intent: apollo_lookup_food
+  entities:
+    food: banana
+  section: APOLLO (HEALTH)
+- utterance: nutrition info for Nutella
+  intent: apollo_lookup_food
+  entities:
+    food: Nutella
+  section: APOLLO (HEALTH)
+- utterance: suggest some exercises for chest
+  intent: apollo_suggest_exercise
+  entities:
+    muscle_group: chest
+  section: APOLLO (HEALTH)
+- utterance: find exercises for bench press
+  intent: apollo_suggest_exercise
+  entities:
+    muscle_group: bench press
+  section: APOLLO (HEALTH)
+- utterance: I drank 500ml of water
+  intent: apollo_log_water
+  entities:
+    amount: 500
+  section: APOLLO (HEALTH)
+- utterance: I had 2 glasses of water
+  intent: apollo_log_water
+  entities:
+    glasses: 2
+  section: APOLLO (HEALTH)
+- utterance: how much water have I had today
+  intent: apollo_log_water
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: set a goal of 4 workouts a week
+  intent: apollo_set_health_goal
+  entities:
+    goal_type: workout_frequency
+    target: 4
+  section: APOLLO (HEALTH)
+- utterance: set a sleep goal of 8 hours
+  intent: apollo_set_health_goal
+  entities:
+    goal_type: sleep_hours
+    target: 8
+  section: APOLLO (HEALTH)
+- utterance: I want to reach 68 kg
+  intent: apollo_set_health_goal
+  entities:
+    goal_type: weight_target
+    target: 68
+  section: APOLLO (HEALTH)
+- utterance: set a daily water goal of 2000ml
+  intent: apollo_set_health_goal
+  entities:
+    goal_type: water_ml
+    target: 2000
+  section: APOLLO (HEALTH)
+- utterance: how am I doing on my health goals
+  intent: apollo_get_goal_progress
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: am I hitting my workout target
+  intent: apollo_get_goal_progress
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: switch me to pounds
+  intent: apollo_set_units
+  entities:
+    weight_unit: lb
+  section: APOLLO (HEALTH)
+- utterance: use ounces for water
+  intent: apollo_set_units
+  entities:
+    water_unit: oz
+  section: APOLLO (HEALTH)
+- utterance: what's my sleep score
+  intent: apollo_get_sleep_quality
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: slept 11pm to 6:30am
+  intent: apollo_track_sleep
+  entities:
+    bed_time: 11pm
+    wake_time: 6:30am
+  section: APOLLO (HEALTH)
+- utterance: does sleep affect my mood
+  intent: apollo_get_correlations
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: do I feel better on workout days
+  intent: apollo_get_correlations
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: 'log a meal: dal and rice 450 kcal'
+  intent: apollo_log_meal
+  entities:
+    food: dal and rice
+    kcal: 450
+  section: APOLLO (HEALTH)
+- utterance: I ate 150 grams of paneer
+  intent: apollo_log_meal
+  entities:
+    food: paneer
+    grams: 150
+  section: APOLLO (HEALTH)
+- utterance: how many calories have I had today
+  intent: apollo_get_meal_summary
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: am I drinking enough water
+  intent: apollo_hydration_status
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: what are my workout streaks
+  intent: apollo_get_workout_streaks
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: my left knee hurts, 4 out of 10
+  intent: apollo_log_pain
+  entities:
+    area: left knee
+    severity: 4
+  section: APOLLO (HEALTH)
+- utterance: how is my knee pain trending
+  intent: apollo_get_pain_trend
+  entities:
+    area: knee
+  section: APOLLO (HEALTH)
+- utterance: give me my weekly health summary
+  intent: apollo_get_weekly_summary
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: import my steps
+  intent: apollo_import_steps
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: am I on pace for my weight goal
+  intent: apollo_get_goal_pace
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: set a weight goal of 68 kg by 2026-12-31
+  intent: apollo_set_health_goal
+  entities:
+    goal_type: weight
+    target: 68
+    deadline: '2026-12-31'
+  section: APOLLO (HEALTH)
+- utterance: which habits help my mood
+  intent: apollo_habit_mood_correlation
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: am I burning out
+  intent: apollo_burnout_check
+  entities: {}
+  section: APOLLO (HEALTH)
+- utterance: write me a poem about the ocean
+  intent: orpheus_write_poem
+  entities:
+    topic: ocean
+  section: ORPHEUS (CREATIVE)
+- utterance: brainstorm ideas for my project
+  intent: orpheus_brainstorm
+  entities:
+    topic: my project
+  section: ORPHEUS (CREATIVE)
+- utterance: give me a creative writing prompt
+  intent: orpheus_creative_prompt
+  entities:
+    medium: writing
+  section: ORPHEUS (CREATIVE)
+- utterance: give me 3 art prompts about the ocean
+  intent: orpheus_creative_prompt
+  entities:
+    medium: art
+    theme: the ocean
+    count: 3
+  section: ORPHEUS (CREATIVE)
+- utterance: generate lyrics about missing home
+  intent: orpheus_generate_lyrics
+  entities:
+    topic: missing home
+  section: ORPHEUS (CREATIVE)
+- utterance: write me a short sci-fi story about a lighthouse keeper
+  intent: orpheus_write_story
+  entities:
+    topic: a lighthouse keeper
+    genre: sci-fi
+  section: ORPHEUS (CREATIVE)
+- utterance: can you continue this story from where I left off
+  intent: orpheus_continue_writing
+  entities: {}
+  section: ORPHEUS (CREATIVE)
+- utterance: give me feedback on this poem I wrote
+  intent: orpheus_critique_writing
+  entities: {}
+  section: ORPHEUS (CREATIVE)
+- utterance: rewrite this poem to sound more melancholic
+  intent: orpheus_rewrite_style
+  entities:
+    tone: melancholic
+  section: ORPHEUS (CREATIVE)
+- utterance: give me 5 fantasy character names
+  intent: orpheus_generate_names
+  entities:
+    category: character
+    theme: fantasy
+    count: 5
+  section: ORPHEUS (CREATIVE)
+- utterance: show me poems I've written before
+  intent: orpheus_get_creations
+  entities:
+    type: poem
+  section: ORPHEUS (CREATIVE)
+- utterance: write me a poem about autumn and polish it
+  intent: orpheus_write_poem
+  entities:
+    topic: autumn
+    polish: true
+  section: ORPHEUS (CREATIVE)
+- utterance: revise my last poem to make the ending more hopeful
+  intent: orpheus_revise_creation
+  entities:
+    type: poem
+    instruction: make the ending more hopeful
+  section: ORPHEUS (CREATIVE)
+- utterance: show me the version history of my last story
+  intent: orpheus_get_versions
+  entities:
+    type: story
+  section: ORPHEUS (CREATIVE)
+- utterance: go back to version 1 of creation 12
+  intent: orpheus_restore_version
+  entities:
+    creation_id: 12
+    version: 1
+  section: ORPHEUS (CREATIVE)
+- utterance: export my last poem as markdown
+  intent: orpheus_export_creation
+  entities:
+    type: poem
+    format: md
+  section: ORPHEUS (CREATIVE)
+- utterance: 'fix the grammar in this: "he dont know nothing about it"'
+  intent: metis_correct_text
+  entities:
+    text: he dont know nothing about it
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: can you check my spelling on this paragraph
+  intent: metis_correct_text
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: simplify this sentence, it's too wordy
+  intent: metis_improve_clarity
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: give me style suggestions for this paragraph
+  intent: metis_suggest_style
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: what tone does this email come across as
+  intent: metis_detect_tone
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: make this sound more professional
+  intent: metis_detect_tone
+  entities:
+    target_tone: professional
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: rewrite this to sound more confident
+  intent: metis_rewrite_text
+  entities:
+    goal: confidence
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: draft an email asking my landlord to fix the heater
+  intent: metis_draft_content
+  entities:
+    content_type: email
+    brief: asking my landlord to fix the heater
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: write a cover letter for a marketing internship
+  intent: metis_draft_content
+  entities:
+    content_type: cover_letter
+    brief: marketing internship
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: summarize this article for me
+  intent: metis_summarize_text
+  entities:
+    length: short
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: expand this paragraph with more detail
+  intent: metis_expand_text
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: shorten this to fit in a tweet
+  intent: metis_shorten_text
+  entities:
+    length: short
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: cut this down to under 100 words
+  intent: metis_shorten_text
+  entities:
+    max_words: 100
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: expand this to about 300 words at an 8th grade reading level
+  intent: metis_expand_text
+  entities:
+    target_words: 300
+    target_grade: 8
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: give me an outline for a report on renewable energy
+  intent: metis_generate_outline
+  entities:
+    topic: renewable energy
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: is this plagiarized
+  intent: metis_check_plagiarism
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: give me an APA citation for this article
+  intent: metis_generate_citation
+  entities:
+    style: apa
+    source: this article
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: check this document for consistent capitalization and terminology
+  intent: metis_check_consistency
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: how readable is this piece
+  intent: metis_readability_report
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: how much writing have I had you help with
+  intent: metis_writing_stats
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: polish this paragraph
+  intent: metis_polish_text
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: start a writing session for a short story about a lighthouse keeper
+  intent: metis_writing_session
+  entities:
+    kind: story
+    topic: a lighthouse keeper
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: 'learn my writing style from this: I never really trusted mornings. They always arrive too
+    loud, too bright, and far too sure of themselves.'
+  intent: metis_learn_style
+  entities:
+    text: I never really trusted mornings. They always arrive too loud, too bright, and far too sure of
+      themselves.
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: what's my writing style profile
+  intent: metis_show_style_profile
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: forget my writing style
+  intent: metis_clear_style_profile
+  entities: {}
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: export that writing session as a text file
+  intent: metis_export_session
+  entities:
+    format: txt
+  section: METIS (WRITING ASSISTANCE / EDITING)
+- utterance: recommend a movie for tonight
+  intent: dionysus_recommend_movie
+  entities: {}
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: suggest a restaurant near me
+  intent: dionysus_find_restaurant
+  entities:
+    location: near me
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: find a restaurant near me
+  intent: dionysus_find_restaurant
+  entities:
+    location: near me
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: any good sushi places nearby
+  intent: dionysus_find_restaurant
+  entities:
+    cuisine: sushi
+    location: nearby
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: recommend some music for studying
+  intent: dionysus_recommend_music
+  entities:
+    mood: studying
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: help me plan an outing this weekend
+  intent: dionysus_plan_outing
+  entities:
+    time: weekend
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: don't suggest Inception again
+  intent: dionysus_dismiss_recommendation
+  entities:
+    title: Inception
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: I already watched The Matrix
+  intent: dionysus_mark_seen
+  entities:
+    title: The Matrix
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: suggest a meal for dinner
+  intent: dionysus_recommend_recipe
+  entities: {}
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: give me an Indian meal idea
+  intent: dionysus_recommend_recipe
+  entities:
+    cuisine: Indian
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: suggest a cocktail
+  intent: dionysus_recommend_recipe
+  entities:
+    type: cocktail
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: any live music events this weekend
+  intent: dionysus_find_events
+  entities:
+    category: live music
+    date: this weekend
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: what's happening in Bandra on Saturday
+  intent: dionysus_find_events
+  entities:
+    area: Bandra
+    date: Saturday
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: surprise me with a movie
+  intent: dionysus_surprise_me
+  entities:
+    type: movie
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: surprise me with some music I wouldn't normally listen to
+  intent: dionysus_surprise_me
+  entities:
+    type: music
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: plan a cheap outing for Sunday, under 1500 rupees
+  intent: dionysus_plan_outing
+  entities:
+    time: Sunday
+    budget: under 1500
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: find a mid-range Italian place in Powai
+  intent: dionysus_find_restaurant
+  entities:
+    cuisine: Italian
+    area: Powai
+    budget: mid-range
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: schedule a weekend recharge, every Saturday at 5pm for 2 hours
+  intent: dionysus_schedule_recharge
+  entities:
+    schedule: every Saturday at 5pm
+    duration: 2 hours
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: more like that
+  intent: dionysus_more_like_this
+  entities: {}
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: I loved Interstellar, give me more like it
+  intent: dionysus_more_like_this
+  entities:
+    title: Interstellar
+    type: movie
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: less like this
+  intent: dionysus_less_like_this
+  entities: {}
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: not a fan of the last song, less like that
+  intent: dionysus_less_like_this
+  entities:
+    type: music
+  section: DIONYSUS (ENTERTAINMENT)
+- utterance: log an expense of 500 rupees for groceries
+  intent: pluto_log_expense
+  entities:
+    amount: 500
+    category: groceries
+  section: PLUTO (FINANCE)
+- utterance: give me my budget summary
+  intent: pluto_get_budget_summary
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: convert 100 USD to INR
+  intent: pluto_convert_currency
+  entities:
+    amount: 100
+    from_currency: USD
+    to_currency: INR
+  section: PLUTO (FINANCE)
+- utterance: what's the exchange rate from EUR to GBP
+  intent: pluto_convert_currency
+  entities:
+    amount: 1
+    from_currency: EUR
+    to_currency: GBP
+  section: PLUTO (FINANCE)
+- utterance: look up SEC filings for Apple
+  intent: pluto_company_lookup
+  entities:
+    company: Apple
+  section: PLUTO (FINANCE)
+- utterance: search SEC for a company named Tesla
+  intent: pluto_company_lookup
+  entities:
+    company: Tesla
+  section: PLUTO (FINANCE)
+- utterance: analyze the stock AAPL
+  intent: pluto_analyze_asset
+  entities:
+    ticker: AAPL
+  section: PLUTO (FINANCE)
+- utterance: track my investment in index funds
+  intent: pluto_track_investment
+  entities:
+    type: index funds
+  section: PLUTO (FINANCE)
+- utterance: show me my spending report
+  intent: pluto_spending_report
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: set a food budget of 8000 a month
+  intent: pluto_set_budget
+  entities:
+    category: food
+    amount: '8000'
+  section: PLUTO (FINANCE)
+- utterance: remove my shopping budget
+  intent: pluto_set_budget
+  entities:
+    category: shopping
+  section: PLUTO (FINANCE)
+- utterance: am I over budget this month
+  intent: pluto_budget_status
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: how is my transport budget doing
+  intent: pluto_budget_status
+  entities:
+    category: transport
+  section: PLUTO (FINANCE)
+- utterance: what subscriptions am I paying for
+  intent: pluto_recurring_expenses
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: how much can I spend today
+  intent: pluto_safe_to_spend
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: my monthly income is 85000
+  intent: pluto_set_income
+  entities:
+    amount: '85000'
+  section: PLUTO (FINANCE)
+- utterance: how healthy are my finances
+  intent: pluto_financial_health
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: what if I invest 10000 a month for 15 years at 12 percent
+  intent: pluto_scenario_plan
+  entities:
+    amount: '10000'
+    years: '15'
+    rate: '12'
+  section: PLUTO (FINANCE)
+- utterance: export my expenses for tax filing
+  intent: pluto_export_tax
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: export my 2024-25 tax data
+  intent: pluto_export_tax
+  entities:
+    year: 2024-25
+  section: PLUTO (FINANCE)
+- utterance: try different moving average windows on Reliance
+  intent: pluto_backtest_sweep
+  entities:
+    ticker: RELIANCE
+  section: PLUTO (FINANCE)
+- utterance: explain my Infosys holding
+  intent: pluto_explain_holding
+  entities:
+    name: Infosys
+  section: PLUTO (FINANCE)
+- utterance: why is the quant score for TCS what it is
+  intent: pluto_explain_quant_score
+  entities:
+    ticker: TCS
+  section: PLUTO (FINANCE)
+- utterance: set my target allocation to 60 stocks, 30 mutual funds, 10 crypto
+  intent: pluto_set_target_allocation
+  entities:
+    targets: 60 stocks, 30 mutual funds, 10 crypto
+  section: PLUTO (FINANCE)
+- utterance: do I need to rebalance my portfolio
+  intent: pluto_rebalance_portfolio
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: rebalance using 20000 of new money
+  intent: pluto_rebalance_portfolio
+  entities:
+    contribution: '20000'
+  section: PLUTO (FINANCE)
+- utterance: log this receipt /home/me/receipts/dinner.jpg
+  intent: pluto_log_receipt
+  entities:
+    image_path: /home/me/receipts/dinner.jpg
+  section: PLUTO (FINANCE)
+- utterance: is the market data being rate limited
+  intent: pluto_data_source_status
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: sync my zerodha holdings
+  intent: pluto_sync_broker
+  entities:
+    broker: zerodha
+  section: PLUTO (FINANCE)
+- utterance: alert me when any of my stocks moves more than 4 percent
+  intent: pluto_set_price_alert
+  entities:
+    threshold: '4'
+  section: PLUTO (FINANCE)
+- utterance: what is my net worth
+  intent: pluto_net_worth
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: my AAPL holding is in dollars
+  intent: pluto_set_holding_currency
+  entities:
+    name: AAPL
+    currency: USD
+  section: PLUTO (FINANCE)
+- utterance: Asha is free sat evening and sunday afternoon, she likes thai
+  intent: dionysus_set_outing_preferences
+  entities:
+    person: Asha
+    availability: sat evening, sunday afternoon
+    likes: thai
+  section: PLUTO (FINANCE)
+- utterance: when is everyone free
+  intent: dionysus_plan_group_outing
+  entities: {}
+  section: PLUTO (FINANCE)
+- utterance: go to youtube.com
+  intent: hephaestus_browser_action
+  entities:
+    action: open
+    url: youtube.com
+  section: HEPHAESTUS (BROWSER)
+- utterance: search the web for best pizza in mumbai
+  intent: hephaestus_search_web
+  entities:
+    query: best pizza in mumbai
+  section: HEPHAESTUS (BROWSER)
+- utterance: what's the status of flight AI101
+  intent: hephaestus_check_flight
+  entities:
+    flight: AI101
+  section: HEPHAESTUS (BROWSER)
+- utterance: open chrome
+  intent: hephaestus_open_app
+  entities:
+    app: chrome
+  section: HEPHAESTUS (BROWSER)
+- utterance: open notepad
+  intent: hephaestus_open_app
+  entities:
+    app: notepad
+  section: HEPHAESTUS (BROWSER)
+- utterance: launch spotify
+  intent: hephaestus_open_app
+  entities:
+    app: spotify
+  section: HEPHAESTUS (BROWSER)
+- utterance: scrape wikipedia for Alan Turing
+  intent: hephaestus_scrape_page
+  entities:
+    query: Alan Turing wikipedia
+  section: HEPHAESTUS (BROWSER)
+- utterance: read me the content of https://example.com/article
+  intent: hephaestus_scrape_page
+  entities:
+    url: https://example.com/article
+  section: HEPHAESTUS (BROWSER)
+- utterance: watch https://shop.example.com/phone and tell me if the price drops
+  intent: hephaestus_watch_page
+  entities:
+    url: https://shop.example.com/phone
+    track_price: true
+  section: HEPHAESTUS (BROWSER)
+- utterance: keep an eye on example.org/admissions and tell me when it says admit card, check every hour
+  intent: hephaestus_watch_page
+  entities:
+    url: example.org/admissions
+    keywords:
+    - admit card
+    interval: hourly
+  section: HEPHAESTUS (BROWSER)
+- utterance: what pages am I watching
+  intent: hephaestus_list_watches
+  entities: {}
+  section: HEPHAESTUS (BROWSER)
+- utterance: stop watching the phone page
+  intent: hephaestus_stop_watching
+  entities:
+    name: phone page
+  section: HEPHAESTUS (BROWSER)
+- utterance: check my watched pages now
+  intent: hephaestus_check_watches
+  entities: {}
+  section: HEPHAESTUS (BROWSER)
+- utterance: fill in my scholarship form
+  intent: hephaestus_fill_form
+  entities:
+    form: scholarship
+  section: HEPHAESTUS (BROWSER)
+- utterance: save the form at apply.example.org/gate as gate application
+  intent: hephaestus_fill_form
+  entities:
+    action: save
+    form: gate application
+    url: apply.example.org/gate
+  section: HEPHAESTUS (BROWSER)
+- utterance: remember the form at example.org/news as newsletter and submit it each time
+  intent: hephaestus_fill_form
+  entities:
+    action: save
+    form: newsletter
+    url: example.org/news
+    submit: true
+  section: HEPHAESTUS (BROWSER)
+- utterance: which forms do you have saved
+  intent: hephaestus_fill_form
+  entities:
+    action: list
+  section: HEPHAESTUS (BROWSER)
+- utterance: forget my newsletter form
+  intent: hephaestus_fill_form
+  entities:
+    action: forget
+    form: newsletter
+  section: HEPHAESTUS (BROWSER)
+- utterance: summarize the code in C:\projects\hestia
+  intent: hephaestus_summarize_repo
+  entities:
+    path: C:\projects\hestia
+  section: HEPHAESTUS (BROWSER)
+- utterance: review the code in C:\projects\hestia
+  intent: hephaestus_summarize_repo
+  entities:
+    path: C:\projects\hestia
+    review: true
+  section: HEPHAESTUS (BROWSER)
+- utterance: what time is it
+  intent: get_time
+  entities: {}
+  section: CORE
+- utterance: what is todays date
+  intent: get_date
+  entities: {}
+  section: CORE
+- utterance: what's the date today
+  intent: get_date
+  entities: {}
+  section: CORE
+- utterance: remind me to call mom tomorrow at 9am
+  intent: set_reminder
+  entities:
+    task: call mom
+    time: 09:00
+  section: CORE
+- utterance: is tomorrow a public holiday
+  intent: get_holiday
+  entities: {}
+  section: CORE
+- utterance: is 2026-01-26 a holiday in India
+  intent: get_holiday
+  entities:
+    date: '2026-01-26'
+    country: IN
+  section: CORE
+- utterance: what public holidays are there in the US this year
+  intent: get_holiday
+  entities:
+    country: US
+  section: CORE
+- utterance: remind me to take my vitamins every weekday at 7am
+  intent: set_reminder
+  entities:
+    task: take my vitamins
+    time: 07:00
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: remind me to water the plants every sunday
+  intent: set_reminder
+  entities:
+    task: water the plants
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: remind me to call the bank at 9am London time
+  intent: set_reminder
+  entities:
+    task: call the bank
+    time: 09:00
+    timezone: London
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: remind me to buy milk when I get home
+  intent: set_reminder
+  entities:
+    task: buy milk
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: remind me to study every evening but not on holidays
+  intent: set_reminder
+  entities:
+    task: study
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: what reminders do I have
+  intent: list_reminders
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: show my upcoming reminders
+  intent: list_reminders
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: did I miss any reminders
+  intent: list_reminders
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: cancel the gym reminder
+  intent: cancel_reminder
+  entities:
+    task: gym
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: delete all my reminders
+  intent: cancel_reminder
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: snooze that for 10 minutes
+  intent: snooze_reminder
+  entities:
+    duration: 10 minutes
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: snooze the dentist reminder for an hour
+  intent: snooze_reminder
+  entities:
+    task: dentist
+    duration: 1 hour
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: remind me again in 15 minutes
+  intent: snooze_reminder
+  entities:
+    duration: 15 minutes
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: what's on my plate today
+  intent: get_agenda
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: what does my day look like tomorrow
+  intent: get_agenda
+  entities:
+    date: tomorrow
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: give me my agenda for friday
+  intent: get_agenda
+  entities:
+    date: friday
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: mark tomorrow as a holiday
+  intent: mark_holiday
+  entities:
+    date: tomorrow
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: I'm on leave from monday to wednesday
+  intent: mark_holiday
+  entities:
+    label: leave
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: unmark tomorrow as a holiday
+  intent: unmark_holiday
+  entities:
+    date: tomorrow
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: save my location as home
+  intent: save_place
+  entities:
+    place: home
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: this is my office
+  intent: save_place
+  entities:
+    place: office
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: export my reminders to a calendar file
+  intent: export_calendar
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: give me an ics file of my reminders
+  intent: export_calendar
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: import reminders from my calendar file
+  intent: import_calendar
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: will the rain ruin my plans today
+  intent: weather_plan
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: is it going to rain during my run tomorrow
+  intent: weather_plan
+  entities:
+    date: tomorrow
+    activity: run
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: 'take a note: buy milk'
+  intent: take_note
+  entities:
+    content: buy milk
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: show my notes
+  intent: get_notes
+  entities:
+    limit: 5
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: delete all my notes
+  intent: delete_notes
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: clear my notes
+  intent: delete_notes
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: my name is Akhil
+  intent: save_name
+  entities:
+    name: Akhil
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: what did we talk about yesterday
+  intent: get_history
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: what did we discuss earlier
+  intent: get_history
+  entities: {}
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: what's my name
+  intent: get_user_info
+  entities:
+    key: user_name
+  section: 'REMINDERS: RECURRING, SNOOZE, LOCATION, TIME ZONES, HOLIDAYS'
+- utterance: what is fft
+  intent: chat
+  entities: {}
+  section: CHAT
+- utterance: explain quantum computing
+  intent: chat
+  entities: {}
+  section: CHAT
+- utterance: how are you
+  intent: chat
+  entities: {}
+  section: CHAT
+- utterance: check my mail
+  intent: read_email
+  entities: {}
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: do I have any new emails
+  intent: read_email
+  entities: {}
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: send an email to John saying I'll be late
+  intent: send_email
+  entities:
+    to: John
+    body: I'll be late
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: what's on my calendar today
+  intent: list_events
+  entities:
+    date: today
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: what meetings do I have tomorrow
+  intent: list_events
+  entities:
+    date: tomorrow
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: schedule a meeting with Sarah at 3pm tomorrow
+  intent: create_event
+  entities:
+    title: meeting with Sarah
+    time: 3pm
+    date: tomorrow
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: schedule a meeting with sarah at 11pm on 25/11/2026
+  intent: create_event
+  entities:
+    title: meeting with sarah
+    time: '23:00'
+    date: 25/11/2026
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: clear my schedule
+  intent: delete_events
+  entities:
+    date: today
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: clear todays schedule
+  intent: delete_events
+  entities:
+    date: today
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: cancel all my meetings tomorrow
+  intent: delete_events
+  entities:
+    date: tomorrow
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: add a standup every weekday at 9am called Standup
+  intent: create_event
+  entities:
+    title: Standup
+    time: 9am
+    recurrence: every weekday
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: set up a weekly team sync on monday at 11am for 10 weeks
+  intent: create_event
+  entities:
+    title: team sync
+    time: 11am
+    date: monday
+    recurrence: weekly
+    count: 10
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: how urgent is my inbox
+  intent: email_digest
+  entities: {}
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: give me my email digest
+  intent: email_digest
+  entities: {}
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: draft an email to priya@example.com saying I can't make it, suggest Thursday instead
+  intent: draft_email
+  entities:
+    to: priya@example.com
+    instruction: I can't make it, suggest Thursday instead
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: write a reply thanking Sam for the report
+  intent: draft_email
+  entities:
+    to: Sam
+    instruction: thank Sam for the report
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: find emails from Raj about the invoice
+  intent: search_email
+  entities:
+    sender: Raj
+    subject: invoice
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: search my email for anything from the bank last week
+  intent: search_email
+  entities:
+    sender: bank
+    date: last week
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: do I have any back to back meetings tomorrow
+  intent: check_schedule_gaps
+  entities:
+    date: tomorrow
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: find a time for a 45 minute meeting with sam@example.com tomorrow
+  intent: find_meeting_slot
+  entities:
+    duration: 45 minutes
+    attendees: sam@example.com
+    date: tomorrow
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: when am I free this week for an hour
+  intent: find_meeting_slot
+  entities:
+    duration: 1 hour
+    days: 5
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: help me get to inbox zero
+  intent: inbox_zero
+  entities: {}
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: archive the low priority emails in my inbox
+  intent: inbox_zero
+  entities:
+    apply: true
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: book the first one
+  intent: book_meeting_slot
+  entities:
+    choice: first
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: go with the second slot and call it project sync
+  intent: book_meeting_slot
+  entities:
+    choice: second
+    title: project sync
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: what's on my todoist today
+  intent: todoist_list_tasks
+  entities:
+    scope: today
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: any overdue tasks in todoist
+  intent: todoist_list_tasks
+  entities:
+    scope: overdue
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: add buy printer ink to todoist for tomorrow
+  intent: todoist_add_task
+  entities:
+    task: buy printer ink
+    due: tomorrow
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: add a task to todoist to call the bank, priority 1
+  intent: todoist_add_task
+  entities:
+    task: call the bank
+    priority: p1
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: mark call the bank as done in todoist
+  intent: todoist_complete_task
+  entities:
+    task: call the bank
+  section: HERMES (GMAIL / CALENDAR)
+- utterance: what should I tackle first in todoist
+  intent: todoist_prioritize
+  entities: {}
+  section: HERMES (GMAIL / CALENDAR)

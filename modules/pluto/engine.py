@@ -21,7 +21,6 @@ from .market_intelligence import MarketIntelligenceManager
 from .portfolio import PortfolioOptimizer
 from .backtest import StrategyBacktester
 from .forecasting import SpendForecaster
-from .advisor_agent import FinancialAdvisorAgent
 from .llm_client import LLMClient
 from .health import HealthChecker
 from .metrics import MetricsCollector, track_metrics
@@ -232,9 +231,9 @@ class PlutoEngine(BaseModule):
         self.forecaster = forecaster or SpendForecaster(
             db=self.pf_manager.db, currency=self.config.currency
         )
-        self.advisor = advisor or FinancialAdvisorAgent(
-            pf_manager=self.pf_manager, llm_client=self.llm_client
-        )
+        # The advisor pulls in langchain_core, so it is built on first use
+        # (see the ``advisor`` property) unless one was injected.
+        self._advisor: Optional[Any] = advisor
 
         # getattr: an injected pf_manager stand-in need not have a database.
         db = getattr(self.pf_manager, "db", None)
@@ -318,6 +317,20 @@ class PlutoEngine(BaseModule):
         except Exception:
             logger.exception("check_budget_alerts failed.")
             return None
+
+    @property
+    def advisor(self) -> Any:
+        """Financial advisor agent, created lazily (imports langchain_core)."""
+        if self._advisor is None:
+            from .advisor_agent import FinancialAdvisorAgent
+            self._advisor = FinancialAdvisorAgent(
+                pf_manager=self.pf_manager, llm_client=self.llm_client
+            )
+        return self._advisor
+
+    @advisor.setter
+    def advisor(self, value: Any) -> None:
+        self._advisor = value
 
     @staticmethod
     def _build_config(ollama_cfg: Optional[dict]) -> PlutoConfig:

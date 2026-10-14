@@ -178,6 +178,12 @@ class IntentAliasResolver:
         """Total number of loaded alias phrases."""
         return len(self._exact) + len(self._prefix) + len(self._contains)
 
+    def phrases(self) -> list[tuple[str, str]]:
+        """All (phrase, intent) pairs, e.g. to seed example retrieval."""
+        out = [(p, i) for p, i in self._exact.items()]
+        out += list(self._prefix) + list(self._contains)
+        return out
+
     def resolve(self, text: str) -> Optional[str]:
         """Return the aliased intent for *text*, or None if no alias matches."""
         q = normalise(text)
